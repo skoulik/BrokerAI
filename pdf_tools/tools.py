@@ -14,15 +14,15 @@ def _contain(trs : List[pymupdf.Rect], r : pymupdf.Rect) -> bool:
     return False
 
 def _sanitize_text(text : str) -> str:
-    return (text.replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace(chr(0xF0B7), "-")  #bullet in some fonts, private
-            .replace(chr(0x2022), "-")  #bullet
-            .replace(chr(0x25CF), "-")  #circle
-            .replace(chr(0x07), "")     #alert
-            .replace(chr(0x08), "")     #backspace (wtf?)
-            .replace(chr(0x09), " ")    #tab
-            .replace(chr(0xB7), "-")    #middle dot
+    return (text
+            .replace(u"\uF0B7",  "-")  #bullet in some fonts, private
+            .replace(u"\u2022",  "-")  #bullet
+            .replace(u"\u25CF",  "-")  #circle
+            .replace(u"\u2013",  "-")  #dash
+            .replace(u"\u0007",   "")  #alert
+            .replace(u"\u0008",   "")  #backspace (wtf?)
+            .replace(u"\u0009", "  ")  #tab
+            .replace(u"\u00B7",  "-")  #middle dot
             )
 
 
@@ -124,9 +124,9 @@ def pdf_to_tree(
     if page_numbers is None : page_numbers = range(doc.page_count)
 
     headers = _detect_headers(doc, page_numbers=page_numbers, max_level=max_header_level)
-    print(headers)
+    #print(headers)
 
-    tree = Node("_Root", parent=None, level=-1, header='', text='')
+    tree = Node("_Root", parent=None, level=-1, header="", text="")
     prev_node = tree
 
     for page in [doc[pno] for pno in page_numbers]:
@@ -158,14 +158,17 @@ def pdf_to_tree(
                 if block['type'] == 0: #text
                     for line in block['lines']:
                         y = (line['bbox'][1] + line['bbox'][3]) / 2
-                        if abs(y - prev_y) > line['spans'][0]['size'] and prev_y != 0:
-                            tree.set_attrs({'text' :  tree.get_attr('text') + "\n"})
+                        if prev_y != 0:
+                            n = min(3, round(abs(y - prev_y) / line['spans'][0]['size']))
+                            if n > 0:
+                                tree.set_attrs({'text' :  tree.get_attr('text') + "\n" * n})
                         prev_y = y
 
+                        last_span_sz = _get_font_size(line['spans'][-1])
                         for i, span in enumerate(line['spans']):
                             text = _sanitize_text(span['text'])
                             sz = _get_font_size(span)
-                            if i == 0 and sz in headers:
+                            if i == 0 and sz in headers and sz == last_span_sz:
                                 text = text.rstrip()
                                 id = str(random.randrange(32768)) + " - " + text
                                 level = headers[sz]
@@ -188,20 +191,17 @@ def pdf_to_tree(
                             prev_node = tree
                 elif block['type'] == 3: # table
                     table = block['table']
-                    #cells = sorted(table.cells, key = lambda c: (c[1], c[0]))
-                    #print((table.row_count, table.col_count, len(cells)))
-                    text = _sanitize_text(table.to_markdown())#.to_pandas().to_markdown(index=False, tablefmt="simple_grid"))
-                    tree.set_attrs({'text' : tree.get_attr('text') + f"\n{text}\n"})
+                    text = _sanitize_text(table.to_markdown(clean=False))
+                    tree.set_attrs({'text' : tree.get_attr('text') + f"\n\n{text}"})
     return tree.root
 
-
-def tree_to_html(root : Node) -> str:
-    html = ''
+def tree_to_markdown(root : Node) -> str:    md = ""
     for n in preorder_iter(root):
         h = n.depth-1
-        if h == 0: continue
-        header = n.get_attr('header')
-        text = n.get_attr('text').replace("\n", "<br/>")
-        html += f"<h{h}>{header}</h{h}>\n<p>{text}</p>\n"
-    return html
+        text = n.get_attr('text').strip()
+        empty_text = text == "" or text.isspace()
+        if (h == 0 or n.is_leaf) and empty_text: continue
+        header = "#" * h + " " + n.get_attr('header')
+        md += f"\n{header}\n{text}\n"
+    return md
 
