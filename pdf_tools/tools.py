@@ -126,7 +126,8 @@ def pdf_to_tree(
     headers = _detect_headers(doc, page_numbers=page_numbers, max_level=max_header_level)
     #print(headers)
 
-    tree = Node("_Root", parent=None, level=-1, header="", text="")
+    node_id = 0
+    tree = Node(name=str(node_id), parent=None, level=-1, header="", text="")
     prev_node = tree
 
     for page in [doc[pno] for pno in page_numbers]:
@@ -170,7 +171,7 @@ def pdf_to_tree(
                             sz = _get_font_size(span)
                             if i == 0 and sz in headers and sz == last_span_sz:
                                 text = text.rstrip()
-                                id = str(random.randrange(32768)) + " - " + text
+                                node_id += 1
                                 level = headers[sz]
                                 prev_y = 0
 
@@ -182,9 +183,9 @@ def pdf_to_tree(
                                     if prev_node == tree and tree.get_attr('text') == "":
                                         tree.set_attrs({'header' :  tree.get_attr('header') + " " + text})
                                     else:
-                                        tree = Node(id, parent=tree.parent, level=level, header=text, text='')
+                                        tree = Node(name=str(node_id), parent=tree.parent, level=level, header=text, text='')
                                 else:
-                                    tree = Node(id, parent=tree, level=level, header=text, text='')
+                                    tree = Node(name=str(node_id), parent=tree, level=level, header=text, text='')
                             else:
 #                                text = resolve_links
                                 tree.set_attrs({'text' : tree.get_attr('text') + text})
@@ -193,15 +194,26 @@ def pdf_to_tree(
                     table = block['table']
                     text = _sanitize_text(table.to_markdown(clean=False))
                     tree.set_attrs({'text' : tree.get_attr('text') + f"\n\n{text}"})
-    return tree.root
 
-def tree_to_markdown(root : Node) -> str:    md = ""
+    root = tree.root
+    for n in preorder_iter(root):
+        header = n.get_attr('header').strip()
+        text = n.get_attr('text').strip()
+        if n.is_leaf and (text == "" or text.isspace()) and n.right_sibling is not None:
+            n.right_sibling.set_attrs({'header' : header + " " + n.right_sibling.get_attr('header')})
+            n.parent = None
+            continue
+        n.set_attrs({'header' : header, 'text' : text})
+
+    return root
+
+def tree_to_markdown(root : Node) -> str:
+    md = ""
     for n in preorder_iter(root):
         h = n.depth-1
-        text = n.get_attr('text').strip()
-        empty_text = text == "" or text.isspace()
-        if (h == 0 or n.is_leaf) and empty_text: continue
         header = "#" * h + " " + n.get_attr('header')
+        text = n.get_attr('text')
+        if h == 0 and (text == "" or text.isspace()): continue
         md += f"\n{header}\n{text}\n"
     return md
 
