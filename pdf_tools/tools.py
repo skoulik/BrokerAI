@@ -5,7 +5,7 @@ import string
 import random
 import pprint
 from typing import Optional, List, Tuple, Dict
-from bigtree import Node, preorder_iter
+from anytree import Node, PreOrderIter, util
 
 def _contain(trs : List[pymupdf.Rect], r : pymupdf.Rect) -> bool:
     for tr in trs:
@@ -162,7 +162,7 @@ def pdf_to_tree(
                         if prev_y != 0:
                             n = min(3, round(abs(y - prev_y) / line['spans'][0]['size']))
                             if n > 0:
-                                tree.set_attrs({'text' :  tree.get_attr('text') + "\n" * n})
+                                tree.text += "\n" * n
                         prev_y = y
 
                         last_span_sz = _get_font_size(line['spans'][-1])
@@ -175,44 +175,45 @@ def pdf_to_tree(
                                 level = headers[sz]
                                 prev_y = 0
 
-                                if level < tree.get_attr('level'):
-                                    while not tree.is_root and tree.get_attr('level') > level:
+                                if level < tree.level:
+                                    while not tree.is_root and tree.level > level:
                                         tree = tree.parent
 
-                                if level == tree.get_attr('level'):
-                                    if prev_node == tree and tree.get_attr('text') == "":
-                                        tree.set_attrs({'header' :  tree.get_attr('header') + " " + text})
+                                if level == tree.level:
+                                    if prev_node == tree and tree.text == "":
+                                        tree.header += " " + text
                                     else:
-                                        tree = Node(name=str(node_id), parent=tree.parent, level=level, header=text, text='')
+                                        tree = Node(name=str(node_id), parent=tree.parent, level=level, header=text, text="")
                                 else:
-                                    tree = Node(name=str(node_id), parent=tree, level=level, header=text, text='')
+                                    tree = Node(name=str(node_id), parent=tree, level=level, header=text, text="")
                             else:
 #                                text = resolve_links
-                                tree.set_attrs({'text' : tree.get_attr('text') + text})
+                                tree.text += text
                             prev_node = tree
                 elif block['type'] == 3: # table
                     table = block['table']
                     text = _sanitize_text(table.to_markdown(clean=False))
-                    tree.set_attrs({'text' : tree.get_attr('text') + f"\n\n{text}"})
+                    tree.text += f"\n\n{text}"
 
     root = tree.root
-    for n in preorder_iter(root):
-        header = n.get_attr('header').strip()
-        text = n.get_attr('text').strip()
-        if n.is_leaf and (text == "" or text.isspace()) and n.right_sibling is not None:
-            n.right_sibling.set_attrs({'header' : header + " " + n.right_sibling.get_attr('header')})
+    for n in PreOrderIter(root):
+        header = n.header.strip()
+        text = n.text.strip()
+        if n.is_leaf and (text == "" or text.isspace()) and util.rightsibling(n) is not None:
+            util.rightsibling(n).header = header + " " + util.rightsibling(n).header
             n.parent = None
             continue
-        n.set_attrs({'header' : header, 'text' : text})
+        n.header = header
+        n.text = text
 
     return root
 
 def tree_to_markdown(root : Node) -> str:
     md = ""
-    for n in preorder_iter(root):
+    for n in PreOrderIter(root):
         h = n.depth-1
-        header = "#" * h + " " + n.get_attr('header')
-        text = n.get_attr('text')
+        header = "#" * h + " " + n.header
+        text = n.text
         if h == 0 and (text == "" or text.isspace()): continue
         md += f"\n{header}\n{text}\n"
     return md
