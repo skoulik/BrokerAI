@@ -19,10 +19,10 @@ def _sanitize_text(text : str) -> str:
             .replace(u"\u2022",  "-")  #bullet
             .replace(u"\u25CF",  "-")  #circle
             .replace(u"\u2013",  "-")  #dash
+            .replace(u"\u00B7",  "-")  #middle dot
             .replace(u"\u0007",   "")  #alert
             .replace(u"\u0008",   "")  #backspace (wtf?)
             .replace(u"\u0009", "  ")  #tab
-            .replace(u"\u00B7",  "-")  #middle dot
             )
 
 
