@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <title>Broker AI</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <script type="text/javascript">
+    //<![CDATA[
+      $(function() {
+
+          $.ajaxSetup({
+              contentType: "application/json; charset=utf-8",
+              method:      "POST",
+              dataType:    "json"
+          });
+
+          $('button#btn-submit').bind('click', function() {
+              $.ajax ({
+                  url:     "/search",
+                  data:    JSON.stringify({query: $('textarea#ta-search').val()}),
+                  success: function(data) {
+                      $("#result").append("<div>" + data.result + "</div>");
+                  },
+                  error:   function() {
+                      // TODO
+                  }
+              });
+          });
+
+      });
+    //]]>
+    </script>
+  </head>
+  <body>
+    <div id="result">
+    </div>
+    <div>
+      <textarea id="ta-search" rows="3">search query</textarea>
+      <button id="btn-submit">submit</button>
+    </div>
+   </body>
+</html>
