@@ -3,7 +3,7 @@ import math
 import copy
 import string
 import random
-import pprint
+import os
 from typing import Optional, List, Tuple, Dict
 from anytree import Node, PreOrderIter, util
 
@@ -127,7 +127,7 @@ def pdf_to_tree(
     #print(headers)
 
     node_id = 0
-    tree = Node(name=str(node_id), parent=None, level=-1, header="", text="")
+    tree = Node(name=str(node_id), parent=None, level=-1, header=os.path.basename(file_name), text=doc.metadata['title'])
     prev_node = tree
 
     for page in [doc[pno] for pno in page_numbers]:
@@ -207,14 +207,3 @@ def pdf_to_tree(
         n.text = text
 
     return root
-
-def tree_to_markdown(root : Node) -> str:
-    md = ""
-    for n in PreOrderIter(root):
-        h = n.depth-1
-        header = "#" * h + " " + n.header
-        text = n.text
-        if h == 0 and (text == "" or text.isspace()): continue
-        md += f"\n{header}\n{text}\n"
-    return md
-

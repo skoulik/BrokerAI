@@ -1,16 +1,12 @@
-import os
-import glob
 from box import Box
 import yaml
 from pprint import pprint
 from anytree import PreOrderIter, RenderTree
 from anytree.exporter import JsonExporter
-from anytree.importer import JsonImporter
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-import httpx
 import chromadb
 from chromadb.config import Settings as ChromaDB_Settings
-import pdf_tools
+import rag_tools
 
 
 config = Box.from_yaml(
@@ -23,34 +19,29 @@ config = Box.from_yaml(
 # Convert PDFs to trees
 ##
 
-pdfs_fnames = [os.path.basename(f) for f in glob.glob(config.path.pdfs + "*.pdf")]
+pdfs  = rag_tools.get_documents(config)
+trees = rag_tools.get_trees(config)
 
-tree_importer = JsonImporter()
 tree_exporter = JsonExporter(
     indent         = None,
     sort_keys      = False,
     ensure_ascii   = False,
     check_circular = False
 )
-trees = {}
 
-for pdf_fname in pdfs_fnames:
-    pdf_name  = config.path.pdfs  + pdf_fname
-    tree_name = config.path.trees + pdf_fname + ".json"
-    if os.path.isfile(tree_name):
-        fh = open(tree_name, "r")
-        trees[pdf_fname] = tree_importer.read(fh)
-        fh.close()
-    else:
-        trees[pdf_fname] = pdf_tools.pdf_to_tree(
-            file_name      = pdf_name,
-            page_numbers   = None,
-            detect_columns = True
-        )
-        fh = open(tree_name, "w")
-        tree_exporter.write(trees[pdf_fname], fh)
-        fh.close()
+for pdf in pdfs:
+    if pdf['id'] in trees: continue
 
+    pdf_name  = config.path.pdfs  + pdf['file_name']
+    tree_name = config.path.trees + pdf['file_name'] + ".json"
+    trees[pdf['id']] = rag_tools.pdf_to_tree(
+        file_name      = pdf_name,
+        page_numbers   = None, #TODO
+        detect_columns = True
+    )
+    fh = open(tree_name, "w")
+    tree_exporter.write(trees[pdf['id']], fh)
+    fh.close()
 
 ##
 # Chunk and embed
@@ -62,11 +53,7 @@ text_splitter = RecursiveCharacterTextSplitter(
     separators    = config.chunker.separators
 )
 
-embeddings_http_client = httpx.Client(
-    base_url = config.embeddings.base_url,
-    timeout  = config.embeddings.timeout,
-    headers={'Accept': "application/json"}
-)
+strings_embedder = rag_tools.Embedder(config)
 
 chromadb_client = chromadb.PersistentClient(
     path     = config.path.embeddings,
@@ -75,33 +62,26 @@ chromadb_client = chromadb.PersistentClient(
 
 collections = {}
 
-for pdf_fname in pdfs_fnames:
+for pdf in pdfs:
 
-    if pdf_fname in [c.name for c in chromadb_client.list_collections()]:
-        collections[pdf_fname] = chromadb_client.get_collection(name=pdf_fname)
+    if pdf['id'] in [c.name for c in chromadb_client.list_collections()]:
+        collections[pdf['id']] = chromadb_client.get_collection(name=pdf['id'])
         continue
 
-    collections[pdf_fname] = chromadb_client.create_collection(
-        name     = pdf_fname,
+    collections[pdf['id']] = chromadb_client.create_collection(
+        name     = pdf['id'],
         metadata = {"hnsw:space": "cosine"}
     )
 
-    for node in PreOrderIter(trees[pdf_fname]):
+    for node in PreOrderIter(trees[pdf['id']]):
         text = node.header + "\n" + node.text
         if text == "" or text.isspace(): continue
         path = '/'.join([n.name for n in node.path])
         splits = text_splitter.split_text(text)
-        print(f"Embedding: {path}...\n")
-        request_json = config.embeddings.template
-        request_json['input'] = splits
-        response = embeddings_http_client.post(
-            url  = config.embeddings.endpoint,
-            json = request_json
-        )
-        collections[pdf_fname].add(
-            embeddings = [r['embedding'] for r in response.json()['data']],
+        print(f"Embedding: {path}...")
+        embeddings = strings_embedder.embed_strings(splits)
+        collections[pdf['id']].add(
+            embeddings = embeddings,
             #metadatas  = [{...}],
             ids        = [path + "#" + str(i) for i in range(len(splits))]
         )
-
-embeddings_http_client.close()

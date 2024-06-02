@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
   <head>
     <title>Broker AI</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="TODO" />
+    <meta name="keywords" content="TODO" />
+    <meta name="author" content="TODO" />
+    <link href="css/jquery-ui.min.css" rel="stylesheet" />
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <script src="js/jquery-ui.min.js"></script>
     <script type="text/javascript">
     //<![CDATA[
       $(function() {
@@ -14,12 +21,32 @@
               dataType:    "json"
           });
 
+          docs = [];
+          $("div#docs").tabs();
+          $.ajax ({
+              url:     "/documents",
+              data:    {},
+              success: function(data) {
+                  var num_tabs = 0;
+                  docs = data.documents;
+                  docs.forEach( function(doc) {
+                      $("div#docs ul").append("<li><a href='#tabs-" + num_tabs + "'>" + doc.title + "</a></li>");
+                      $("div#docs").append("<div id='tabs-" + num_tabs + "'></div>");
+                      num_tabs++;
+                  });
+                  $("div#docs").tabs("refresh");
+              },
+              error:   function() {
+                  // TODO
+              }
+          });
+
           $('button#btn-submit').bind('click', function() {
               $.ajax ({
                   url:     "/search",
                   data:    JSON.stringify({query: $('textarea#ta-search').val()}),
                   success: function(data) {
-                      $("#result").append("<div>" + data.result + "</div>");
+                      $("div#result").append("<div>" + data.result + "</div>");
                   },
                   error:   function() {
                       // TODO
@@ -34,9 +61,14 @@
   <body>
     <div id="result">
     </div>
-    <div>
-      <textarea id="ta-search" rows="3">search query</textarea>
-      <button id="btn-submit">submit</button>
+    <div id="top">
+      <div id="docs">
+        <ul>
+          <!-- ... -->
+        </ul>
+      </div>
+      <textarea id="ta-search" class="ui-widget" rows="3">search query</textarea>
+      <button id="btn-submit" class="ui-button">submit</button>
     </div>
    </body>
 </html>
