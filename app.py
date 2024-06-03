@@ -1,30 +1,38 @@
 import rag_tools
 from box import Box
 import yaml
-from flask import Flask, request, redirect, send_from_directory, jsonify
+from quart import Quart, request, redirect, send_from_directory, jsonify
+import atexit
 
 config = Box.from_yaml(
     filename = "config.yaml",
     Loader   = yaml.FullLoader
 )
 
-app = Flask(__name__, static_url_path="", static_folder="frontend")
+strings_embedder = rag_tools.Embedder(config)
+
+app = Quart(__name__, static_url_path="", static_folder="frontend", template_folder="frontend")
 
 @app.route("/")
-def index():
+async def index():
     return redirect("/index.html")
 
 @app.route('/pdfs/<path:path>')
-def static_pdf(path):
-    return send_from_directory(config.path.pdfs, path, mimetype="application/pdf")
+async def static_pdf(path):
+    return await send_from_directory(config.path.pdfs, path, mimetype="application/pdf")
 
 @app.route("/documents", methods=["POST"])
-def list_docs():
-    return {'documents': rag_tools.get_documents(config)}
-
-
-strings_embedder = rag_tools.Embedder(config)
+async def list_docs():
+    return {'documents': await rag_tools.get_documents(config)}
 
 @app.route("/search", methods=["POST"])
-def search():
-    return {'result': strings_embedder.embed_strings([request.json['query']])}
+async def search():
+    return {'result': await strings_embedder.embed_strings([(await request.json)['query']])}
+
+
+@atexit.register
+def shutdown():
+    return 0 #TODO
+
+
+app.run()
