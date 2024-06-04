@@ -1,6 +1,5 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml">
+<!DOCTYPE html>
+  <html>
   <head>
     <title>Broker AI</title>
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
@@ -9,10 +8,21 @@
     <meta name="keywords" content="TODO" />
     <meta name="author" content="TODO" />
     <link href="css/jquery-ui.min.css" rel="stylesheet" />
+    <link href="css/pdf_viewer.css" rel="stylesheet" />
+    <style>
+      html, body { min-height: 100% !important; height: 100%; padding: 0; margin: 0; }
+       div#top { width: 100%; height: 100%; display: flex; }
+        div#left { width: 40%; height: 100%; }
+         div#pdf-viewer { overflow: auto; position: absolute; width: 40%; height: 100%; }
+        div#right { width: 60%; height: 100%; }
+         div#search-box { display: flex;}
+    </style>
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
     <script src="js/jquery-ui.min.js"></script>
+    <script src="js/pdf.min.mjs" type="module"></script>
+    <script src="js/pdf_viewer.mjs" type="module"></script>
+    <script src="js/simpleviewer.mjs" type="module"></script>
     <script type="text/javascript">
-    //<![CDATA[
       $(function() {
 
           $.ajaxSetup({
@@ -22,19 +32,25 @@
           });
 
           docs = [];
-          $("div#docs").tabs();
+          $("div#docs").accordion({
+              //collapsible: true,
+              activate: function(event, ui) {
+                  globalThis.loadPDFtoViewer("pdfs/" + docs[Number(ui.newHeader.data("docIdx"))].file_name).then();
+              }
+          });
           $.ajax ({
               url:     "/documents",
               data:    {},
               success: function(data) {
-                  var num_tabs = 0;
+                  var num_docs = 0;
                   docs = data.documents;
                   docs.forEach( function(doc) {
-                      $("div#docs ul").append("<li><a href='#tabs-" + num_tabs + "'>" + doc.title + "</a></li>");
-                      $("div#docs").append("<div id='tabs-" + num_tabs + "'></div>");
-                      num_tabs++;
+                      $("div#docs").append("<h3 data-doc-idx=" + num_docs + ">" + doc.title + "</h3>");
+                      $("div#docs").append("<div id='doc-" + doc.id + "'></div>");
+                      num_docs++;
                   });
-                  $("div#docs").tabs("refresh");
+                  $("div#docs").accordion("refresh");
+                  globalThis.loadPDFtoViewer("pdfs/" + docs[num_docs-1].file_name).then();
               },
               error:   function() {
                   // TODO
@@ -53,22 +69,31 @@
                   }
               });
           });
-
       });
-    //]]>
     </script>
   </head>
   <body>
-    <div id="result">
-    </div>
     <div id="top">
-      <div id="docs">
-        <ul>
-          <!-- ... -->
-        </ul>
+
+      <div id="left">
+        <div id="pdf-viewer">
+          <div id="viewer" class="pdfViewer"></div>
+        </div>
       </div>
-      <textarea id="ta-search" class="ui-widget" rows="3">search query</textarea>
-      <button id="btn-submit" class="ui-button">submit</button>
+
+      <div id="right">
+        <div id="search-box">
+          <textarea id="ta-search" class="ui-widget" rows="3">search query</textarea>
+          <button id="btn-submit" class="ui-button">submit</button>
+        </div>
+
+        <div id="docs">
+        </div>
+
+        <div id="result">
+        </div>
+      </div>
+
     </div>
    </body>
 </html>
