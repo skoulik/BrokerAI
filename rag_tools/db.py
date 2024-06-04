@@ -1,4 +1,5 @@
 import os
+import asyncio
 from aiopath import AsyncPath
 import aiofiles
 from typing import Optional, List, Tuple, Dict
@@ -17,12 +18,14 @@ async def get_documents(config : Box) -> List[Dict[str, str]]:
 async def get_trees(config : Box) -> Dict[str, Node]:
     tree_importer = JsonImporter()
     trees = {}
-    pdfs_fnames = [doc['file_name'] for doc in await get_documents(config)]
-    for pdf_fname in pdfs_fnames: #TODO make async
-        pdf_name  = config.path.pdfs  + pdf_fname
-        tree_name = config.path.trees + pdf_fname + ".json"
+    async def read_tree(id: str):
+        pdf_name  = config.path.pdfs  + id
+        tree_name = config.path.trees + id + ".json"
         if os.path.isfile(tree_name):
             fh = await aiofiles.open(tree_name, "r")
-            trees[pdf_fname] = tree_importer.import_(await fh.read())
+            trees[id] = tree_importer.import_(await fh.read())
             await fh.close()
+    ids = [doc['id'] for doc in await get_documents(config)]
+    for read in asyncio.as_completed([read_tree(id) for id in ids]):
+        await read
     return trees

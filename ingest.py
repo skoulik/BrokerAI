@@ -1,7 +1,7 @@
 from box import Box
 import yaml
 from pprint import pprint
-from anytree import PreOrderIter, RenderTree
+from anytree import Node, PreOrderIter, RenderTree
 from anytree.exporter import JsonExporter
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import chromadb
@@ -19,8 +19,7 @@ async def main():
     # Convert PDFs to trees
     ##
 
-    pdfs  = await rag_tools.get_documents(config)
-    trees = await rag_tools.get_trees(config)
+    (pdfs, trees) = await asyncio.gather(rag_tools.get_documents(config), rag_tools.get_trees(config))
 
     tree_exporter = JsonExporter(
         indent         = None,
@@ -73,9 +72,9 @@ async def main():
             metadata = {"hnsw:space": "cosine"}
         )
 
-        for node in PreOrderIter(trees[pdf['id']]):
+        async def embed_node(node: Node):
             text = node.header + "\n" + node.text
-            if text == "" or text.isspace(): continue
+            if text == "" or text.isspace(): return
             path = '/'.join([n.name for n in node.path])
             splits = text_splitter.split_text(text)
             print(f"Embedding: {path}...")
@@ -85,6 +84,9 @@ async def main():
                 #metadatas  = [{...}],
                 ids        = [path + "#" + str(i) for i in range(len(splits))]
             )
+        for embed in asyncio.as_completed([embed_node(node) for node in PreOrderIter(trees[pdf['id']])]):
+            await embed
+
     await strings_embedder.close()
 
 asyncio.run(main())

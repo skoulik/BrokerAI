@@ -11,6 +11,6 @@ chunker:
 embeddings:
     base_url: "http://localhost:8081"
     endpoint: "/embeddings"
-    timeout:  3.0
+    timeout:  30
     template: {'input': [], 'model': "", 'encoding_format': "float"}
     size:     768
