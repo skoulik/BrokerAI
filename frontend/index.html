@@ -15,7 +15,9 @@
         div#left { width: 40%; height: 100%; }
          div#pdf-viewer { overflow: auto; position: absolute; width: 40%; height: 100%; }
         div#right { width: 60%; height: 100%; }
-         div#search-box { display: flex;}
+         div#search-box { height: 5%; display: flex; }
+          textarea#ta-search { width: 60%; }
+         div#docs-container { height: 94.5%; }
     </style>
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
     <script src="js/jquery-ui.min.js"></script>
@@ -32,41 +34,55 @@
           });
 
           docs = [];
-          $("div#docs").accordion({
-              //collapsible: true,
+          $('div#docs').accordion({
+              collapsible: true,
+              heightStyle: "fill",
               activate: function(event, ui) {
-                  globalThis.loadPDFtoViewer("pdfs/" + docs[Number(ui.newHeader.data("docIdx"))].file_name).then();
+                  if(ui.newHeader.length)
+                      globalThis.loadPDFtoViewer("pdfs/" + docs[Number(ui.newHeader.data('docIdx'))].file_name);//.then();
               }
-          });
-          $.ajax ({
+          }) ;
+          $.ajax({
               url:     "/documents",
               data:    {},
               success: function(data) {
-                  var num_docs = 0;
                   docs = data.documents;
-                  docs.forEach( function(doc) {
-                      $("div#docs").append("<h3 data-doc-idx=" + num_docs + ">" + doc.title + "</h3>");
-                      $("div#docs").append("<div id='doc-" + doc.id + "'></div>");
-                      num_docs++;
+                  $.each(docs, function(docIdx, doc) {
+                      $('div#docs').append("<h3 data-doc-idx=" + docIdx + ">" + doc.title + "</h3>");
+                      $('div#docs').append("<div id='doc-" + docIdx + "'></div>");
                   });
-                  $("div#docs").accordion("refresh");
-                  globalThis.loadPDFtoViewer("pdfs/" + docs[num_docs-1].file_name).then();
+                  $('div#docs').accordion("refresh");
+                  globalThis.loadPDFtoViewer("pdfs/" + docs[docs.length-1].file_name);//.then();
               },
               error:   function() {
                   // TODO
               }
           });
 
-          $('button#btn-submit').bind('click', function() {
-              $.ajax ({
-                  url:     "/search",
-                  data:    JSON.stringify({query: $('textarea#ta-search').val()}),
-                  success: function(data) {
-                      $("div#result").append("<div>" + data.result + "</div>");
-                  },
-                  error:   function() {
-                      // TODO
-                  }
+          $(window).on('resize', function() {
+              globalThis.pdfViewer.currentScaleValue = "page-width";
+              $('div#docs').accordion("refresh");
+          });
+
+// globalThis.pdfViewer.currentPageNumber = 10;
+          $('button#btn-submit').button({'disabled': true});
+          $('textarea#ta-search').on('keyup', function() {
+              $('button#btn-submit').button('option', 'disabled', $(this).val() == "");
+          });
+
+          $('button#btn-submit').on('click', function() {
+              $.each(docs, function(docIdx, doc) {
+                  $.ajax ({
+                      url:     "/search",
+                      data:    JSON.stringify({id: doc.id, query: $('textarea#ta-search').val()}),
+                      success: function(data) {
+                          $('div#doc-' + docIdx).append("<div>" + data.result + "</div>");
+                          $('div#docs').accordion("refresh");
+                      },
+                      error:   function() {
+                          // TODO
+                      }
+                  });
               });
           });
       });
@@ -83,15 +99,15 @@
 
       <div id="right">
         <div id="search-box">
-          <textarea id="ta-search" class="ui-widget" rows="3">search query</textarea>
-          <button id="btn-submit" class="ui-button">submit</button>
+          <textarea id="ta-search" class="ui-widget" placeholder="Search query"></textarea>
+          <button id="btn-submit">Submit</button>
         </div>
 
-        <div id="docs">
+        <div id="docs-container">
+          <div id="docs">
+          </div>
         </div>
 
-        <div id="result">
-        </div>
       </div>
 
     </div>

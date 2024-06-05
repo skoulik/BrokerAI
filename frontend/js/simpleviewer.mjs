@@ -50,4 +50,5 @@ async function loadPDFtoViewer(url)
     pdfLinkService.setDocument(pdfDocument, null);
 }
 
+globalThis.pdfViewer = pdfViewer;
 globalThis.loadPDFtoViewer = loadPDFtoViewer;

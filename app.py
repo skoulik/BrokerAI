@@ -27,7 +27,9 @@ async def list_docs():
 
 @app.route("/search", methods=["POST"])
 async def search():
-    return {'result': await strings_embedder.embed_strings([(await request.json)['query']])}
+    data = await request.json;
+    return {'result': f"result for: {data['id']}, query: {data['query']}"}
+#    return {'result': await strings_embedder.embed_strings([data['query']])}
 
 
 @atexit.register
