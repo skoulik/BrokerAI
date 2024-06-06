@@ -18,6 +18,9 @@
          div#search-box { height: 5%; display: flex; }
           textarea#ta-search { width: 60%; }
          div#docs-container { height: 94.5%; }
+          .searchResult-closeBtn { top:0; right:0; float: right; }
+          .searchResult-query { font-style: italic; }
+          .searchResult-result { }
     </style>
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
     <script src="js/jquery-ui.min.js"></script>
@@ -59,24 +62,49 @@
               }
           });
 
+
           $(window).on('resize', function() {
               globalThis.pdfViewer.currentScaleValue = "page-width";
               $('div#docs').accordion("refresh");
           });
 
-// globalThis.pdfViewer.currentPageNumber = 10;
-          $('button#btn-submit').button({'disabled': true});
-          $('textarea#ta-search').on('keyup', function() {
+          $('textarea#ta-search').keypress(function(e) {
+              if((e.which == 13 || e.which == 10) && e.ctrlKey) {
+                 $('button#btn-submit').trigger('click');
+                 return false;
+              }
+              return true;
+          });
+          $('textarea#ta-search').keyup(function(e) {
               $('button#btn-submit').button('option', 'disabled', $(this).val() == "");
           });
 
+
+          $.widget('custom.searchResult', {
+              options: {'query': "", 'docId': "", 'results': []},
+              _create: function() {
+                  elem = this.element;
+                  elem.addClass("searchResult");
+                  closeBtn = $("<button>&times;</button>").button({'icons': {'primary': "ui-icon-close" }, 'text': false}).addClass("searchResult-closeBtn");
+                  elem.append(closeBtn);
+                  this._on(closeBtn, {'click': function() { this.element.remove()} });
+                  elem.append("<div class=\"searchResult-query\">" + this.options.query  + "</div>");
+                  $.each(this.options.results, function(i, result) {
+                      elem.append("<div class=\"searchResult-result\">" + result + "</div>");
+                  });
+              },
+          });
+
+          $('button#btn-submit').button({'disabled': true});
           $('button#btn-submit').on('click', function() {
+              query = $('textarea#ta-search').val();
+              if(query == "") return;
               $.each(docs, function(docIdx, doc) {
                   $.ajax ({
                       url:     "/search",
-                      data:    JSON.stringify({id: doc.id, query: $('textarea#ta-search').val()}),
+                      data:    JSON.stringify({'docId': doc.id, 'query': query, 'num_results': 3}),
                       success: function(data) {
-                          $('div#doc-' + docIdx).append("<div>" + data.result + "</div>");
+                          $('div#doc-' + docIdx).prepend($("<div></div>").searchResult(data));
                           $('div#docs').accordion("refresh");
                       },
                       error:   function() {
@@ -85,6 +113,7 @@
                   });
               });
           });
+// globalThis.pdfViewer.currentPageNumber = 10;
       });
     </script>
   </head>
