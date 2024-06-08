@@ -29,7 +29,7 @@ const pdfViewer = new pdfjsViewer.PDFViewer({
     'linkService': pdfLinkService,
     'renderInteractiveForms': false,
     'findController': pdfFindController,
-    'textLayerMode': 2
+    'textLayerMode': 0
 });
 pdfLinkService.setViewer(pdfViewer);
 

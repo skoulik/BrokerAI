@@ -127,7 +127,7 @@ def pdf_to_tree(
     #print(headers)
 
     node_id = 0
-    tree = Node(name=str(node_id), parent=None, level=-1, header=os.path.basename(file_name), text=doc.metadata['title'])
+    tree = Node(name=str(node_id), parent=None, level=-1, header=os.path.basename(file_name), text=doc.metadata['title'], page=page_numbers[0])
     prev_node = tree
 
     for page in [doc[pno] for pno in page_numbers]:
@@ -183,9 +183,9 @@ def pdf_to_tree(
                                     if prev_node == tree and tree.text == "":
                                         tree.header += " " + text
                                     else:
-                                        tree = Node(name=str(node_id), parent=tree.parent, level=level, header=text, text="")
+                                        tree = Node(name=str(node_id), parent=tree.parent, level=level, header=text, text="", page=page.number)
                                 else:
-                                    tree = Node(name=str(node_id), parent=tree, level=level, header=text, text="")
+                                    tree = Node(name=str(node_id), parent=tree, level=level, header=text, text="", page=page.number)
                             else:
 #                                text = resolve_links
                                 tree.text += text

@@ -18,9 +18,14 @@
          div#search-box { height: 5%; display: flex; }
           textarea#ta-search { width: 60%; }
          div#docs-container { height: 94.5%; }
-          .searchResult-closeBtn { top:0; right:0; float: right; }
-          .searchResult-query { font-style: italic; }
-          .searchResult-result { }
+          .searchResult { clear: both; }
+           .searchResult-closeBtn { top: 0; right: 0; float: right; }
+           .searchResult-item { clear: both; margin-bottom: 1%; }
+            .searchResult-gotoBtn  { top: 0; left: 0; float: left; }
+             .searchResult-gotoBtn-relevance { font-size: 60%; }
+            .searchResult-query { font-weight: bold; font-style: italic; }
+            .searchResult-header { font-weight: bold; }
+            .searchResult-text { font-size: smaller; }
     </style>
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
     <script src="js/jquery-ui.min.js"></script>
@@ -86,11 +91,21 @@
                   elem = this.element;
                   elem.addClass("searchResult");
                   closeBtn = $("<button>&times;</button>").button({'icons': {'primary': "ui-icon-close" }, 'text': false}).addClass("searchResult-closeBtn");
-                  elem.append(closeBtn);
                   this._on(closeBtn, {'click': function() { this.element.remove()} });
+                  elem.append(closeBtn);
+
                   elem.append("<div class=\"searchResult-query\">" + this.options.query  + "</div>");
-                  $.each(this.options.results, function(i, result) {
-                      elem.append("<div class=\"searchResult-result\">" + result + "</div>");
+                  $.each(this.options.results, function(i, result) {                     
+                      item_elem = $("<div class=\"searchResult-item\"></div>");
+                      elem.append(item_elem);
+                      gotoBtn = $("<button>Page: " + (result.page+1) + "<br /><span class=\"searchResult-gotoBtn-relevance\">Relevance: " + Math.round(result.relevance*100) + "%</span></button>").button().addClass("searchResult-gotoBtn");
+                      gotoBtn.on('click', function() {
+                          globalThis.scrollToPage(result.page);
+                          //globalThis.placeMarker(10, {'offsetX': 100, 'offsetY': 300});
+                      });
+                      item_elem.append(gotoBtn);
+                      item_elem.append("<div class=\"searchResult-header\">" + result.header + "</div>");
+                      item_elem.append("<div class=\"searchResult-text\">" + result.text + "</div>");
                   });
               },
           });
@@ -105,7 +120,7 @@
                       data:    JSON.stringify({'docId': doc.id, 'query': query, 'num_results': 3}),
                       success: function(data) {
                           $('div#doc-' + docIdx).prepend($("<div></div>").searchResult(data));
-                          $('div#docs').accordion("refresh");
+                          $('div#docs').accordion('refresh');
                       },
                       error:   function() {
                           // TODO
@@ -113,7 +128,6 @@
                   });
               });
           });
-// globalThis.pdfViewer.currentPageNumber = 10;
       });
     </script>
   </head>

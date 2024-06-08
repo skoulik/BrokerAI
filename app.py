@@ -49,18 +49,26 @@ async def search():
     embedding = (await strings_embedder.embed_strings([query]))[0]
     #if docId not in collections:
         #TODO
-    results = collections[docId].query(
+    query_results = collections[docId].query(
         query_embeddings = [embedding],
         n_results = num_results
     )
-    nodes = []
-    for path in results['ids'][0]:
-        nodes.append(rag_tools.walk_tree(trees[docId], path.split('#')[0]))
+    n_results = len(query_results['ids'][0])
+    results = []
+    for i in range(n_results):
+        path = query_results['ids'][0][i];
+        node = rag_tools.walk_tree(trees[docId], path.split('#')[0])
+        results.append({
+            'header'   : node.header,
+            'text'     : node.text,
+            'page'     : node.page,
+            'position' : (0, 0), #TODO
+            'relevance': 1 - query_results['distances'][0][i]
+        })
     return {
-        'docId': docId,
-        'query': query,
-        'results': [n.header + "\n" + n.text for n in nodes],
-        'distances': results['distances'][0]
+        'docId'  : docId,
+        'query'  : query,
+        'results': results,
     };
 
 
