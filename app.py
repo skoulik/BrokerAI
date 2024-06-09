@@ -60,8 +60,10 @@ async def search():
     )
     n_results = len(query_results['ids'][0])
     results = []
+    #print(query_results['metadatas'][0])
     for i in range(n_results):
         path = query_results['ids'][0][i]
+        meta = query_results['metadatas'][0][i]
         crumbs = []
         node = rag_tools.walk_tree(
             root = trees[docId],
@@ -70,7 +72,7 @@ async def search():
         )
         results.append({
             'crumbs'   : crumbs,
-            'text'     : node.text,
+            'text'     : node.text[meta['pos']:(meta['pos']+meta['len'])],
             'page'     : node.page,
             'position' : node.position,
             'relevance': 1 - query_results['distances'][0][i]

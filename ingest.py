@@ -93,7 +93,7 @@ async def main():
             embeddings = await strings_embedder.embed_strings(splits)
             collections[pdf['id']].add(
                 embeddings = embeddings,
-                #metadatas  = [{...}],
+                metadatas  = [{'pos' : text.index(s), 'len' : len(s)} for s in splits],
                 ids        = [path + "#" + str(i) for i in range(len(splits))]
             )
         for embed in asyncio.as_completed([embed_node(node) for node in PreOrderIter(trees[pdf['id']])]):
