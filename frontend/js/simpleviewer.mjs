@@ -45,7 +45,7 @@ function _placeMarker(pageView, params) {
         let editorLayer = pageView.annotationEditorLayer.annotationEditorLayer;
         editorLayer.pasteEditor(pdfjsLib.AnnotationEditorType.FREETEXT, {});
         let editor = editorLayer.createAndAddNewEditor(params, false);
-        editor.contentDiv.innerHTML = "<div style=\"font-size:50px; transform: translate(-100%, -50%);\">&#11162;</div>";
+        editor.contentDiv.innerHTML = "<div class=\"pdf-viewer-marker\">&#11162;</div>";
         pageView.annotationEditor = editor;
         editorLayer.pasteEditor(0, {});
     }

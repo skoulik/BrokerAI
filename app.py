@@ -13,8 +13,13 @@ config = Box.from_yaml(
     Loader   = yaml.FullLoader
 )
 
-pdfs = asyncio.run(rag_tools.get_documents(config))
-trees = asyncio.run(rag_tools.get_trees(config))
+spec = Box.from_yaml(
+    filename = config.path.pdfs + "spec.yaml",
+    Loader   = yaml.FullLoader
+)
+
+pdfs = rag_tools.get_documents(config, spec)
+trees = asyncio.run(rag_tools.get_trees(config, spec))
 
 strings_embedder = rag_tools.Embedder(config)
 chromadb_client = chromadb.PersistentClient(
@@ -62,7 +67,7 @@ async def search():
             'header'   : node.header,
             'text'     : node.text,
             'page'     : node.page,
-            'position' : (0, 0), #TODO
+            'position' : node.position,
             'relevance': 1 - query_results['distances'][0][i]
         })
     return {

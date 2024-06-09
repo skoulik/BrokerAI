@@ -1,0 +1,19 @@
+"advantedge_policy-01-05-2024.pdf":
+    id: "advantedge"
+    title: "Advantedge: Lending Guidlines Manual"
+    icon:
+    page_from: 2
+    page_to: 30
+    detect_columns: True
+    header: 49
+    footer: 813
+
+"afg_policy-2023-12-15.pdf":
+    id: "afg"
+    title: "AFG: Home Loans Retro Residential Lending Guidelines"
+    icon:
+    page_from: 3
+    page_to: 36
+    detect_columns: False
+    header: 0
+    footer: 550

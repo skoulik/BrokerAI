@@ -116,32 +116,39 @@ def _detect_headers(
 def pdf_to_tree(
         file_name        : str,
         page_numbers     : Optional[List[int]] = None,
-        detect_columns   : Optional[bool] = False,
+        title            : Optional[str] = None,
+        detect_columns   : Optional[bool] = True,
+        header           : Optional[float] = 0.0,
+        footer           : Optional[float] = None,
         max_header_level : Optional[int] = None
     ) -> Node:
 
     doc = pymupdf.open(file_name)
-    if page_numbers is None : page_numbers = range(doc.page_count)
+    if page_numbers is None: page_numbers = range(doc.page_count)
+    if title is None: title = doc.metadata['title']
 
     headers = _detect_headers(doc, page_numbers=page_numbers, max_level=max_header_level)
     #print(headers)
 
     node_id = 0
-    tree = Node(name=str(node_id), parent=None, level=-1, header=os.path.basename(file_name), text=doc.metadata['title'], page=page_numbers[0])
+    tree = Node(name=str(node_id), parent=None, level=-1, header=title, text="", page=0, position={'x': 0, 'y': 0})
     prev_node = tree
 
     for page in [doc[pno] for pno in page_numbers]:
-        text_page = page.get_textpage()
+        clip = page.rect
+        clip.y0 = max(clip.y0, header)
+        if footer is not None: clip.y1 = min(clip.y1, footer)
+        text_page = page.get_textpage(clip=clip)
         blocks = text_page.extractDICT()['blocks']
-        tables = page.find_tables()
+        tables = page.find_tables(clip=clip)
         #table_rects = [ pymupdf.Rect(t.bbox) | pymupdf.Rect(t.header.bbox) for t in tables.tables ]
         table_rects = [ pymupdf.Rect(t.bbox) for t in tables.tables ]
 
         if detect_columns:
             text_rects  = [ pymupdf.Rect(b['bbox']) for b in blocks ]
-            columns = _detect_columns(clip=page.rect, text_rects=text_rects, exclude_rects=table_rects)
+            columns = _detect_columns(clip=clip, text_rects=text_rects, exclude_rects=table_rects)
         else:
-            columns = [(page.rect.x0, page.rect.x1)]
+            columns = [(clip.x0, clip.x1)]
 
         blocks = list(filter(lambda b: not _contain(table_rects, pymupdf.Rect(b['bbox'])), blocks))
 
@@ -183,9 +190,9 @@ def pdf_to_tree(
                                     if prev_node == tree and tree.text == "":
                                         tree.header += " " + text
                                     else:
-                                        tree = Node(name=str(node_id), parent=tree.parent, level=level, header=text, text="", page=page.number)
+                                        tree = Node(name=str(node_id), parent=tree.parent, level=level, header=text, text="", page=page.number, position={'x': line['bbox'][0], 'y': line['bbox'][1]})
                                 else:
-                                    tree = Node(name=str(node_id), parent=tree, level=level, header=text, text="", page=page.number)
+                                    tree = Node(name=str(node_id), parent=tree, level=level, header=text, text="", page=page.number, position={'x': line['bbox'][0], 'y': line['bbox'][1]})
                             else:
 #                                text = resolve_links
                                 tree.text += text

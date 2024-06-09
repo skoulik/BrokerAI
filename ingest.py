@@ -5,7 +5,7 @@ from anytree import Node, PreOrderIter, RenderTree
 from anytree.exporter import JsonExporter
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import chromadb
-from chromadb.config import Settings as ChromaDB_Settings
+import chromadb.config
 import rag_tools
 import asyncio
 
@@ -15,11 +15,17 @@ async def main():
         Loader   = yaml.FullLoader
     )
 
+    spec = Box.from_yaml(
+        filename = config.path.pdfs + "spec.yaml",
+        Loader   = yaml.FullLoader
+    )
+
     ##
     # Convert PDFs to trees
     ##
 
-    (pdfs, trees) = await asyncio.gather(rag_tools.get_documents(config), rag_tools.get_trees(config))
+    pdfs = rag_tools.get_documents(config, spec)
+    trees = await rag_tools.get_trees(config, spec)
 
     tree_exporter = JsonExporter(
         indent         = None,
@@ -32,15 +38,21 @@ async def main():
         if pdf['id'] in trees: continue
     
         pdf_name  = config.path.pdfs  + pdf['file_name']
-        tree_name = config.path.trees + pdf['file_name'] + ".json"
+        tree_name = config.path.trees + pdf['id'] + ".json"
+        sp = spec[pdf['file_name']]
         trees[pdf['id']] = rag_tools.pdf_to_tree(
             file_name      = pdf_name,
-            page_numbers   = None, #TODO
-            detect_columns = True
+            title          = sp.title,
+            page_numbers   = range(sp.page_from, sp.page_to+1) if sp.page_from is not None else None,
+            detect_columns = sp.detect_columns,
+            header         = sp.header,
+            footer         = sp.footer
         )
+        #print(RenderTree(trees[pdf['id']]).by_attr('header'))
         fh = open(tree_name, "w")
         tree_exporter.write(trees[pdf['id']], fh)
         fh.close()
+
 
     ##
     # Chunk and embed
@@ -56,7 +68,7 @@ async def main():
 
     chromadb_client = chromadb.PersistentClient(
         path     = config.path.embeddings,
-        settings = ChromaDB_Settings(anonymized_telemetry = False)
+        settings = chromadb.config.Settings(anonymized_telemetry = False)
     )
 
     collections = {}
