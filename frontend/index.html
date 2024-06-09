@@ -21,11 +21,11 @@
           .searchResult { clear: both; }
            .searchResult-closeBtn { top: 0; right: 0; float: right; }
            .searchResult-item { clear: both; margin-bottom: 1%; }
-            .searchResult-gotoBtn  { top: 0; left: 0; float: left; }
+            .searchResult-gotoBtn { top: 0; left: 0; float: left; }
              .searchResult-gotoBtn-relevance { font-size: 60%; }
             .searchResult-query { font-weight: bold; font-style: italic; }
             .searchResult-header { font-weight: bold; }
-            .searchResult-text { font-size: smaller; }
+            .searchResult-text { font-size: 80%; }
     </style>
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
     <script src="js/jquery-ui.min.js"></script>
@@ -33,75 +33,77 @@
     <script src="js/pdf_viewer.mjs" type="module"></script>
     <script src="js/simpleviewer.mjs" type="module"></script>
     <script type="text/javascript">
-      $(function() {
+      "use strict";
 
+      let docs = [];
+
+      $(() => {
           $.ajaxSetup({
               contentType: "application/json; charset=utf-8",
               method:      "POST",
               dataType:    "json"
           });
 
-          docs = [];
           $('div#docs').accordion({
               collapsible: true,
               heightStyle: "fill",
-              activate: function(event, ui) {
+              activate:    (event, ui) => {
                   if(ui.newHeader.length)
-                      globalThis.loadPDFtoViewer("pdfs/" + docs[Number(ui.newHeader.data('docIdx'))].file_name);//.then();
+                      globalThis.pdfViewer.loadDocument("pdfs/" + docs[Number(ui.newHeader.data('docIdx'))].file_name);//.then();
               }
           }) ;
           $.ajax({
               url:     "/documents",
               data:    {},
-              success: function(data) {
+              success: (data) => {
                   docs = data.documents;
-                  $.each(docs, function(docIdx, doc) {
+                  $.each(docs, (docIdx, doc) => {
                       $('div#docs').append("<h3 data-doc-idx=" + docIdx + ">" + doc.title + "</h3>");
                       $('div#docs').append("<div id='doc-" + docIdx + "'></div>");
                   });
                   $('div#docs').accordion("refresh");
-                  globalThis.loadPDFtoViewer("pdfs/" + docs[docs.length-1].file_name);//.then();
+                  globalThis.pdfViewer.loadDocument("pdfs/" + docs[docs.length-1].file_name);//.then();
               },
-              error:   function() {
+              error:   () => {
                   // TODO
               }
           });
 
 
-          $(window).on('resize', function() {
-              globalThis.pdfViewer.currentScaleValue = "page-width";
+          $(window).on('resize', () => {
+              globalThis.pdfViewer.viewer.currentScaleValue = "page-width";
               $('div#docs').accordion("refresh");
           });
 
-          $('textarea#ta-search').keypress(function(e) {
+          $('textarea#ta-search').keypress((e) => {
               if((e.which == 13 || e.which == 10) && e.ctrlKey) {
                  $('button#btn-submit').trigger('click');
                  return false;
               }
               return true;
           });
-          $('textarea#ta-search').keyup(function(e) {
-              $('button#btn-submit').button('option', 'disabled', $(this).val() == "");
+          $('textarea#ta-search').keyup((e) => {
+              $('button#btn-submit').button('option', 'disabled', e.currentTarget.value == "");
           });
 
 
           $.widget('custom.searchResult', {
-              options: {'query': "", 'docId': "", 'results': []},
+              options: {query: "", docId: "", results: []},
               _create: function() {
-                  elem = this.element;
+                  const elem = this.element;
                   elem.addClass("searchResult");
-                  closeBtn = $("<button>&times;</button>").button({'icons': {'primary': "ui-icon-close" }, 'text': false}).addClass("searchResult-closeBtn");
-                  this._on(closeBtn, {'click': function() { this.element.remove()} });
+                  const closeBtn = $("<button>&times;</button>").button({'icons': {'primary': "ui-icon-close" }, 'text': false}).addClass("searchResult-closeBtn");
+                  this._on(closeBtn, {'click': () => { this.element.remove()} });
                   elem.append(closeBtn);
 
                   elem.append("<div class=\"searchResult-query\">" + this.options.query  + "</div>");
-                  $.each(this.options.results, function(i, result) {                     
-                      item_elem = $("<div class=\"searchResult-item\"></div>");
+                  $.each(this.options.results, (i, result) => {                     
+                      const item_elem = $("<div class=\"searchResult-item\"></div>");
                       elem.append(item_elem);
-                      gotoBtn = $("<button>Page: " + (result.page+1) + "<br /><span class=\"searchResult-gotoBtn-relevance\">Relevance: " + Math.round(result.relevance*100) + "%</span></button>").button().addClass("searchResult-gotoBtn");
-                      gotoBtn.on('click', function() {
-                          globalThis.scrollToPage(result.page);
-                          //globalThis.placeMarker(10, {'offsetX': 100, 'offsetY': 300});
+                      const gotoBtn = $("<button>Page: " + (result.page+1) + "<br /><span class=\"searchResult-gotoBtn-relevance\">Relevance: " + Math.round(result.relevance*100) + "%</span></button>").button().addClass("searchResult-gotoBtn");
+                      gotoBtn.on('click', () => {
+                          globalThis.pdfViewer.scrollToPage(result.page);
+                          //globalThis.pdfViewer.placeMarker(10, {'offsetX': 100, 'offsetY': 300});
                       });
                       item_elem.append(gotoBtn);
                       item_elem.append("<div class=\"searchResult-header\">" + result.header + "</div>");
@@ -111,18 +113,18 @@
           });
 
           $('button#btn-submit').button({'disabled': true});
-          $('button#btn-submit').on('click', function() {
-              query = $('textarea#ta-search').val();
+          $('button#btn-submit').on('click', () => {
+              const query = $('textarea#ta-search').val();
               if(query == "") return;
-              $.each(docs, function(docIdx, doc) {
+              $.each(docs, (docIdx, doc) => {
                   $.ajax ({
                       url:     "/search",
                       data:    JSON.stringify({'docId': doc.id, 'query': query, 'num_results': 3}),
-                      success: function(data) {
+                      success: (data) => {
                           $('div#doc-' + docIdx).prepend($("<div></div>").searchResult(data));
                           $('div#docs').accordion('refresh');
                       },
-                      error:   function() {
+                      error:   () => {
                           // TODO
                       }
                   });

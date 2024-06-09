@@ -9,31 +9,31 @@ const eventBus = new pdfjsViewer.EventBus();
 
 // enable hyperlinks within PDF files.
 const pdfLinkService = new pdfjsViewer.PDFLinkService({
-    'eventBus': eventBus,
-    'externalLinkEnabled': true,
-    'externalLinkRel': 'noopener noreferrer nofollow',
-    'externalLinkTarget': 2 // Blank
+    eventBus: eventBus,
+    externalLinkEnabled: true,
+    externalLinkRel: "noopener noreferrer nofollow",
+    externalLinkTarget: 2 // Blank
 });
 
 // enable find controller.
 const pdfFindController = new pdfjsViewer.PDFFindController({
-    'eventBus': eventBus,
-    'linkService': pdfLinkService,
+    eventBus: eventBus,
+    linkService: pdfLinkService,
 });
 
 const pdfViewer = new pdfjsViewer.PDFViewer({
-    'container': container,
-    'enableScripting': false,
-    'enableWebGL': true,
-    'eventBus': eventBus,
-    'linkService': pdfLinkService,
-    'renderInteractiveForms': false,
-    'findController': pdfFindController,
-    'textLayerMode': 0
+    container: container,
+    enableScripting: false,
+    enableWebGL: true,
+    eventBus: eventBus,
+    linkService: pdfLinkService,
+    renderInteractiveForms: false,
+    findController: pdfFindController,
+    textLayerMode: 0
 });
 pdfLinkService.setViewer(pdfViewer);
 
-eventBus.on("pagesinit", function () {
+eventBus.on('pagesinit', function () {
     pdfViewer.currentScaleValue = "page-width";
 });
 
@@ -54,10 +54,10 @@ function _placeMarker(pageView, params) {
     pageView.annotationEditor.fixAndSetPosition();
 }
 
-eventBus.on("annotationeditorlayerrendered", function (event) {
-    let pageView = event.source;
-    let page_num = event.pageNumber-1;
-    let pdfDocument = pageView.renderingQueue.pdfViewer.pdfDocument;
+eventBus.on('annotationeditorlayerrendered', function (event) {
+    const pageView = event.source;
+    const page_num = event.pageNumber-1;
+    const pdfDocument = pageView.renderingQueue.pdfViewer.pdfDocument;
     if(pdfDocument.pendingMarkers[page_num]) {
         _placeMarker(pageView, pdfDocument.pendingMarkers[page_num]);
         delete pdfDocument.pendingMarkers[page_num];
@@ -67,10 +67,10 @@ eventBus.on("annotationeditorlayerrendered", function (event) {
 async function loadPDFtoViewer(url)
 {
     const loadingTask = pdfjsLib.getDocument({
-        'url': url,
-        'cMapUrl': CMAP_URL,
-        'cMapPacked': CMAP_PACKED,
-        'enableXfa': false,
+        url: url,
+        cMapUrl: CMAP_URL,
+        cMapPacked: CMAP_PACKED,
+        enableXfa: false,
     });
     const pdfDocument = await loadingTask.promise;
     pdfDocument.pendingMarkers = {};
@@ -80,7 +80,7 @@ async function loadPDFtoViewer(url)
 
 function placeMarker(page_num, params)
 {
-    let pageView = pdfViewer._pages[page_num];
+    const pageView = pdfViewer._pages[page_num];
     if(pageView && pageView.annotationEditorLayer && pageView.annotationEditorLayer.annotationEditorLayer)
         _placeMarker(pageView, params);
     else
@@ -88,10 +88,12 @@ function placeMarker(page_num, params)
 }
 
 function scrollToPage(page_num) {
-    globalThis.pdfViewer.currentPageNumber = page_num+1;
+    pdfViewer.currentPageNumber = page_num+1;
 }
 
-globalThis.pdfViewer       = pdfViewer;
-globalThis.loadPDFtoViewer = loadPDFtoViewer;
-globalThis.scrollToPage    = scrollToPage;
-globalThis.placeMarker     = placeMarker;
+globalThis.pdfViewer = {
+    viewer:       pdfViewer,
+    loadDocument: loadPDFtoViewer,
+    scrollToPage: scrollToPage,
+    placeMarker:  placeMarker
+};
