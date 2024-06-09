@@ -1,10 +1,12 @@
 from anytree import Node, PreOrderIter
 from anytree.search import findall_by_attr
+from typing import Optional, Callable
 
-def walk_tree(root : Node, path : str) -> Node:
+def walk_tree(root : Node, path : str, func : Optional[Callable[[Node], None]] = None) -> Node:
     node = root
     for h in path.split('/')[1:]:
         node = findall_by_attr(node, h, maxlevel=2)[0]
+        if func is not None: func(node)
     return node
 
 def tree_to_markdown(root : Node) -> str:

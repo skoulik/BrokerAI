@@ -19,7 +19,7 @@ def get_documents(config : Box, spec : Box) -> List[Dict[str, str]]:
     docs = []
     for file_name in spec.keys():
         docs.append({'id': get_document_id(file_name, spec), 'file_name': file_name, 'title': get_document_title(file_name, spec)})
-    return docs
+    return sorted(docs, key = lambda doc: doc['title'])
 
 async def get_trees(config : Box, spec : Box) -> Dict[str, Node]:
     tree_importer = JsonImporter()

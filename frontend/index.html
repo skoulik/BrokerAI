@@ -25,6 +25,7 @@
             .searchResult-gotoBtn { top: 0; left: 0; float: left; }
              .searchResult-gotoBtn-relevance { font-size: 60%; }
             .searchResult-query { font-weight: bold; font-style: italic; }
+            .searchResult-crumbs { font-weight: bold; font-size: 70%; }
             .searchResult-header { font-weight: bold; }
             .searchResult-text { font-size: 80%; }
     </style>
@@ -107,7 +108,9 @@
                           globalThis.pdfViewer.placeMarker(result.page, {offsetX: result.position.x, offsetY: result.position.y});
                       });
                       item_elem.append(gotoBtn);
-                      item_elem.append("<div class=\"searchResult-header\">" + result.header + "</div>");
+                      const header = result.crumbs.pop();
+                      item_elem.append("<div class=\"searchResult-crumbs\">" + result.crumbs.join(" > ") + "</div>");
+                      item_elem.append("<div class=\"searchResult-header\">" + header + "</div>");
                       item_elem.append("<div class=\"searchResult-text\">" + result.text + "</div>");
                   });
               },

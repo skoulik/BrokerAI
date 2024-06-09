@@ -61,10 +61,15 @@ async def search():
     n_results = len(query_results['ids'][0])
     results = []
     for i in range(n_results):
-        path = query_results['ids'][0][i];
-        node = rag_tools.walk_tree(trees[docId], path.split('#')[0])
+        path = query_results['ids'][0][i]
+        crumbs = []
+        node = rag_tools.walk_tree(
+            root = trees[docId],
+            path = path.split('#')[0],
+            func = lambda node: crumbs.append(node.header)
+        )
         results.append({
-            'header'   : node.header,
+            'crumbs'   : crumbs,
             'text'     : node.text,
             'page'     : node.page,
             'position' : node.position,
