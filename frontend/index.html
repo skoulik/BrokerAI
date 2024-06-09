@@ -93,6 +93,7 @@
               options: {query: "", docId: "", results: []},
               _create: function() {
                   const elem = this.element;
+                  const query = this.options.query;
                   elem.addClass("searchResult");
                   const closeBtn = $("<button>&times;</button>").button({'icons': {'primary': "ui-icon-close" }, 'text': false}).addClass("searchResult-closeBtn");
                   this._on(closeBtn, {'click': () => { this.element.remove()} });
@@ -111,7 +112,13 @@
                       const header = result.crumbs.pop();
                       item_elem.append("<div class=\"searchResult-crumbs\">" + result.crumbs.join(" > ") + "</div>");
                       item_elem.append("<div class=\"searchResult-header\">" + header + "</div>");
-                      item_elem.append("<div class=\"searchResult-text\">" + result.text + "</div>");
+                      let text;
+                      const pos = result.text.toLowerCase().indexOf(query.toLowerCase());
+                      if(pos >= 0)
+                          text = result.text.substring(0, pos) + "<b>" + result.text.substring(pos, pos+query.length) + "</b>" + result.text.substring(pos+query.length);
+                      else
+                          text = result.text;
+                      item_elem.append("<div class=\"searchResult-text\">" + text + "</div>");
                   });
               },
           });

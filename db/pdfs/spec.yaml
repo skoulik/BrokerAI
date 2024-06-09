@@ -17,3 +17,43 @@
     detect_columns: False
     header: 0
     footer: 805
+
+"anz_policy-08-04-2024.pdf":
+    id: "anz"
+    title: "ANZ: Mortgage Credit Requirements"
+    icon:
+    page_from: 3
+    page_to: 106
+    detect_columns: False
+    header: 0
+    footer: 799
+
+"bankaustralia_policy-12-03-2024.pdf":
+    id: "boa"
+    title: "BoA: Consumer Credit Underwriting Policy and Guidelines for Brokers"
+    icon:
+    page_from: 3
+    page_to: 35
+    detect_columns: False
+    header: 52
+    footer: 790
+
+"bankofsydney_policy-2023-07-01.pdf":
+    id: "bos"
+    title: "BoS: Residential Lending Guidlines"
+    icon:
+    page_from: 4
+    page_to: 18
+    detect_columns: False
+    header: 50
+    footer: 770
+
+"beyondbank_policy-2024-04-23.pdf":
+    id: "beyond"
+    title: "Beyond: Broker Division Consumer Credit Policy Guide"
+    icon:
+    page_from: 8
+    page_to: 68
+    detect_columns: False
+    header: 50
+    footer: 800

@@ -48,7 +48,7 @@ async def main():
             header         = sp.header,
             footer         = sp.footer
         )
-        #print(RenderTree(trees[pdf['id']]).by_attr('header'))
+        print(RenderTree(trees[pdf['id']]).by_attr('header'))
         fh = open(tree_name, "w")
         tree_exporter.write(trees[pdf['id']], fh)
         fh.close()
