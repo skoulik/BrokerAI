@@ -9,8 +9,8 @@ chunker:
     overlap:    256
 
 embeddings:
-    base_url: "http://localhost:8081"
-    endpoint: "/embeddings"
-    timeout:  30
-    template: {'input': [], 'model': "", 'encoding_format': "float"}
-    size:     768
+    base_url:   "http://localhost:8081"
+    endpoint:   "/embeddings"
+    timeout:    30
+    template:   {'input': [], 'model': "", 'encoding_format': "float"}
+    dimentions: 768

@@ -176,23 +176,26 @@ def pdf_to_tree(
                         for i, span in enumerate(line['spans']):
                             text = _sanitize_text(span['text'])
                             sz = _get_font_size(span)
-                            if i == 0 and sz in headers and sz == last_span_sz:
-                                text = text.rstrip()
-                                node_id += 1
-                                level = headers[sz]
-                                prev_y = 0
+                            if sz in headers and sz == last_span_sz:
+                                if i == 0:
+                                    text = text.rstrip()
+                                    node_id += 1
+                                    level = headers[sz]
+                                    prev_y = 0
 
-                                if level < tree.level:
-                                    while not tree.is_root and tree.level > level:
-                                        tree = tree.parent
+                                    if level < tree.level:
+                                        while not tree.is_root and tree.level > level:
+                                            tree = tree.parent
 
-                                if level == tree.level:
-                                    if prev_node == tree and tree.text == "":
-                                        tree.header += " " + text
+                                    if level == tree.level:
+                                        if prev_node == tree and tree.text == "":
+                                            tree.header += " " + text
+                                        else:
+                                            tree = Node(name=str(node_id), parent=tree.parent, level=level, header=text, text="", page=page.number, position={'x': line['bbox'][0], 'y': line['bbox'][1]})
                                     else:
-                                        tree = Node(name=str(node_id), parent=tree.parent, level=level, header=text, text="", page=page.number, position={'x': line['bbox'][0], 'y': line['bbox'][1]})
+                                        tree = Node(name=str(node_id), parent=tree, level=level, header=text, text="", page=page.number, position={'x': line['bbox'][0], 'y': line['bbox'][1]})
                                 else:
-                                    tree = Node(name=str(node_id), parent=tree, level=level, header=text, text="", page=page.number, position={'x': line['bbox'][0], 'y': line['bbox'][1]})
+                                    tree.header += " " + text
                             else:
 #                                text = resolve_links
                                 tree.text += text
@@ -204,7 +207,7 @@ def pdf_to_tree(
 
     root = tree.root
     for n in PreOrderIter(root):
-        header = n.header.strip()
+        header = " ".join(n.header.split())
         text = n.text.strip()
         if n.is_leaf and (text == "" or text.isspace()) and util.rightsibling(n) is not None:
             util.rightsibling(n).header = header + " " + util.rightsibling(n).header

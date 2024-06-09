@@ -85,11 +85,16 @@ async def main():
         )
 
         async def embed_node(node: Node):
-            text = node.header + "\n" + node.text
-            if text == "" or text.isspace(): return
+            if not node.is_leaf and (node.text == "" or node.text.isspace()): return
+            header = node.header
+            parent = node.parent
+            while parent.level >= 0:
+                header = parent.header + " > " + header
+                parent = parent.parent
+            text = header + "\n" + node.text
             path = '/'.join([n.name for n in node.path])
             splits = text_splitter.split_text(text)
-            print(f"Embedding: {path}...")
+            print(f"Embedding: {header}...")
             embeddings = await strings_embedder.embed_strings(splits)
             collections[pdf['id']].add(
                 embeddings = embeddings,
