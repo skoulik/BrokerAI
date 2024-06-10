@@ -176,7 +176,11 @@ def pdf_to_tree(
                         for i, span in enumerate(line['spans']):
                             text = _sanitize_text(span['text'])
                             sz = _get_font_size(span)
-                            if sz in headers and sz == last_span_sz:
+                            if (text != "" and not text.isspace() # not emply
+                                and sz in headers                 # size that of a header
+                                and sz == last_span_sz            # same size for the whole line
+                                and (text[0] != "-" or i > 0)     # does not start with a dash
+                            ):
                                 if i == 0:
                                     text = text.rstrip()
                                     node_id += 1
