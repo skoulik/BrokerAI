@@ -45,6 +45,7 @@ async def main():
             title          = sp.title,
             page_numbers   = range(sp.page_from, sp.page_to+1) if sp.page_from is not None else None,
             detect_columns = sp.detect_columns,
+            color_headers  = sp.color_headers,
             header         = sp.header,
             footer         = sp.footer
         )

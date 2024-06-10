@@ -77,15 +77,17 @@ def _detect_columns(
     
     return columns
 
-def _get_font_size(span : dict) -> int:
+def _get_font_size(span : dict, color_headers : bool) -> int:
     italic = 0 #bool(span['flags'] & 2)
     bold = bool(span['flags'] & 16)
-    return round(100*span['size']) + 2*bold + 1*italic
+    color = color_headers if span['color'] != 0 else 0
+    return round(100*span['size']) + 3*bold + 2*italic + 1*color
 
 def _detect_headers(
-        doc          : pymupdf.Document,
-        page_numbers : List[int],
-        max_level    : Optional[int] = None
+        doc           : pymupdf.Document,
+        page_numbers  : List[int],
+        color_headers : bool,
+        max_level     : Optional[int] = None
     ) -> Dict[int, int]: # font size -> level
 
     if max_level is None: max_level = 1000
@@ -99,7 +101,7 @@ def _detect_headers(
             for l in b['lines']:
                 for span in l['spans']:
                     if not SPACES.issuperset(span['text']):
-                        sz = _get_font_size(span)
+                        sz = _get_font_size(span, color_headers)
                         if not sz in font_sizes:
                             font_sizes[sz] = 0
                         font_sizes[sz] += len(span['text'].strip())
@@ -120,14 +122,15 @@ def pdf_to_tree(
         detect_columns   : Optional[bool] = True,
         header           : Optional[float] = 0.0,
         footer           : Optional[float] = None,
-        max_header_level : Optional[int] = None
+        max_header_level : Optional[int] = None,
+        color_headers    : Optional[bool] = False
     ) -> Node:
 
     doc = pymupdf.open(file_name)
     if page_numbers is None: page_numbers = range(doc.page_count)
     if title is None: title = doc.metadata['title']
 
-    headers = _detect_headers(doc, page_numbers=page_numbers, max_level=max_header_level)
+    headers = _detect_headers(doc, page_numbers=page_numbers, color_headers=color_headers, max_level=max_header_level)
     #print(headers)
 
     node_id = 0
@@ -172,10 +175,10 @@ def pdf_to_tree(
                                 tree.text += "\n" * n
                         prev_y = y
 
-                        last_span_sz = _get_font_size(line['spans'][-1])
+                        last_span_sz = _get_font_size(line['spans'][-1], color_headers)
                         for i, span in enumerate(line['spans']):
                             text = _sanitize_text(span['text'])
-                            sz = _get_font_size(span)
+                            sz = _get_font_size(span, color_headers)
                             if (text != "" and not text.isspace() # not emply
                                 and sz in headers                 # size that of a header
                                 and sz == last_span_sz            # same size for the whole line

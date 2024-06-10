@@ -5,6 +5,7 @@
     page_from: 2
     page_to: 30
     detect_columns: True
+    color_headers: False
     header: 49
     footer: 813
 
@@ -15,6 +16,7 @@
     page_from: 3
     page_to: 36
     detect_columns: False
+    color_headers: False
     header: 0
     footer: 805
 
@@ -25,6 +27,7 @@
     page_from: 3
     page_to: 106
     detect_columns: False
+    color_headers: False
     header: 0
     footer: 799
 
@@ -35,6 +38,7 @@
     page_from: 3
     page_to: 35
     detect_columns: False
+    color_headers: False
     header: 52
     footer: 790
 
@@ -45,6 +49,7 @@
     page_from: 4
     page_to: 18
     detect_columns: False
+    color_headers: True
     header: 50
     footer: 770
 
@@ -55,5 +60,6 @@
     page_from: 8
     page_to: 68
     detect_columns: False
+    color_headers: False
     header: 50
     footer: 800
