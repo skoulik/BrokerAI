@@ -60,7 +60,7 @@ async def main():
     ##
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size    = config.chunker.size,
+        chunk_size    = config.chunker.size - len(config.embeddings.document_prefix),
         chunk_overlap = config.chunker.overlap,
         separators    = config.chunker.separators
     )
@@ -96,7 +96,7 @@ async def main():
             path = '/'.join([n.name for n in node.path])
             splits = text_splitter.split_text(text)
             print(f"Embedding: {header}...")
-            embeddings = await strings_embedder.embed_strings(splits)
+            embeddings = await strings_embedder.embed_strings([config.embeddings.document_prefix + s for s in splits])
             collections[pdf['id']].add(
                 embeddings = embeddings,
                 metadatas  = [{'pos' : text.index(s), 'len' : len(s)} for s in splits],

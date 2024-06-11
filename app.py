@@ -49,7 +49,7 @@ async def list_docs():
 async def search():
     data = await request.json;
     docId = data['docId']
-    query = data['query'][:config.chunker.size]
+    query = (config.embeddings.query_prefix + data['query'])[:config.chunker.size]
     num_results = max(data['num_results'], 1)
     embedding = (await strings_embedder.embed_strings([query]))[0]
     #if docId not in collections:
@@ -79,7 +79,7 @@ async def search():
         })
     return {
         'docId'  : docId,
-        'query'  : query,
+        'query'  : data['query'],
         'results': results,
     };
 
