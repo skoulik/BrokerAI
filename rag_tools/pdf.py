@@ -5,7 +5,7 @@ import string
 import random
 import os
 from typing import Optional, List, Tuple, Dict
-from anytree import Node, PreOrderIter, util
+from anytree import Node, PreOrderIter, PostOrderIter, util
 
 def _contain(trs : List[pymupdf.Rect], r : pymupdf.Rect) -> bool:
     for tr in trs:
@@ -134,7 +134,7 @@ def pdf_to_tree(
     #print(headers)
 
     node_id = 0
-    tree = Node(name=str(node_id), parent=None, level=-1, header=title, text="", page=0, position={'x': 0, 'y': 0})
+    tree = Node(name=str(node_id), parent=None, level=-1, header=title, text="", page=0, position={'x': 0, 'y': 0}, subtree_content_len=0)
     prev_node = tree
 
     for page in [doc[pno] for pno in page_numbers]:
@@ -198,9 +198,9 @@ def pdf_to_tree(
                                         if prev_node == tree and tree.text == "":
                                             tree.header += " " + text
                                         else:
-                                            tree = Node(name=str(node_id), parent=tree.parent, level=level, header=text, text="", page=page.number, position={'x': line['bbox'][0], 'y': line['bbox'][1]})
+                                            tree = Node(name=str(node_id), parent=tree.parent, level=level, header=text, text="", page=page.number, position={'x': line['bbox'][0], 'y': line['bbox'][1]}, subtree_content_len=0)
                                     else:
-                                        tree = Node(name=str(node_id), parent=tree, level=level, header=text, text="", page=page.number, position={'x': line['bbox'][0], 'y': line['bbox'][1]})
+                                        tree = Node(name=str(node_id), parent=tree, level=level, header=text, text="", page=page.number, position={'x': line['bbox'][0], 'y': line['bbox'][1]}, subtree_content_len=0)
                                 else:
                                     tree.header += " " + text
                             else:
@@ -222,5 +222,10 @@ def pdf_to_tree(
             continue
         n.header = header
         n.text = text
+
+    for n in PostOrderIter(root):
+        n.subtree_content_len += len(n.header) + 1 + len(n.text)
+        if n.parent is not None:
+            n.parent.subtree_content_len += n.subtree_content_len
 
     return root
