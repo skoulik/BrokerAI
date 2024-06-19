@@ -3,7 +3,8 @@ import yaml
 from pprint import pprint
 from anytree import Node, PreOrderIter, RenderTree
 from anytree.exporter import JsonExporter
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from transformers import AutoTokenizer
+from langchain_text_splitters import TokenTextSplitter
 import chromadb
 import chromadb.config
 import rag_tools
@@ -58,11 +59,12 @@ async def main():
     ##
     # Chunk and embed
     ##
+    tokenizer = AutoTokenizer.from_pretrained(config.embeddings.tokenizer_model)
 
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size    = config.chunker.size - len(config.embeddings.document_prefix),
+    text_splitter = TokenTextSplitter.from_huggingface_tokenizer(
+        tokenizer     = tokenizer,
+        chunk_size    = config.chunker.size,
         chunk_overlap = config.chunker.overlap,
-        separators    = config.chunker.separators
     )
 
     strings_embedder = rag_tools.Embedder(config)
@@ -95,7 +97,7 @@ async def main():
             text = header + "\n" + node.text
             path = '/'.join([n.name for n in node.path])
             splits = text_splitter.split_text(text)
-            print(f"Embedding: {header}...")
+            print(f"Embedding: {header} ({len(splits)} splits)...")
             embeddings = await strings_embedder.embed_strings([config.embeddings.document_prefix + s for s in splits])
             collections[pdf['id']].add(
                 embeddings = embeddings,

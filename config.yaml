@@ -4,9 +4,8 @@ path:
     embeddings: "db/embeddings/"
 
 chunker:
-    separators: ["\n\n",   "\n|",   ".", "!", "?",   "\n",   ",", " ",    ""]
-    size:       2048
-    overlap:    256
+    size:       8000
+    overlap:    2000
 
 embeddings:
     base_url:        "http://localhost:8081"
@@ -16,3 +15,4 @@ embeddings:
     dimentions:      768
     document_prefix: "search_document: "
     query_prefix:    "search_query: "
+    tokenizer_model: "models/tokenizer/nomic-ai/nomic-embed-text-v1.5"
