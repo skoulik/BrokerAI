@@ -1,6 +1,13 @@
 # Private statements and other sensitive data
 sensitive/
 
+# PII pseudonym mapping stores contain the original PII — never commit
+pii_map.json
+*.pii-map.json
+
+# Downloaded model weights
+models/hf-cache/
+
 # Python bytecode cache (analyze_statement imports verify_examples)
 __pycache__/
 

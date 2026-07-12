@@ -1,0 +1,21 @@
+Loan application summary — prepared 14 June 2024
+
+Applicant: John Smith (DOB 12/03/1985), currently residing at
+42 Wallaby Way, Wagga Wagga NSW 2650.
+Contact: john.smith85@gmail.com, mobile 0412 345 678.
+
+Tax File Number: 123 456 782
+Medicare card: 2123 45670 1
+Employer ABN: 51 824 753 556
+
+Salary is credited to BSB 062-000 account 12345678 (ANZ Progress Saver).
+Rent of $650/week is paid from the same account. The applicant's wife,
+Sarah Smith, transfers $200 monthly via PayID john.smith85@gmail.com.
+
+Transactions:
+14/05/2024  WOOLWORTHS 1234 WAGGA WAGGA        -$142.50
+15/05/2024  TRANSFER TO J SMITH BSB 062-000 ACC 12345678   -$500.00
+16/05/2024  OSKO PAYMENT PAYID 0412 345 678 RENT           -$650.00
+17/05/2024  BPAY MEDICARE BENEFIT                          +$85.20
+
+John Smith confirmed his details by phone on 02 6921 4455.

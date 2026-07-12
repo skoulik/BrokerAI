@@ -1,7 +1,8 @@
 # BrokerAI Revival Roadmap
 
 Written 2026-07-05 after a review of the abandoned codebase. This is a living document — refine
-items and record decisions here as they are made.
+items and record task status here. Architecture and design decisions (the *why*) are recorded
+in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Context and constraints
 
@@ -27,7 +28,7 @@ can be shared with cloud models. Prefer **pseudonymization with a consistent loc
 locally and analytical utility is preserved.
 
 Input types to support:
-- [ ] Plain text
+- [x] Plain text *(2026-07-12: `pii/` package — see its README)*
 - [ ] Images (scans, screenshots) — OCR with word-level bounding boxes, redact by painting
       over pixel regions
 - [ ] PDFs — **treat as images**: render pages → OCR → redact pixels → reassemble PDF.
@@ -35,7 +36,9 @@ Input types to support:
       pixels also eliminates the hidden-text-layer leak class entirely.
       *Decide later:* belt-and-braces variant that additionally scans any existing text layer
       to catch text the OCR misses (detection only — output still comes from pixels).
-- [ ] Bank transaction lists (CSV / statement tables) — column-aware handling. Descriptions
+- [x] Bank transaction lists (CSV / statement tables) — column-aware handling.
+      *(2026-07-12: CSV mode done — per-cell detection, `--columns` filter; statement tables
+      from the image path still pending.)* Descriptions
       contain personal names, PayID emails/phones, BSB/account refs; these reveal spending
       patterns and allow re-identification. Keep merchant names (analytical value), strip
       person names — zero-shot NER labels (GLiNER) distinguish person vs organization.
@@ -49,8 +52,18 @@ Detection pipeline (layered — no single layer catches everything):
    identifiers NER misses ("the borrower's wife, a dentist in Wagga Wagga").
 
 Tasks:
-- [ ] Standalone module/CLI, separate from the RAG app (shares the local model server)
-- [ ] Consistent pseudonym mapping store + rehydration of cloud responses
+- [x] Standalone module/CLI, separate from the RAG app (shares the local model server)
+      *(2026-07-12: `pii/`, layers 1–2 working: Presidio + custom AU recognizers, GLiNER.
+      Findings: Presidio's AU recognizers need explicit registration; overlapping PII spans
+      must be merged not ranked, or partially-covered spans leak; GLiNER needs per-line and
+      de-capitalized passes for all-caps statement lines. LLM audit layer still pending.
+      CPU-only torch is slow (~1 min/page-ish) — install CUDA torch for the 2080 Ti when it
+      matters.)*
+- [x] Consistent pseudonym mapping store + rehydration of cloud responses
+      *(2026-07-12: JSON store, document-order numbering, case-insensitive value matching.)*
+- [ ] Configurable strip-entity selection — let a run choose which data types to strip
+      (e.g. names and addresses only). The pipeline already takes a `strip_entities` set
+      internally; needs CLI exposure (`--entities` / named profiles) and documentation.
 - [ ] OCR engine choice — *decide later:* Tesseract vs PaddleOCR vs Surya/docTR vs a local VLM
       (e.g. Qwen-VL class) doing OCR+PII detection in one pass. Start by benchmarking on real
       bank statements/scans.
