@@ -5,8 +5,15 @@ items and record decisions here as they are made.
 
 ## Context and constraints
 
-- Input documents are **classified — nothing leaves the machine**. All models run locally
-  (MacBook Pro, 64 GB unified memory; Ollama / llama.cpp / MLX).
+- Input documents are **classified — nothing leaves the machine**. All models run locally.
+  Two machines (decided 2026-07-12: **llama.cpp directly, Ollama abandoned**):
+  - **MacBook Pro, 64 GB unified memory** (`claude@SERGEI-MACBOOK-PRO`) — primary model host;
+    llama.cpp with Metal, rollout by Sergei.
+  - **Windows dev box** — RTX 2080 Ti (11 GB, CUDA) + RX 9070 XT (16 GB, RDNA4); for testing
+    smaller models locally. Mixed vendors: start with one official **Vulkan** build of
+    llama.cpp, which can drive both GPUs in a single `llama-server` (`--split-mode layer`,
+    ~27 GB combined VRAM); if Vulkan throughput disappoints, run two servers instead
+    (CUDA build for the 2080 Ti, Vulkan/HIP build for the 9070 XT) on separate ports.
 - What's worth keeping: the PDF→section-tree design (`rag_tools/pdf.py`), breadcrumb-prefixed
   chunks, page/position metadata enabling jump-to-source in the PDF viewer, ChromaDB, pymupdf.
 - What's outdated: chunking parameters, dense-only retrieval, models (nomic-embed-text v1.5),
@@ -48,6 +55,10 @@ Tasks:
       (e.g. Qwen-VL class) doing OCR+PII detection in one pass. Start by benchmarking on real
       bank statements/scans.
 - [ ] Metadata scrubbing on all output formats
+- [ ] Barcode masking: mailing barcodes on statements (Australia Post 4-state, and 1-D codes)
+      encode the delivery address/customer ref — text-based detection can't see them, so
+      detect and paint over barcode regions in the image pass (observed on several of the
+      reference examples)
 
 Evaluation (constraint: real documents are classified until stripped — cloud models can only
 ever see synthetic/declassified data or aggregate metrics):
@@ -57,6 +68,11 @@ ever see synthetic/declassified data or aggregate metrics):
       benchmarking. Ground truth known by construction → automatic precision/recall; the fast
       iteration loop, fully shareable. Sergey will supply a few unclassified-by-construction
       example documents to serve as layout/format references for the generator's templates.
+      **Received 2026-07-12** — a set of reference documents in `sensitive/statements/`
+      (gitignored; never commit, email, or upload — cloud-LLM analysis in-session only).
+      Good layout diversity: multiple major-bank statement formats, home-loan and business
+      account variants, a plain-text legacy format, and an insurance certificate; at least
+      one has a **broken text layer**, confirming the render-as-image rationale.
 - [ ] **Tier 2 — PII-transplanted real documents**: Sergey manually replaces real PII with fake
       in 4–6 real documents (one per major bank layout, one bad scan, one transactions CSV),
       keeping layout intact. Real layouts + known ground truth + declassified. One-time effort,
@@ -71,9 +87,11 @@ ever see synthetic/declassified data or aggregate metrics):
 ## Phase 2 — Foundation cleanup
 
 - [ ] `pyproject.toml` + uv; pin dependencies
-- [ ] Ollama as the single local model server (chat + embeddings, OpenAI-compatible API — the
-      existing `Embedder` needs only config changes). *Decide later:* llama.cpp server or MLX
-      if Ollama speed disappoints.
+- [ ] **llama.cpp (`llama-server`) as the local model server** (chat + embeddings,
+      OpenAI-compatible API — the existing `Embedder` needs only config changes). Decided
+      2026-07-12, replacing the earlier Ollama plan; see machine topology in
+      *Context and constraints*. *Decide later:* MLX on the Mac if llama.cpp Metal speed
+      disappoints.
 - [ ] Single ChromaDB collection with `docId` metadata instead of per-document collections
       (prerequisite for multi-doc search). *Decide later:* Qdrant if Chroma's hybrid search
       proves too limited.
@@ -118,7 +136,7 @@ ever see synthetic/declassified data or aggregate metrics):
 
 | Role | First choice | Alternatives |
 |---|---|---|
-| Runtime | Ollama | llama.cpp (control), MLX (Mac speed) |
+| Runtime | llama.cpp (`llama-server`) | MLX (Mac speed) |
 | Chat LLM | Qwen 3.5/3.6 35B-A3B | Gemma 3 27B, gpt-oss-20b |
 | Embeddings | BGE-M3 | Qwen3-Embedding 0.6B–8B |
 | Reranker | bge-reranker-v2-m3 | Qwen3-Reranker |
