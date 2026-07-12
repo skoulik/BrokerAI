@@ -18,6 +18,8 @@ def main() -> int:
     sc.add_argument("-c", "--corpus", default="pii_eval/corpus")
     sc.add_argument("--no-ner", action="store_true",
                     help="patterns only (fast; names/addresses will leak)")
+    sc.add_argument("--ner-backend", choices=("gliner", "gliner2"),
+                    default="gliner2")
     sc.add_argument("--threshold", type=float, default=0.4)
 
     args = parser.parse_args()
@@ -28,7 +30,8 @@ def main() -> int:
         return 0
     from pii_eval.score import score
 
-    return score(args.corpus, use_ner=not args.no_ner, threshold=args.threshold)
+    return score(args.corpus, use_ner=not args.no_ner,
+                 ner_backend=args.ner_backend, threshold=args.threshold)
 
 
 if __name__ == "__main__":

@@ -62,10 +62,12 @@ def _score_csv(entities, stripped):
             e["verdict"] = "leaked" if survives else "stripped"
 
 
-def score(corpus: str, use_ner: bool = True, threshold: float = 0.4) -> int:
+def score(corpus: str, use_ner: bool = True, ner_backend: str = "gliner2",
+          threshold: float = 0.4) -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "truth.json").read_text("utf-8"))
-    pipeline = PiiPipeline(use_ner=use_ner, threshold=threshold)
+    pipeline = PiiPipeline(use_ner=use_ner, ner_backend=ner_backend,
+                           threshold=threshold)
 
     all_entities = []
     for doc in manifest["docs"]:

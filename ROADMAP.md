@@ -79,8 +79,22 @@ Tasks:
       is rejected by the checksum validator, this should be logged. Evaluate if the output 
       will become too noisy because of this and if so, make the feature optional. Rationale:
       detect typos, wrong OCR output or outright forgery - all three are importans classes.
-- [ ] Evaluate GLiNER2 (https://github.com/fastino-ai/GLiNER2) — why it exist, what it adds
+- [x] Evaluate GLiNER2 (https://github.com/fastino-ai/GLiNER2) — why it exist, what it adds
       or improves compared to GLiNER, is it maintained, what license/usage terms.
+      Result (2026-07-12): unified schema-driven extractor from Fastino (GLiNER lineage),
+      Apache 2.0 incl. the PII model (fastino/gliner2-privacy-filter-PII-multi), actively
+      maintained, open training code (fine-tuning on our synthetic corpus is possible).
+      Implemented as selectable layer-2 backend (`--ner-backend gliner2`, see
+      pii/gliner2_recognizer.py for tuning quirks). Tier-1 eval: PERSON 100% (== GLiNER),
+      ~4.7x faster, no ALL-CAPS/context weaknesses; weaker on multi-part AU addresses
+      (fragments them into street/suburb spans — pipeline-level adjacent-span merging,
+      see overlaps task above, would close most of the gap) and 3 extra ORGANIZATION
+      over-strips. Decision (Sergei, 2026-07-12): GLiNER2 is the default layer-2 backend;
+      `--ner-backend gliner` keeps the old model available for comparison.
+- [ ] LoRA adapter for Australian addresses on GLiNER2 — close the multi-part address
+      fragmentation gap at the model level (GLiNER2 ships open training code and
+      load_adapter(); pii_eval's generator can produce the training pairs). Revisit after
+      the overlaps-merging task lands, which should already close most of the gap.
 
 Evaluation (constraint: real documents are classified until stripped — cloud models can only
 ever see synthetic/declassified data or aggregate metrics):
