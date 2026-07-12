@@ -1,0 +1,9 @@
+# Private statements and other sensitive data
+sensitive/
+
+# Python bytecode cache (analyze_statement imports verify_examples)
+__pycache__/
+
+# ChunkHound semantic-search index (local, regenerable) + local tool config
+.chunkhound/
+.chunkhound.json
