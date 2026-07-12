@@ -66,11 +66,14 @@ class GlinerRecognizer(EntityRecognizer):
 
     def _ensure_model(self):
         if self._model is None:
+            import torch
             from gliner import GLiNER
 
             self._model = GLiNER.from_pretrained(
                 self.model_name, cache_dir=CACHE_DIR
             )
+            if torch.cuda.is_available():
+                self._model = self._model.to("cuda")
         return self._model
 
     def analyze(self, text, entities, nlp_artifacts=None):

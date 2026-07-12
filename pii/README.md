@@ -65,7 +65,17 @@ Design notes:
 
 ## Performance
 
-torch is currently CPU-only; the NER layer takes ~1 minute on a one-page
-document. When throughput matters, install a CUDA build of torch for the
-RTX 2080 Ti. `--no-ner` runs in seconds (patterns only — do not rely on it
-for names/addresses).
+GLiNER moves itself to CUDA when available (CUDA torch installed
+2026-07-12 for the RTX 2080 Ti): a 9-document eval corpus scores in ~35 s
+vs ~15 min on CPU. `--no-ner` runs in seconds (patterns only — do not rely
+on it for names/addresses).
+
+## Evaluation
+
+Scored by the Tier-1 synthetic corpus in [pii_eval](../pii_eval/README.md)
+(`python -m pii_eval generate` / `score`). Current state: all pattern
+entities 100%; PERSON 98–100% — GLiNER misses rare reversed-caps
+("BURNS EDWIN") and initials-joint ("D & D Duncan") forms, and contextual
+identifiers ("a dentist in Wagga Wagga") are undetectable by layers 1–2 by
+nature; both are targets for the planned layer-3 LLM audit. Keep presidio
+≥ 2.2.363: 2.2.362's ACN validator rejects every ACN with check digit 0.

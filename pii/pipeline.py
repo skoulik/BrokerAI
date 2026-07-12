@@ -110,23 +110,30 @@ class PiiPipeline:
         )
         return _resolve_overlaps(results)
 
+    def plan(self, text: str) -> list:
+        """The spans strip() would replace: strip-listed entities only,
+        overlaps merged.
+
+        Filter to strip-listed entities BEFORE overlap handling: a
+        kept-type span (e.g. a bogus high-score DATE_TIME from spacy) must
+        never shadow an overlapping PII span, or the PII leaks. Then MERGE
+        overlapping spans rather than picking a winner — a small
+        high-score span (BSB, 0.55) must not evict a wider covering span
+        (account number, 0.52) and expose the rest of it.
+        """
+        results = self.analyzer.analyze(
+            text=text, language="en", score_threshold=self.threshold
+        )
+        return _merge_overlaps(
+            [r for r in results if r.entity_type in self.strip_entities]
+        )
+
     def strip(self, text: str, pmap: PseudonymMap) -> tuple[str, list]:
         """Replace detected PII with consistent placeholders.
 
         Returns (stripped_text, applied_detections).
         """
-        # Filter to strip-listed entities BEFORE overlap handling: a
-        # kept-type span (e.g. a bogus high-score DATE_TIME from spacy) must
-        # never shadow an overlapping PII span, or the PII leaks. Then MERGE
-        # overlapping spans rather than picking a winner — a small
-        # high-score span (BSB, 0.55) must not evict a wider covering span
-        # (account number, 0.52) and expose the rest of it.
-        results = self.analyzer.analyze(
-            text=text, language="en", score_threshold=self.threshold
-        )
-        spans = _merge_overlaps(
-            [r for r in results if r.entity_type in self.strip_entities]
-        )
+        spans = self.plan(text)
         # Allocate placeholders in document order (readable numbering), then
         # splice right-to-left so earlier offsets stay valid.
         placeholders = [
