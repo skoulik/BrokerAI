@@ -81,6 +81,16 @@ ever see synthetic/declassified data or aggregate metrics):
       benchmarking. Ground truth known by construction → automatic precision/recall; the fast
       iteration loop, fully shareable. Sergey will supply a few unclassified-by-construction
       example documents to serve as layout/format references for the generator's templates.
+      *(2026-07-12: text tier done — `pii_eval/` package: checksum-valid AU providers, seeded
+      persona pool, legacy-statement + loan-application + transaction-CSV templates with exact
+      ground-truth spans, recall-first scorer with zero-critical-miss gate. Found and fixed:
+      un-hyphenated/hyphenated/labeled account-number forms in transaction descriptions leaked
+      (recognizer patterns extended), NER spans crossing CSV cell sentinels crashed csv_mode
+      (now clamped per cell), presidio 2.2.362 rejects ACNs with check digit 0 (keep ≥ 2.2.363).
+      Current: all pattern entities 100% on two seeds; PERSON 98–100% — GLiNER misses rare
+      reversed-caps and "D & D Duncan" joint forms; those plus contextual identifiers are the
+      layer-3 LLM-audit backlog. GLiNER now runs on CUDA (~25× faster). PDF/image tier +
+      degradation pipeline still pending.)*
       **Received 2026-07-12** — a set of reference documents in `sensitive/statements/`
       (gitignored; never commit, email, or upload — cloud-LLM analysis in-session only).
       Good layout diversity: multiple major-bank statement formats, home-loan and business
