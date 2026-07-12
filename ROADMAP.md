@@ -72,6 +72,13 @@ Tasks:
       encode the delivery address/customer ref — text-based detection can't see them, so
       detect and paint over barcode regions in the image pass (observed on several of the
       reference examples)
+- [ ] Overlaps merging algorithm — define and document. Interesting areas: how the weights are 
+      combined (max, average, bayesian/aposteriori), what if winning classes of overlaps
+      do not agree, should we merge at all in some cases.
+- [ ] Log checksum-invalid identifiers. If an identifier candidate passes the detectors, but
+      is rejected by the checksum validator, this should be logged. Evaluate if the output 
+      will become too noisy because of this and if so, make the feature optional. Rationale:
+      detect typos, wrong OCR output or outright forgery - all three are importans classes.
 
 Evaluation (constraint: real documents are classified until stripped — cloud models can only
 ever see synthetic/declassified data or aggregate metrics):
