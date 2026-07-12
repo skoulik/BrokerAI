@@ -79,6 +79,8 @@ Tasks:
       is rejected by the checksum validator, this should be logged. Evaluate if the output 
       will become too noisy because of this and if so, make the feature optional. Rationale:
       detect typos, wrong OCR output or outright forgery - all three are importans classes.
+- [ ] Evaluate GLiNER2 (https://github.com/fastino-ai/GLiNER2) — why it exist, what it adds
+      or improves compared to GLiNER, is it maintained, what license/usage terms.
 
 Evaluation (constraint: real documents are classified until stripped — cloud models can only
 ever see synthetic/declassified data or aggregate metrics):
