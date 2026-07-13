@@ -55,10 +55,6 @@ def main(argv=None) -> int:
         help="skip the NER layer (patterns only, much faster)",
     )
     p_strip.add_argument(
-        "--ner-backend", choices=("gliner", "gliner2"), default="gliner2",
-        help="NER model for layer 2 (default gliner2)",
-    )
-    p_strip.add_argument(
         "--strip-orgs", action="store_true",
         help="also replace organization names (kept by default)",
     )
@@ -81,9 +77,6 @@ def main(argv=None) -> int:
     )
     p_analyze.add_argument("input", help="input text file, or - for stdin")
     p_analyze.add_argument("--no-ner", action="store_true")
-    p_analyze.add_argument(
-        "--ner-backend", choices=("gliner", "gliner2"), default="gliner2"
-    )
     p_analyze.add_argument("--threshold", type=float, default=0.4)
 
     p_rehyd = sub.add_parser(
@@ -107,7 +100,6 @@ def main(argv=None) -> int:
         strip_entities.add("ORGANIZATION")
     pipeline = PiiPipeline(
         use_ner=not args.no_ner,
-        ner_backend=args.ner_backend,
         threshold=args.threshold,
         strip_entities=strip_entities,
     )

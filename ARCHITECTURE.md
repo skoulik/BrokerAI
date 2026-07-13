@@ -71,8 +71,8 @@ No single detector catches everything, so layers are unioned:
    Medicare / ABN / ACN (checksum-validated), credit cards, emails, IBAN, IPs, URLs, AU-region
    phones, plus custom recognizers for BSB, bank account numbers, and PayID
    (`pii/recognizers.py`).
-2. **GLiNER zero-shot NER** (`urchade/gliner_multi_pii-v1`) — names, addresses, DOB, and the
-   person-vs-organization distinction that transaction descriptions need.
+2. **GLiNER2 zero-shot NER** (`fastino/gliner2-privacy-filter-PII-multi`) — names, addresses,
+   DOB, and the person-vs-organization distinction that transaction descriptions need.
 3. **Local-LLM audit pass** (planned) — "does this still contain anything identifying?" for
    contextual identifiers NER can't see ("the borrower's wife, a dentist in Wagga Wagga").
 
@@ -101,21 +101,21 @@ classified PII. Every ambiguity resolves toward stripping.
   remainder. Overlapping strip-listed spans are unioned into one replacement (entity type of
   the highest-scored member).
 
-### GLiNER multi-pass prediction (2026-07-12)
+### NER backend: GLiNER v1 → GLiNER2 (2026-07-12; v1 removed 2026-07-13)
 
-Two empirical quirks, found on the synthetic sample and baked into the recognizer
-(`pii/gliner_recognizer.py`):
+The original backend (`urchade/gliner_multi_pii-v1`) had two empirical quirks found on the
+synthetic sample — ALL-CAPS text tanked recall, and entities found reliably in a short line
+were missed when the same line sat inside a full document — worked around with multi-pass
+prediction (document windows + individual lines, each also de-capitalized, unioned).
 
-- **ALL-CAPS text tanks recall** — `TRANSFER TO J SMITH ACC 12345678` yields nothing; the
-  title-cased form finds both entities. Bank statements are largely upper-case.
-- **Context sensitivity** — entities found reliably in a short line are missed when the same
-  line sits inside a full document.
-
-Therefore each text is predicted over overlapping document windows (catches multi-line
-entities like wrapped addresses) *and* over individual lines, each additionally in a
-length-preserving de-capitalized variant; results are unioned (batched inference). Accepted
-cost: some over-stripping (e.g. an all-caps merchant line labeled as an address) — a
-precision-tuning item for Tier-1 eval, not a leak.
+GLiNER2 (Fastino, Apache 2.0, PII-tuned model with schema descriptions) has neither weakness,
+matched v1 on Tier-1 PERSON (100%) and ran ~4.7× faster, so it became the sole backend; the
+v1 recognizer and its `--ner-backend` switch were removed (recoverable from git history).
+GLiNER2's own quirks and tuning live in `pii/gliner2_recognizer.py`'s docstring; its known
+gap — multi-part AU addresses fragmented into street/suburb spans — is targeted by the
+adjacent-span-merging and LoRA-adapter ROADMAP tasks. Accepted cost either way: some
+over-stripping (e.g. a merchant line labeled as an address) — a precision-tuning item, not a
+leak.
 
 ### What is deliberately kept (2026-07-12)
 
@@ -151,6 +151,5 @@ account numbers, names), not an F1 number. Details in ROADMAP Phase 1.
 
 - The `pii/` tool keeps its own `requirements.txt`; repo-wide `pyproject.toml` + uv is a
   Phase 2 item.
-- torch is currently CPU-only; the NER layer costs ~1 min/page. Install a CUDA build for the
-  RTX 2080 Ti when throughput matters.
-- GLiNER weights download once into `models/hf-cache/` (gitignored).
+- CUDA torch installed 2026-07-12 for the RTX 2080 Ti (CPU-only NER cost ~1 min/page).
+- GLiNER2 weights download once into `models/hf-cache/` (gitignored).

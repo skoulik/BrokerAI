@@ -5,7 +5,7 @@ placeholders never straddle cell boundaries. `columns` restricts processing
 to named columns (header row required); default is every column.
 
 Cells are batched into one analyzer call per column (rows joined by a
-sentinel) — per-cell calls would pay GLiNER's per-invocation cost hundreds
+sentinel) — per-cell calls would pay the NER model's per-invocation cost hundreds
 of times on a big statement. The sentinel keeps pattern recognizers from
 matching across cells, but NER can still emit a span that crosses it, so
 detected spans are clamped to cell boundaries before replacement (the

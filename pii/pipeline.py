@@ -4,8 +4,7 @@ Layer 1: Presidio pattern/checksum recognizers — built-in AU_TFN, AU_ABN,
          AU_ACN, AU_MEDICARE, credit cards, emails, URLs, IPs — plus the
          custom AU recognizers in pii.recognizers (BSB, account, PayID) and
          an AU-region phone recognizer.
-Layer 2: zero-shot NER (names, addresses, DOB, person-vs-org) — GLiNER2
-         by default, original GLiNER via ner_backend="gliner".
+Layer 2: zero-shot NER (names, addresses, DOB, person-vs-org) — GLiNER2.
 Layer 3 (future): local-LLM audit pass via llama-server.
 
 Detected spans are resolved for overlaps and replaced with consistent
@@ -68,7 +67,6 @@ class PiiPipeline:
     def __init__(
         self,
         use_ner: bool = True,
-        ner_backend: str = "gliner2",
         threshold: float = 0.4,
         strip_entities: set[str] | None = None,
     ):
@@ -97,16 +95,9 @@ class PiiPipeline:
         registry.add_recognizer(AuAccountNumberRecognizer())
         registry.add_recognizer(PayIdRecognizer())
         if use_ner:
-            if ner_backend == "gliner2":
-                from pii.gliner2_recognizer import Gliner2Recognizer
+            from pii.gliner2_recognizer import Gliner2Recognizer
 
-                registry.add_recognizer(Gliner2Recognizer())
-            elif ner_backend == "gliner":
-                from pii.gliner_recognizer import GlinerRecognizer
-
-                registry.add_recognizer(GlinerRecognizer())
-            else:
-                raise ValueError(f"unknown ner_backend {ner_backend!r}")
+            registry.add_recognizer(Gliner2Recognizer())
         self.analyzer = AnalyzerEngine(
             nlp_engine=nlp_engine, registry=registry, supported_languages=["en"]
         )

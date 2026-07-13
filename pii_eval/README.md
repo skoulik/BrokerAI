@@ -27,7 +27,8 @@ pseudonym-mapping consistency across a document set.
 - `legacy_*.txt` — fixed-column monospace bank statement (the plain-text
   legacy format from the reference corpus): ALL-CAPS particulars, joint-name
   forms ("J & E Lawrence", "ROCHA RANDALL"), un-hyphenated BSB/account
-  numbers inside descriptions. The GLiNER worst case.
+  numbers inside descriptions. The NER stress case (ALL-CAPS text collapsed
+  the removed GLiNER v1 backend's recall).
 - `loan_*.txt` — broker applicant summary: the full PII battery (TFN,
   Medicare, DOB, licence, card, address, contacts) plus a `CONTEXTUAL_ID`
   note ("a dentist in Wagga Wagga") that only the future LLM-audit layer

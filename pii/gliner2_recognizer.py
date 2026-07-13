@@ -1,7 +1,8 @@
-"""GLiNER2 zero-shot NER as a Presidio recognizer — alternative layer-2
-backend to pii.gliner_recognizer, using Fastino's PII-tuned GLiNER2 model.
+"""GLiNER2 zero-shot NER as a Presidio recognizer (detection layer 2),
+using Fastino's PII-tuned GLiNER2 model. Replaced the original GLiNER (v1)
+backend, removed 2026-07-13 (in git history).
 
-Tuned from probing the same failure modes the GLiNER recognizer works
+Tuned from probing the same failure modes the GLiNER v1 recognizer worked
 around, with different results:
 - no ALL-CAPS recall penalty ('TRANSFER TO J SMITH ACC 12345678' scores the
   same as its title-cased form), so no de-capitalized variants;
@@ -49,7 +50,7 @@ DEFAULT_MODEL = "fastino/gliner2-privacy-filter-PII-multi"
 CACHE_DIR = "models/hf-cache"
 
 # GLiNER2 label -> (description, Presidio entity type). Same target entity
-# set as pii.gliner_recognizer.LABELS so the two backends score comparably.
+# set as the removed GLiNER v1 backend used, so eval scores stay comparable.
 LABELS = {
     "person": (
         "Full or partial name of a person",

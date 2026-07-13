@@ -2,7 +2,8 @@
 
 legacy_statement: fixed-column monospace bank statement in the style of the
 plain-text legacy format in the reference corpus (no graphics, ALL-CAPS
-particulars, right-aligned numbers) — the GLiNER worst case.
+particulars, right-aligned numbers) — the NER stress case (ALL-CAPS text
+collapsed the removed GLiNER v1 backend's recall).
 
 loan_application: broker-style applicant summary — the one document class
 that carries the full PII battery (TFN, Medicare, DOB, licence, card), plus

@@ -41,13 +41,13 @@ Input types to support:
       from the image path still pending.)* Descriptions
       contain personal names, PayID emails/phones, BSB/account refs; these reveal spending
       patterns and allow re-identification. Keep merchant names (analytical value), strip
-      person names — zero-shot NER labels (GLiNER) distinguish person vs organization.
+      person names — zero-shot NER labels (GLiNER2) distinguish person vs organization.
       Consistent pseudonyms per counterparty so patterns survive but identity doesn't.
 
 Detection pipeline (layered — no single layer catches everything):
 1. Pattern recognizers via Presidio, with **custom Australian entities**: TFN, Medicare number,
    BSB + account number, ABN/ACN, AU phone/address formats, PayID.
-2. NER: GLiNER-PII (~600 MB, runs anywhere) as Presidio engine.
+2. NER: GLiNER2-PII (~1.2 GB, runs anywhere) as Presidio engine.
 3. Local-LLM audit pass: "does this still contain anything identifying?" — catches contextual
    identifiers NER misses ("the borrower's wife, a dentist in Wagga Wagga").
 
@@ -95,8 +95,10 @@ Tasks:
       fragmentation gap at the model level (GLiNER2 ships open training code and
       load_adapter(); pii_eval's generator can produce the training pairs). Revisit after
       the overlaps-merging task lands, which should already close most of the gap.
-- [ ] Cleanup sources by removing GLiNER (v1) implementation — it is in git anyways, we
-      can get back to it at any time.
+- [x] Cleanup sources by removing GLiNER (v1) implementation — it is in git anyways, we
+      can get back to it at any time. *(2026-07-13: removed `pii/gliner_recognizer.py`,
+      the `--ner-backend` switch, and the `gliner` dep; GLiNER2 is the sole layer-2
+      backend. Last commit with v1: 46212eb.)*
 - [ ] Review sources of gliner2-rs (https://github.com/SemplificaAI/gliner2-rs) — perhaps
       we can leverage some of their ideas, knowledge and experience in relation to GLiNER2
 
@@ -190,5 +192,5 @@ ever see synthetic/declassified data or aggregate metrics):
 | Chat LLM | Qwen 3.5/3.6 35B-A3B | Gemma 3 27B, gpt-oss-20b |
 | Embeddings | BGE-M3 | Qwen3-Embedding 0.6B–8B |
 | Reranker | bge-reranker-v2-m3 | Qwen3-Reranker |
-| PII NER | Presidio + GLiNER-PII | John Snow Labs (commercial), local VLM |
+| PII NER | Presidio + GLiNER2-PII | John Snow Labs (commercial), local VLM |
 | Vector DB | ChromaDB (single collection) | Qdrant |
