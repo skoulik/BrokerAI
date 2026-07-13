@@ -95,6 +95,10 @@ Tasks:
       fragmentation gap at the model level (GLiNER2 ships open training code and
       load_adapter(); pii_eval's generator can produce the training pairs). Revisit after
       the overlaps-merging task lands, which should already close most of the gap.
+- [ ] Cleanup sources by removing GLiNER (v1) implementation — it is in git anyways, we
+      can get back to it at any time.
+- [ ] Review sources of gliner2-rs (https://github.com/SemplificaAI/gliner2-rs) — perhaps
+      we can leverage some of their ideas, knowledge and experience in relation to GLiNER2
 
 Evaluation (constraint: real documents are classified until stripped — cloud models can only
 ever see synthetic/declassified data or aggregate metrics):
