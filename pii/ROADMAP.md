@@ -13,8 +13,15 @@ locally and analytical utility is preserved.
 
 Input types to support:
 - [x] Plain text *(2026-07-12: `pii/` package — see its README)*
-- [ ] Images (scans, screenshots) — OCR with word-level bounding boxes, redact by painting
-      over pixel regions
+- [x] Images (scans, screenshots) — OCR with word-level bounding boxes, redact by painting
+      over pixel regions *(2026-07-14: `pii/ocr.py` (Tesseract adapter → engine-neutral
+      word boxes, char intervals recorded at assembly, span→boxes = interval intersection)
+      + `pii/image_mode.py` (full text pipeline on the OCR text, placeholders painted onto
+      the original pixels — pseudonymization, not blank redaction) + CLI `strip --image`.
+      Tesseract 5.4.0 installed system-wide (winget, UB Mannheim). First e2e demo caught
+      all planted PII incl. checksum-valid TFN/Medicare through OCR, and survived OCR
+      mangling ("0412 345678"). Still open on the image path: barcode masking, statement
+      tables, OCR preprocessing knobs, engine bake-off, PDF reassembly.)*
 - [ ] PDFs — **treat as images**: render pages → OCR → redact pixels → reassemble PDF.
       Rationale: financial-sector PDFs often have junk/broken text layers, and rebuilding from
       pixels also eliminates the hidden-text-layer leak class entirely.
@@ -118,6 +125,29 @@ Tasks:
       tolerance — our image-tier eval should do tolerance matching from day one.
       Beta-quality signals beyond the mapping bugs: ImageRescaling only works on ndarrays
       despite PIL type hints (PIL input raises TypeError on `image.size < int`).
+- [x] Debug the three warts from the first image-path e2e demo (2026-07-14). Raw-result
+      attribution: PERSON 'Emily Watson\nAddress' (glued across the OCR line break; GLiNER2
+      had the exact span separately) and PERSON '03/06/2026 Transfer' (date as name) were
+      BOTH en_core_web_sm (SpacyRecognizer); ADDRESS 'NEWTOWN' inside kept-ORG
+      'WOOLWORTHS NEWTOWN' is GLiNER2 label competition (→ overlaps task above).
+      Tier-1 ablation, SpacyRecognizer fully removed: PERSON stays 100% (GLiNER2 alone),
+      ORGANIZATION over-strips improve 8→6, but CONTEXTUAL_ID goes 3x partial → 3x LEAKED —
+      spaCy LOCATION on bare city names ("a teacher in Cairns") is the only contextual-
+      identifier coverage layers 1–2 have. Fix adopted: with use_ner=True, SpacyRecognizer
+      is restricted to LOCATION (pii/pipeline.py); patterns-only mode keeps the full
+      recognizer (its name leaks are already documented). Line-clamping NER spans at OCR
+      newlines was considered and rejected: clamping splits a glue span but each fragment
+      would still be painted, so it fixes nothing the restriction doesn't.
+      Regression tests: tests/pii/test_spacy_policy.py — registry-policy tests run in the
+      default suite via a stubbed GLiNER2 (sys.modules shim, no model load) + one
+      model-marked test on the real stack. REVISIT when the layer-3 LLM audit lands: it
+      should own contextual IDs, after which spaCy emissions can likely be dropped
+      entirely (rerun the ablation).
+- [ ] Nice-to-have: "match original font" for painted placeholders (Sergei, 2026-07-14) —
+      estimate font size/weight (and maybe family) from the covered words' boxes/pixels so
+      placeholders blend into the document instead of the current fixed-Arial
+      shrink-to-fit. Also worth considering: match fill to the local background around the
+      box rather than the page-wide most-common border color.
 - [ ] Metadata scrubbing on all output formats
 - [ ] Barcode masking: mailing barcodes on statements (Australia Post 4-state, and 1-D codes)
       encode the delivery address/customer ref — text-based detection can't see them, so
@@ -126,6 +156,11 @@ Tasks:
 - [ ] Overlaps merging algorithm — define and document. Interesting areas: how the weights are 
       combined (max, average, bayesian/aposteriori), what if winning classes of overlaps
       do not agree, should we merge at all in some cases.
+      New input (2026-07-14, image-demo wart 2): a strip-type span nested inside a
+      kept-type span — GLiNER2 emits both ORGANIZATION 'WOOLWORTHS NEWTOWN' (kept) and
+      ADDRESS 'NEWTOWN' (stripped), so the merchant name loses its suburb. Question:
+      should a kept ORGANIZATION absorb contained ADDRESS fragments, or is that a leak
+      vector (real addresses legitimately appear inside org-labeled spans)?
 - [x] Log checksum-invalid identifiers. If an identifier candidate passes the detectors, but
       is rejected by the checksum validator, this should be logged. Evaluate if the output 
       will become too noisy because of this and if so, make the feature optional. Rationale:

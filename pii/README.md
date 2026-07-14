@@ -23,6 +23,7 @@ first use.
 
 ```
 python -m pii strip document.txt -o document.clean.txt --map map.json --report
+python -m pii strip scan.png --image -o scan.clean.png --map map.json
 python -m pii analyze document.txt            # show detections, change nothing
 python -m pii rehydrate cloud_answer.txt --map map.json
 ```
@@ -34,6 +35,20 @@ original PII — it is gitignored and must never leave the machine.**
 Flags: `--no-ner` (patterns only, fast), `--strip-orgs` (organization names
 are kept by default — merchant names carry analytical value), `--threshold`
 (default 0.4), and the checksum-invalid identifier controls below.
+
+## Images
+
+`strip --image` OCRs the input (Tesseract, word-level bounding boxes),
+runs the full text pipeline on the recognized text, and paints each
+detected span's placeholder over its pixels — background-filled boxes
+with the placeholder drawn in, so the output image stays pseudonymized
+and rehydratable, not blacked out. Detection never sees pixels; painting
+happens on the original image (`ocr.py` for the engine adapter and
+span→box mapping, `image_mode.py` for the painting).
+
+Requires the Tesseract binary (`winget install UB-Mannheim.TesseractOCR`)
+and `pytesseract`. PDFs-as-images and OCR-engine alternatives are on the
+roadmap.
 
 ## Checksum-invalid identifiers
 
@@ -89,6 +104,12 @@ Design notes:
 - Recall-first: in `strip()`, spans are filtered to strip-listed entity types
   *before* overlap resolution, so a kept-type span (e.g. spacy's frequent
   bogus high-score `DATE_TIME` hits) can never shadow real PII.
+- With NER on, spacy's own recognizer is restricted to `LOCATION`: GLiNER2
+  owns PERSON/ORG, and en_core_web_sm's PERSON/DATE_TIME emissions produced
+  cross-line glue spans and date-as-name false positives on OCR text
+  (2026-07-14 debug, `tests/pii/test_spacy_policy.py`). Bare city names in
+  prose are what it still contributes — the only partial coverage of
+  contextual identifiers until the layer-3 audit lands.
 - `DATE_TIME` and `ORGANIZATION` are detected but kept by default:
   transaction dates and merchant names are the analytical substance of a
   statement. `DATE_OF_BIRTH` (via NER) is stripped.
@@ -103,10 +124,11 @@ Design notes:
   accepted recall-first cost. (GLiNER v1's weaknesses — recall collapse on
   ALL-CAPS text and on lines embedded in context — do not apply to
   GLiNER2.)
-- Known GLiNER2 gap: multi-part AU addresses come out fragmented
-  (street/suburb spans with `', '`/`' NSW '` connectors uncovered — 4
-  partials on Tier-1 vs GLiNER v1's single full spans). Planned fixes:
-  adjacent-span merging in the pipeline (ROADMAP overlaps task) and a LoRA
+- GLiNER2 address fragmentation (multi-part AU addresses split into
+  street/suburb spans) was mostly closed 2026-07-14 by lifting the span
+  enumeration width to `max_width=12` — all four one-line addresses on
+  Tier-1 went partial→stripped. Remaining backstops if real-world wide
+  spans regress: adjacent-span merging (ROADMAP overlaps task) and a LoRA
   adapter trained on synthetic AU addresses.
 
 ## Performance
@@ -121,9 +143,9 @@ on it for names/addresses).
 
 Scored by the Tier-1 synthetic corpus in [pii_eval](../pii_eval/README.md)
 (`python -m pii_eval generate` / `score`). Current state:
-all pattern entities 100%; PERSON 100%; ADDRESS is the weak spot (50% —
-see the fragmentation note above; GLiNER v1 scored 83%, both leaked the
-same two odd synthetic street lines). Contextual identifiers ("a dentist in
+all pattern entities 100%; PERSON 100%; ADDRESS 83% (the max_width=12
+lift closed the one-line fragmentation; the 2 remaining leaks are bare
+ALL-CAPS street lines with no state/postcode context, width-independent). Contextual identifiers ("a dentist in
 Wagga Wagga") are undetectable by layers 1–2 by nature — a target for the
 planned layer-3 LLM audit. Keep presidio ≥ 2.2.363: 2.2.362's ACN
 validator rejects every ACN with check digit 0.
