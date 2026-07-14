@@ -51,7 +51,7 @@ Tasks:
 - [ ] OCR engine choice — *decide later:* Tesseract vs PaddleOCR vs Surya/docTR vs a local VLM
       (e.g. Qwen-VL class) doing OCR+PII detection in one pass. Start by benchmarking on real
       bank statements/scans.
-- [ ] Review presidio-image-redactor sources (same drill as the gliner2-rs review below, same
+- [x] Review presidio-image-redactor sources (same drill as the gliner2-rs review below, same
       reasons: harvest insights/know-how, not adopt). Decision already made
       (2026-07-14, recorded in ../ARCHITECTURE.md): our image path is orthogonal — wrong hook
       point (below our pipeline's merge/invalid/pseudonym layers), wrong output model
@@ -61,6 +61,63 @@ Tasks:
       image preprocessing for Tesseract — bilateral filtering, thresholding variants),
       allow-list/score-threshold plumbing, DICOM handling (skim only — out of scope), and
       any Tesseract quirks encoded in their tests.
+      Result (2026-07-14): reviewed v0.0.59 at monorepo head (~3.1k lines + tests; MIT;
+      their own docs say "still in beta and not production ready"; tested by MS against
+      Tesseract 5.2.0). Orthogonality decision confirmed — and the surprise is that the
+      "one solved piece" is the package's WEAKEST part: the span→bbox mapping is a
+      what-to-avoid reference, not a crib. Harvested knowledge:
+      (a) **Text assembly is a flat `" ".join(words)`** — no line/paragraph structure —
+      and char offsets are *re-derived* inside the mapping loop by accumulating
+      `len(word)+1`; every bug below lives in that re-derivation. Design for `pii/ocr.py`:
+      record `(char_start, char_end, bbox)` per word AT assembly time; span→boxes then
+      reduces to pure interval intersection. Their overlap predicate
+      `max(pos, start) < min(end, pos+len(word))` is the one core idea worth keeping.
+      (b) **Two silent-leak classes in their mapping** (no box painted, no error):
+      a substring sanity check `(entity_text in word) or (word in entity_text)` skips
+      words when entity boundaries fall mid-word at both ends; and multi-word entities
+      advance the shared word iterator in an inner loop, so a second *overlapping*
+      analyzer result never sees the consumed words (Presidio returns overlapping
+      results!). Our merge-before-paint rule eliminates the second class by construction
+      — paint from merged spans only, never from raw analyzer results.
+      (c) **Allow-list plumbing is dual-level and the word level is a leak vector**:
+      allow_list goes to AnalyzerEngine.analyze (entity-level, fine) but is ALSO
+      re-checked per word at paint time — an allow-listed word *inside* a PII entity
+      keeps its pixels. Lesson: allow-listing belongs in the text layer only; the paint
+      layer must follow merged spans exactly.
+      (d) **OCR interchange contract worth adopting**: Tesseract `image_to_data` DICT
+      (parallel lists text/left/top/width/height/conf) as the neutral format; their
+      DocumentIntelligenceOCR adapter shows any engine normalizes into it (polygon →
+      axis-aligned envelope) — the clean seam for our Tesseract/Paddle/VLM bake-off.
+      Quirks: conf −1 marks structural non-word boxes (threshold range is [−1, 100]);
+      Tesseract emits empty/whitespace-only word boxes that must be dropped *before*
+      assembly (their `remove_space_boxes`).
+      (e) **Preprocessing is opt-in (default no-op)**. Their full chain
+      (ContrastSegmentedImageEnhancer): bilateral filter (d=3, σcolor=σspace=40, grey) →
+      linear contrast stretch if std ≤ 40 (α=1.5, β=−mean·α) → adaptive mean threshold
+      (block 5, C=10 low-/40 high-contrast selected by std ≤ 40; BINARY_INV when the
+      most-common pixel < 122, i.e. dark backgrounds) → Otsu → rescale (2× up < 1 MP,
+      2× down > 4 MP, INTER_AREA). Architectural pattern to copy: the preprocessed image
+      feeds OCR ONLY; painting happens on the ORIGINAL pixels, with scale_factor metadata
+      mapping boxes back (ceil, min dimension 1) — exactly the coordinate-transform
+      discipline our render→OCR→paint→reassemble path needs at render-DPI.
+      (f) **Tesseract edge quirk**: the DICOM path pads images with a uniform border
+      (default 25 px, most-common-bg color) before OCR because Tesseract misreads text
+      flush against image edges, then subtracts the padding from boxes (clamped ≥ 0).
+      Remember for tightly-cropped statement screenshots.
+      (g) **DICOM skim — one idea worth stealing**: a per-document deny-list built from
+      *known-by-construction* PHI (metadata name fields), augmented via separator→space,
+      upper/lower/title casing, and individual name tokens, fed as an ad-hoc deny-list
+      recognizer. Analogue for us: account-holder name/account number known from context.
+      Also neat: redaction fill "contrast" = max_pixel − most_common(corner crops).
+      (h) **Output model confirmed** as per the orthogonality decision: one result per
+      word (a multi-word entity = N boxes sharing one text span), redaction = rectangle
+      fill, text is never rebuilt → no pseudonymization seam; AnalyzerEngine is called
+      directly → nothing below it can hook in.
+      (i) **Testing**: their integration tests pin exact Tesseract pixel boxes (breaks
+      across Tesseract versions); their own DICOM eval instead matches with 50 px
+      tolerance — our image-tier eval should do tolerance matching from day one.
+      Beta-quality signals beyond the mapping bugs: ImageRescaling only works on ndarrays
+      despite PIL type hints (PIL input raises TypeError on `image.size < int`).
 - [ ] Metadata scrubbing on all output formats
 - [ ] Barcode masking: mailing barcodes on statements (Australia Post 4-state, and 1-D codes)
       encode the delivery address/customer ref — text-based detection can't see them, so

@@ -166,9 +166,18 @@ around the unchanged text pipeline. Reasons:
   contract — that must not be buried in a third-party engine.
 
 What we do reuse: the entire eval-gated text pipeline verbatim on OCR output, and their
-span→bbox mapping logic as a *reference* (the one solved piece — small, MIT; see the
-source-review task in `pii/ROADMAP.md`). `presidio-image-redactor` is not installed as a
-dependency; only `presidio-analyzer` remains.
+span→bbox mapping logic as a *reference* (small, MIT; see the source-review task in
+`pii/ROADMAP.md`). The 2026-07-14 source review demoted that reference to a
+*what-to-avoid* exhibit: the mapping re-derives char offsets in its matching loop instead
+of recording them at text-assembly time, and carries two silent-leak classes (mid-word
+entity boundaries; overlapping analyzer results losing words to a shared iterator). Our
+`pii/ocr.py` must record `(char_start, char_end, bbox)` per word at assembly time so
+span→boxes is pure interval intersection over *merged* spans. What did transfer: the
+Tesseract `image_to_data` parallel-list dict as the OCR-engine interchange format, the
+preprocess-for-OCR-only/paint-on-original-pixels coordinate discipline, the edge-padding
+quirk, and the per-document known-values deny-list idea (details in the ROADMAP record).
+`presidio-image-redactor` is not installed as a dependency; only `presidio-analyzer`
+remains.
 
 ### Evaluation (designed 2026-07-05/12, not yet built)
 
