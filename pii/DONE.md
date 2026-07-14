@@ -316,6 +316,37 @@ the move; new completed tasks append to the matching section with their records.
       the 0.3 threshold with score flooring, adjacent-span coalescing) are
       KEPT unchanged — max_width lifts what the model *can* emit, not the label
       competition or the low AU-address confidences those workarounds exist for.
+- [x] Layer-1 gap: space-grouped bank accounts leaked (found + fixed 2026-07-14).
+      `a/c 1234 5678` (4+4) was detected by nobody: AuAccountNumberRecognizer's
+      `\d{5,10}` needs a contiguous run (each half falls short), no pattern spanned the
+      internal space, and GLiNER2's recall on the form is inconsistent (catches
+      `0007 3111 4`, missed `1234 5678`). Generalization adopted after probing whether
+      the label must live in the regex — it mostly needn't (Sergei's catch: the
+      "bare-pattern precision disaster" examples all carried their own non-account
+      labels, which Presidio's context scoring already discriminates):
+      - **"account grouped"** — bare space/hyphen-grouped pattern at 0.15, promoted
+        only by account context words, exactly the existing bare-run idiom. Lookahead
+        spares year ranges: "account statement period 2023 2024" was the one measured
+        FP the context mechanism could not reject on its own.
+      - **"labeled account"** extended — the a/c label family (`a/c`, `A/C`, `A/c.`,
+        `Ac.`, `Ac:`, `AC`, `acct`, `acc`, optional `no./number/#/:`) matched in-span at
+        0.5, because the slash form never survives tokenization into a context term
+        (recognizers.py's documented quirk) and a/c is the dominant written form on
+        Australian statements (Sergei, 2026-07-14). Contiguous digit alternative
+        ordered first so unbroken runs aren't truncated by the grouped alternative.
+      - **validate_result digit floor** — <5 total digits across groups is never an
+        account; a bound regex alone can't express across separators. Presidio trap
+        found reading PatternRecognizer.analyze: the validator must return None (not
+        True) on pass — True boosts the score to MAX_SCORE (1.0), destroying the
+        sub-threshold context gating the bare patterns rely on.
+      Verified: 21-case probe (all label variants strip; year ranges, invoice pairs,
+      <5-digit fragments kept); tier-1 patterns-only identical on seed 42 and seed 123
+      (one benign delta: the injected invalid CREDIT_CARD is now stripped-anyway —
+      its 4x4 groups match near account context; recall-positive); full-NER gate PASS,
+      all critical types 100%. Tests: test_pipeline.py (label forms, context promotion,
+      year-range guard, no-context kept, digit floor). Known cosmetic quirk, accepted:
+      in patterns-only mode spaCy sometimes glues "Salary Ac." into a PERSON span and
+      the recall-first merge unions it — digits still stripped, label off.
 
 ## Evaluation
 

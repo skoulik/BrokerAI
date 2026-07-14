@@ -30,6 +30,47 @@ def test_strip_labeled_account(pipeline):
     assert "ACCOUNT_1" in out
 
 
+def test_strip_labeled_account_au_forms(pipeline):
+    # The a/c label family in its popular Australian spellings, with
+    # space-grouped digits (2026-07-14; Sergei: a/c, A/C, AC, Ac., Ac: are
+    # all common on real statements).
+    for label in ("a/c", "A/C", "A/c.", "Ac.", "Ac:", "AC", "acct", "acc"):
+        out, _, _ = pipeline.strip(
+            f"Salary {label} 1234 5678 credited", PseudonymMap()
+        )
+        assert "1234 5678" not in out, label
+
+
+def test_strip_spaced_account_with_context_word(pipeline):
+    # Bare space-grouped digits promoted by an account context word.
+    out, _, _ = pipeline.strip("Account Number : 0007 3111 4", PseudonymMap())
+    assert "0007 3111 4" not in out
+
+
+def test_year_range_near_account_word_kept(pipeline):
+    # The grouped pattern's lookahead spares year ranges even when the word
+    # 'account' would otherwise promote them past the threshold.
+    out, _, _ = pipeline.strip(
+        "account statement period 2023 2024", PseudonymMap()
+    )
+    assert "2023 2024" in out
+
+
+def test_grouped_digits_without_account_context_kept(pipeline):
+    # No account label / context word: sub-threshold, stays put.
+    out, _, _ = pipeline.strip(
+        "invoice 1234 5678 and 9012 3456", PseudonymMap()
+    )
+    assert "1234 5678" in out and "9012 3456" in out
+
+
+def test_account_digit_floor_rejects_fragments(pipeline):
+    # validate_result: fewer than 5 digits in total is never an account,
+    # even directly behind an a/c label.
+    out, _, _ = pipeline.strip("ref a/c 12 34 only", PseudonymMap())
+    assert "12 34" in out
+
+
 def test_strip_credit_card(pipeline):
     out, _, _ = pipeline.strip(f"Card for repayments: {VALID_CARD}", PseudonymMap())
     assert VALID_CARD not in out
