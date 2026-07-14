@@ -33,7 +33,42 @@ original PII — it is gitignored and must never leave the machine.**
 
 Flags: `--no-ner` (patterns only, fast), `--strip-orgs` (organization names
 are kept by default — merchant names carry analytical value), `--threshold`
-(default 0.4).
+(default 0.4), and the checksum-invalid identifier controls below.
+
+## Checksum-invalid identifiers
+
+A value shaped like a TFN whose mod-11 arithmetic fails is a typo, bad OCR,
+or forgery — all three worth surfacing rather than silently dropping.
+Shadow recognizers (`invalid_recognizers.py`) mirror the checksummed
+recognizers (TFN, Medicare, ABN, ACN, credit card/Luhn) with the validation
+inverted, emitting distinct classes: `*_INVALID` (checksum fails) and
+`*_MALFORMED` (structurally impossible, e.g. a Medicare first digit outside
+2-6) — the typo-vs-impossible distinction is exactly the forgery signal.
+
+Three orthogonal controls on `strip`:
+
+- `--invalid-identifiers {ignore,likely,context,all}` — which candidates
+  are *collected* (default `likely`). Cumulative tiers: `likely` needs
+  evidence inside the span (canonical grouping "123 456 782" or an adjacent
+  label "TFN: 123456780"); `context` adds bare digit runs promoted by
+  nearby context words (Presidio's lemma enhancer); `all` takes every
+  failing match — noisy, ~90% of random 9-digit runs fail the TFN checksum.
+- `--log-invalid-identifiers {yes,no}` (default `yes`) — list the collected
+  candidates on stderr with the precise failed rule. **The log is
+  near-PII** (a typo'd TFN is a real TFN minus a digit): local-only, like
+  the map file.
+- `--mask-invalid-identifiers {yes,no}` (default `no`) — also pseudonymize
+  them (`TFN_INVALID_1`, `MEDICARE_MALFORMED_1`, ...), so the
+  valid/invalid distinction survives into the stripped text. Combining
+  with `all` warns: it would eat most reference/receipt numbers.
+
+Guardrails: a candidate covered by a *validated* detection of another class
+is not collected (every valid TFN fails the ACN checksum; suppression keys
+on the validating recognizer's name so a GLiNER2 phone/card guess never
+suppresses); when a collected span overlaps a valid detection in masking,
+the extents union and the valid class wins the placeholder (recall-first).
+Tier-1 eval (2026-07-14): `likely` and `context` run zero-noise; `all`
+logged 44 noise findings over 11 docs.
 
 ## Detection layers
 

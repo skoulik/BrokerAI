@@ -27,10 +27,19 @@ def strip_csv(
     pipeline: PiiPipeline,
     pmap: PseudonymMap,
     columns: list[str] | None = None,
-) -> tuple[str, list]:
+) -> tuple[str, list, list]:
+    """Returns (stripped_csv, applied_detections, invalid_findings).
+
+    Invalid-finding offsets are relative to the per-column joined blob —
+    only their value/type/rule are meaningful to callers. Pattern matches
+    cannot cross the sentinel (it contains non-pattern characters), so
+    findings never straddle cells; when masking is on, the invalid spans
+    are part of the plan and get the same per-cell clamping as every
+    other span.
+    """
     rows = list(csv.reader(io.StringIO(text)))
     if not rows:
-        return text, []
+        return text, [], []
 
     header = rows[0]
     if columns:
@@ -44,14 +53,16 @@ def strip_csv(
         wanted = set(range(max(len(r) for r in rows)))
 
     all_spans = []
+    all_invalid = []
     for col in sorted(wanted):
         # Data rows only — the header row is column names, not PII.
         cells = [row[col] if col < len(row) else "" for row in rows[1:]]
         if not any(c.strip() for c in cells):
             continue
         joined = _SENTINEL.join(cells)
-        spans = pipeline.plan(joined)
+        spans, invalid = pipeline.detect(joined)
         all_spans.extend(spans)
+        all_invalid.extend(invalid)
 
         # Cell offset ranges within `joined`.
         bounds = []
@@ -86,4 +97,4 @@ def strip_csv(
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
     writer.writerows(rows)
-    return out.getvalue(), all_spans
+    return out.getvalue(), all_spans, all_invalid

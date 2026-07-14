@@ -13,7 +13,7 @@ CSV = (
 
 
 def test_strip_csv_processes_named_column_only(pipeline):
-    out, spans = strip_csv(CSV, pipeline, PseudonymMap(), columns=["Description"])
+    out, spans, _ = strip_csv(CSV, pipeline, PseudonymMap(), columns=["Description"])
     assert "olga@example.com" not in out
     assert "EMAIL_1" in out
     # untouched columns and structure survive
@@ -33,5 +33,5 @@ def test_strip_csv_consistent_placeholders_across_rows(pipeline):
         "01/02/2024,PayID olga@example.com\n"
         "05/02/2024,rent from olga@example.com\n"
     )
-    out, _ = strip_csv(text, pipeline, PseudonymMap(), columns=["Description"])
+    out, _, _ = strip_csv(text, pipeline, PseudonymMap(), columns=["Description"])
     assert out.count("EMAIL_1") == 2

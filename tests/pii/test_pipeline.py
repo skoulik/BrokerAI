@@ -16,7 +16,7 @@ def _rr(etype, start, end, score):
 
 def test_strip_valid_tfn(pipeline):
     text = f"Tax file number: {VALID_TFN} on record."
-    out, spans = pipeline.strip(text, PseudonymMap())
+    out, spans, _ = pipeline.strip(text, PseudonymMap())
     assert VALID_TFN not in out
     assert "TFN_1" in out
     assert any(s.entity_type == "AU_TFN" for s in spans)
@@ -25,27 +25,27 @@ def test_strip_valid_tfn(pipeline):
 def test_strip_labeled_account(pipeline):
     # "A/C" never survives tokenization as a context word; the labeled
     # pattern matches it in-span (recall-first, label lands in placeholder).
-    out, _ = pipeline.strip("Interest Charged From A/C 7412154728", PseudonymMap())
+    out, _, _ = pipeline.strip("Interest Charged From A/C 7412154728", PseudonymMap())
     assert "7412154728" not in out
     assert "ACCOUNT_1" in out
 
 
 def test_strip_credit_card(pipeline):
-    out, _ = pipeline.strip(f"Card for repayments: {VALID_CARD}", PseudonymMap())
+    out, _, _ = pipeline.strip(f"Card for repayments: {VALID_CARD}", PseudonymMap())
     assert VALID_CARD not in out
     assert "CARD_1" in out
 
 
 def test_strip_email(pipeline):
-    out, _ = pipeline.strip("PAYID PAYMENT FROM olga@example.com", PseudonymMap())
+    out, _, _ = pipeline.strip("PAYID PAYMENT FROM olga@example.com", PseudonymMap())
     assert "olga@example.com" not in out
     assert "EMAIL_1" in out
 
 
 def test_consistent_placeholders_across_calls(pipeline):
     pmap = PseudonymMap()
-    out1, _ = pipeline.strip(f"TFN: {VALID_TFN}", pmap)
-    out2, _ = pipeline.strip(f"quoted TFN {VALID_TFN} again", pmap)
+    out1, _, _ = pipeline.strip(f"TFN: {VALID_TFN}", pmap)
+    out2, _, _ = pipeline.strip(f"quoted TFN {VALID_TFN} again", pmap)
     assert "TFN_1" in out1 and "TFN_1" in out2
 
 

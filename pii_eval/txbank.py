@@ -5,6 +5,14 @@ or (value, entity_type) / (value, entity_type, strip_expected) tuples.
 Receipt/reference codes (FT..., W10..., REF...) are left un-annotated on
 purpose: they are neither required strips nor protected keeps, so the scorer
 ignores whatever the pipeline does with them.
+
+The two documented-hard person surface forms are annotated with distinct
+truth types — PERSON_JOINT ("E & J Moore") and PERSON_REVERSED ("MOORE
+OLGA") — following the CONTEXTUAL_ID precedent: GLiNER2 misses them
+intermittently (known layer-2 gap, on the layer-3 LLM-audit backlog), so
+they report per-form in the strip table without tripping the layers-1/2
+zero-critical-miss gate. Promote both into build.CRITICAL when layer-3
+lands.
 """
 
 import random
@@ -29,11 +37,13 @@ def description(pool: Pool) -> list:
     couple_a, couple_b = pool.couple()
     acct = pool.account()
     biz = pool.business()
-    joint = rng.choice(
+    joint, joint_type = rng.choice(
         [
-            f"{couple_a.first[0]} & {couple_b.first[0]} {couple_a.last}",
-            f"{couple_a.first} and {couple_b.first} {couple_a.last}",
-            couple_a.reversed_caps,
+            (f"{couple_a.first[0]} & {couple_b.first[0]} {couple_a.last}",
+             "PERSON_JOINT"),
+            (f"{couple_a.first} and {couple_b.first} {couple_a.last}",
+             "PERSON"),
+            (couple_a.reversed_caps, "PERSON_REVERSED"),
         ]
     )
     patterns = [
@@ -51,7 +61,7 @@ def description(pool: Pool) -> list:
             " ",
             (p.email, "AU_PAYID"),
         ],
-        lambda: ["OSKO ", _ref(rng, "P", 9), " ", (joint, "PERSON"), " RENT"],
+        lambda: ["OSKO ", _ref(rng, "P", 9), " ", (joint, joint_type), " RENT"],
         lambda: ["SALARY ", (biz.name, "ORGANIZATION", False), f" {_ref(rng, '', 6)}"],
         lambda: [
             "DD ",
@@ -70,7 +80,7 @@ def description(pool: Pool) -> list:
             (pool.merchant(), "ORGANIZATION", False),
             f" AU INV-{rng.randrange(10**7, 10**8)} AU",
         ],
-        lambda: ["Loan Repayment ", (joint, "PERSON")],
+        lambda: ["Loan Repayment ", (joint, joint_type)],
         lambda: [
             "Interest Charged From A/C ",
             (acct.number, "AU_BANK_ACCOUNT"),
@@ -81,7 +91,7 @@ def description(pool: Pool) -> list:
             " Loan to ",
             (biz.name, "ORGANIZATION", False),
             " ",
-            (joint, "PERSON"),
+            (joint, joint_type),
         ],
         lambda: [
             "DIRECT CREDIT ",

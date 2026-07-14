@@ -59,7 +59,7 @@ Tasks:
 - [ ] Overlaps merging algorithm — define and document. Interesting areas: how the weights are 
       combined (max, average, bayesian/aposteriori), what if winning classes of overlaps
       do not agree, should we merge at all in some cases.
-- [ ] Log checksum-invalid identifiers. If an identifier candidate passes the detectors, but
+- [x] Log checksum-invalid identifiers. If an identifier candidate passes the detectors, but
       is rejected by the checksum validator, this should be logged. Evaluate if the output 
       will become too noisy because of this and if so, make the feature optional. Rationale:
       detect typos, wrong OCR output or outright forgery - all three are important classes.
@@ -110,6 +110,39 @@ Tasks:
       lands: leak risk at mask=no (do other layers catch mangled TFNs?), log noise floor
       on clean documents — this confirms the defaults and whether `context` earns its
       keep. First customer of the repo-wide testbench (see root ROADMAP, Phase 2).
+      **Result (2026-07-14): shipped as planned** — pii/invalid_recognizers.py shadow
+      recognizers, three CLI controls, adopted defaults likely+log=yes+mask=no;
+      pii_eval injection docs (loan_inv/tx_inv, evidence-annotated in-span/context/
+      none) plus scorer axes logged/missed, stripped-anyway, noise; covered by
+      tests/pii/test_invalid.py). Findings beyond the plan:
+      - Suppression of "valid identifier of another class" must key on the
+        *validating recognizer's name*, not entity type: GLiNER2 emits PHONE_NUMBER/
+        CREDIT_CARD as unvalidated guesses, and an NER phone guess over a typo'd TFN
+        silently swallowed the finding (caught by the eval, regression-tested).
+        Coverage-based, not any-overlap: a spurious valid TFN *inside* a typo'd ABN
+        must not suppress the ABN finding (~11% of ABN tails pass the TFN checksum).
+      - Grouped-fragment dedupe needed: the 3-3-3 tail of an 11-digit ABN matches the
+        TFN/ACN shadow patterns; findings strictly contained in a longer finding are
+        dropped, identical spans all kept (same digits failing two checksums are one
+        candidate with two rules — both reported).
+      - Tier-1 eval (seed 42): likely = 5/5 in-span logged, ZERO noise; context =
+        +1/1 context-evidence logged, still ZERO noise — context more than earns its
+        keep on synthetic data and may deserve to become the default after tier-2
+        (real layouts) confirms; all = 7/7 logged but 44 noise findings over 11 docs
+        (licence numbers, ATO/policy refs — the predicted ~90% effect). Leak risk at
+        mask=no: 3 of 4 typo'd TFNs were stripped anyway by other layers (NER labels
+        them without checksumming); 1 CSV bare run survived — mask=yes exists for
+        exactly that.
+      - The eval's CSV per-cell clamping concern resolved for free: pattern matches
+        cannot cross the cell sentinel, and masked invalid spans ride the existing
+        clamp.
+      - The appended injection docs' fresh rng draws exposed intermittent GLiNER2
+        misses on joint-initials ("E & J Moore") and reversed-caps ("ROCHA RANDALL")
+        name forms — the already-documented layer-2 gap, previously unsampled at
+        seed 42. Following the CONTEXTUAL_ID precedent they now carry distinct truth
+        types (PERSON_JOINT 70%, PERSON_REVERSED 90% on seed 42), visible per-form in
+        the report without tripping the layers-1/2 gate; PROMOTE BOTH INTO
+        build.CRITICAL when the layer-3 LLM audit lands.
 - [x] Evaluate GLiNER2 (https://github.com/fastino-ai/GLiNER2) — why it exist, what it adds
       or improves compared to GLiNER, is it maintained, what license/usage terms.
       Result (2026-07-12): unified schema-driven extractor from Fastino (GLiNER lineage),

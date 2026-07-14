@@ -37,6 +37,19 @@ def _report(spans, text: str, file=sys.stderr) -> None:
         print(f"  {r.entity_type:<20} {r.score:.2f}  {value!r}", file=file)
 
 
+def _report_invalid(findings, file=sys.stderr) -> None:
+    # Near-PII (a typo'd TFN is a real TFN minus a digit) — stderr only,
+    # treat any capture of it as a local-only artifact like the map file.
+    print(
+        f"{len(findings)} checksum-invalid identifier candidate(s) "
+        "(typo / OCR error / forgery?):",
+        file=file,
+    )
+    for f in findings:
+        value = f.value.replace("\n", "\\n")
+        print(f"  {f.entity_type:<22} {value!r}  [{f.rule}]", file=file)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="pii", description="Local PII stripping tool"
@@ -71,6 +84,26 @@ def main(argv=None) -> int:
         "--columns",
         help="comma-separated column names to process (CSV mode; default all)",
     )
+    p_strip.add_argument(
+        "--invalid-identifiers",
+        choices=["ignore", "all", "likely", "context"], default="likely",
+        help="which checksum-rejected identifier candidates to collect: "
+             "ignore; likely = evidence inside the span (canonical digit "
+             "grouping or an adjacent label); context = also bare digit "
+             "runs promoted by nearby context words; all = every failing "
+             "pattern match (noisy) (default: likely)",
+    )
+    p_strip.add_argument(
+        "--log-invalid-identifiers", choices=["yes", "no"], default="yes",
+        help="list collected checksum-invalid candidates on stderr — the "
+             "list is near-PII, keep it local like the map file "
+             "(default: yes)",
+    )
+    p_strip.add_argument(
+        "--mask-invalid-identifiers", choices=["yes", "no"], default="no",
+        help="also pseudonymize collected candidates (placeholder classes "
+             "TFN_INVALID_n, MEDICARE_MALFORMED_n, ...) (default: no)",
+    )
 
     p_analyze = sub.add_parser(
         "analyze", help="show detections without modifying anything"
@@ -78,6 +111,10 @@ def main(argv=None) -> int:
     p_analyze.add_argument("input", help="input text file, or - for stdin")
     p_analyze.add_argument("--no-ner", action="store_true")
     p_analyze.add_argument("--threshold", type=float, default=0.4)
+    p_analyze.add_argument(
+        "--invalid-identifiers",
+        choices=["ignore", "all", "likely", "context"], default="likely",
+    )
 
     p_rehyd = sub.add_parser(
         "rehydrate", help="restore original values in a cloud response"
@@ -95,6 +132,16 @@ def main(argv=None) -> int:
         _write(args.output, pmap.rehydrate(_read(args.input)))
         return 0
 
+    mask_invalid = getattr(args, "mask_invalid_identifiers", "no") == "yes"
+    if mask_invalid and args.invalid_identifiers == "all":
+        print(
+            "warning: --mask-invalid-identifiers=yes with "
+            "--invalid-identifiers=all pseudonymizes most reference/receipt "
+            "numbers (~90% of random 9-digit runs fail the TFN checksum) "
+            "and guts analytical utility",
+            file=sys.stderr,
+        )
+
     strip_entities = set(DEFAULT_STRIP_ENTITIES)
     if getattr(args, "strip_orgs", False):
         strip_entities.add("ORGANIZATION")
@@ -102,6 +149,8 @@ def main(argv=None) -> int:
         use_ner=not args.no_ner,
         threshold=args.threshold,
         strip_entities=strip_entities,
+        invalid_identifiers=args.invalid_identifiers,
+        mask_invalid=mask_invalid,
     )
     text = _read(args.input)
 
@@ -114,15 +163,17 @@ def main(argv=None) -> int:
         from pii.csv_mode import strip_csv
 
         columns = args.columns.split(",") if args.columns else None
-        stripped, spans = strip_csv(text, pipeline, pmap, columns=columns)
+        stripped, spans, invalid = strip_csv(text, pipeline, pmap, columns=columns)
         pmap.save()
         if args.report:
             print(f"{len(spans)} entities replaced", file=sys.stderr)
     else:
-        stripped, spans = pipeline.strip(text, pmap)
+        stripped, spans, invalid = pipeline.strip(text, pmap)
         pmap.save()
         if args.report:
             _report(spans, text)
+    if args.log_invalid_identifiers == "yes" and invalid:
+        _report_invalid(invalid)
     _write(args.output, stripped)
     return 0
 

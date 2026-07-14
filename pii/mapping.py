@@ -22,6 +22,15 @@ PLACEHOLDER_PREFIXES = {
     "AU_MEDICARE": "MEDICARE",
     "AU_ABN": "ABN",
     "AU_ACN": "ACN",
+    # checksum-invalid candidate classes (pii.invalid_recognizers) — the
+    # valid/invalid distinction survives into the stripped text so
+    # cloud-side analysis can reason about typos/forgery
+    "AU_TFN_INVALID": "TFN_INVALID",
+    "AU_MEDICARE_INVALID": "MEDICARE_INVALID",
+    "AU_MEDICARE_MALFORMED": "MEDICARE_MALFORMED",
+    "AU_ABN_INVALID": "ABN_INVALID",
+    "AU_ACN_INVALID": "ACN_INVALID",
+    "CREDIT_CARD_INVALID": "CARD_INVALID",
     "AU_BSB": "BSB",
     "AU_BANK_ACCOUNT": "ACCOUNT",
     "AU_PAYID": "PAYID",

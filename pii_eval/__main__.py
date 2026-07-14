@@ -24,6 +24,10 @@ def main() -> int:
     sc.add_argument("--no-ner", action="store_true",
                     help="patterns only (fast; names/addresses will leak)")
     sc.add_argument("--threshold", type=float, default=0.4)
+    sc.add_argument("--invalid-identifiers",
+                    choices=["ignore", "all", "likely", "context"],
+                    default="likely",
+                    help="collection tier for checksum-invalid candidates")
 
     args = parser.parse_args()
     if args.command == "generate":
@@ -35,7 +39,8 @@ def main() -> int:
     from pii_eval.score import score
 
     return score(args.corpus, use_ner=not args.no_ner,
-                 threshold=args.threshold)
+                 threshold=args.threshold,
+                 invalid_identifiers=args.invalid_identifiers)
 
 
 if __name__ == "__main__":
