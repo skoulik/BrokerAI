@@ -81,6 +81,12 @@ def main(argv=None) -> int:
         help="treat input as CSV: detect per cell, preserve structure",
     )
     p_strip.add_argument(
+        "--image", action="store_true",
+        help="treat input as an image: OCR, detect on the recognized text, "
+             "paint placeholders over the PII pixels (requires -o; output "
+             "format follows the file extension)",
+    )
+    p_strip.add_argument(
         "--columns",
         help="comma-separated column names to process (CSV mode; default all)",
     )
@@ -152,6 +158,25 @@ def main(argv=None) -> int:
         invalid_identifiers=args.invalid_identifiers,
         mask_invalid=mask_invalid,
     )
+    if getattr(args, "image", False):
+        if args.csv:
+            parser.error("--image and --csv are mutually exclusive")
+        if not args.output or args.output == "-":
+            parser.error("--image requires -o OUTPUT (an image file path)")
+        from PIL import Image
+
+        from pii.image_mode import strip_image
+
+        pmap = PseudonymMap(args.map)
+        result = strip_image(Image.open(args.input), pipeline, pmap)
+        result.image.save(args.output)
+        pmap.save()
+        if args.report:
+            _report(result.spans, result.ocr.text)
+        if args.log_invalid_identifiers == "yes" and result.invalid:
+            _report_invalid(result.invalid)
+        return 0
+
     text = _read(args.input)
 
     if args.command == "analyze":
