@@ -1,0 +1,19 @@
+[project]
+name = "brokerai"
+version = "0.1.0"
+requires-python = ">=3.12"
+# Dependency pinning + uv migration is a separate Phase 2 task (ROADMAP.md);
+# for now this file only carries the testbench configuration.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Default run is fast and model-free. Heavyweight tests are opt-in:
+#   pytest -m "slow or model"      everything that loads GLiNER2 / full evals
+#   pytest -m ""                   absolutely everything
+# (a -m on the command line overrides the one from addopts)
+addopts = "-m 'not slow and not model and not gpu' --junitxml=test-results/junit.xml"
+markers = [
+    "slow: takes more than a few seconds (corpus generation + full eval runs)",
+    "model: loads a heavyweight model (GLiNER2 NER); excluded from the default run",
+    "gpu: requires CUDA",
+]

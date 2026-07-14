@@ -13,3 +13,7 @@ pii_eval/corpus*/
 
 # Python bytecode cache (analyze_statement imports verify_examples)
 __pycache__/
+
+# Testbench artifacts (pytest --junitxml, see pyproject.toml)
+test-results/
+.pytest_cache/

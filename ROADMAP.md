@@ -36,7 +36,7 @@ engineering records live in [pii/ROADMAP.md](pii/ROADMAP.md).**
 ## Phase 2 — Foundation cleanup
 
 - [ ] `pyproject.toml` + uv; pin dependencies
-- [ ] **Testbench** (agreed 2026-07-14; pull forward — applies to the Phase 1 pii work
+- [x] **Testbench** (agreed 2026-07-14; pull forward — applies to the Phase 1 pii work
       first, starting with the checksum-invalid eval-generator extension): top-level
       `tests/` with per-feature pytest tests mirroring the package layout (`tests/pii/`,
       later `tests/rag_tools/`, ...). Markers to keep the default run fast and
@@ -48,6 +48,13 @@ engineering records live in [pii/ROADMAP.md](pii/ROADMAP.md).**
       as a marked slow test so "run everything" is one command. Config lands in
       `pyproject.toml` (ties into the item above; a minimal pyproject now is fine
       without the full uv migration).
+      *(2026-07-14: done — `pyproject.toml` (`[tool.pytest.ini_options]`: markers,
+      default `-m "not slow and not model and not gpu"`, JUnit XML to
+      `test-results/junit.xml`), `tests/{pii,pii_eval}/`, session-cached
+      pipeline-factory fixture in `tests/conftest.py`, tier-1 gate as
+      `tests/pii_eval/test_gate.py` (slow+model). pytest installed system-wide
+      (9.1.1). Default suite ~10 s; override markers from the CLI since a
+      command-line `-m` replaces the addopts one.)*
 - [ ] **llama.cpp (`llama-server`) as the local model server** (chat + embeddings,
       OpenAI-compatible API — the existing `Embedder` needs only config changes). Decided
       2026-07-12, replacing the earlier Ollama plan; see machine topology in
