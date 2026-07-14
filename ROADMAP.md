@@ -99,8 +99,79 @@ Tasks:
       can get back to it at any time. *(2026-07-13: removed `pii/gliner_recognizer.py`,
       the `--ner-backend` switch, and the `gliner` dep; GLiNER2 is the sole layer-2
       backend. Last commit with v1: 46212eb.)*
-- [ ] Review sources of gliner2-rs (https://github.com/SemplificaAI/gliner2-rs) — perhaps
+- [x] Review sources of gliner2-rs (https://github.com/SemplificaAI/gliner2-rs) — perhaps
       we can leverage some of their ideas, knowledge and experience in relation to GLiNER2
+      Result (2026-07-14): reviewed v0.5.1 (~2.3k lines Rust + ONNX export scripts;
+      Apache 2.0, single-author beta from Semplifica s.r.l.). Recommendation: do NOT
+      adopt — their processor has no label-description support (we depend on it), it's
+      Rust/ONNX vs our Python/Presidio stack, and their own benchmarks show PyTorch CUDA
+      ~6x faster than best-case ONNX on discrete GPUs (the fragmented 8-session export
+      pays per-fragment launch overhead), so no perf win on our 2080 Ti. ONNX/Rust route
+      only matters for cold start, CPU/edge, or NPU targets. Harvested knowledge:
+      (a) **max_width = 8 words** — confirmed in our model's config.json; GLiNER2
+      enumerates spans of 1..8 whitespace words, so entities longer than 8 words
+      cannot be emitted → root cause of multi-part AU address fragmentation. NOT
+      baked into weights (SpanMarkerV0 span rep = f(start token, end token), no
+      width embedding), so it can be lifted at inference by overriding
+      `model.max_width` — but the model saw zero positive spans wider than 8 during
+      training, so whether the scorer generalizes is an open experiment (cheap:
+      bump to 12, rerun the address eval). If it fails, the LoRA task is the proper
+      fix (train with larger max_width; lora.py already targets span_rep).
+      (b) **max_count = 20** — baked into trained weights twice (count_pred MLP has a
+      literal 20-class output, CountLSTM.pos_embedding has 20 rows). BUT for plain
+      entity extraction (our use) it does NOT cap mentions: `_extract_entities` uses
+      only count slot 0 and returns every span above threshold; pred_count only acts
+      as an empty-result gate (≤0 → no output). Count slots matter for structure/
+      relation tasks only. No eval probe needed.
+      (c) Count-based decoding (one count from the [P] token, all labels of a task
+      share the slots + NMS) explains the label-competition effect we work around with
+      separate address-only passes — the workaround is well-founded.
+      (d) Their `mask_pii_text` drops overlapped spans by score rank — the leaky
+      approach we already rejected in favour of merging; confirms our choice.
+      (e) Their export scripts default to a self-fine-tuned GLiNER2 checkpoint —
+      independent evidence GLiNER2 fine-tunes fine (relevant to the LoRA task).
+      (f) If we ever use the ort crate: pin =2.0.0-rc.9 (rc.11/rc.12 hang).
+- [ ] Experiment: lift GLiNER2 max_width at inference. Follow-up to the gliner2-rs
+      review above: max_width=8 is a span-enumeration parameter, not baked into
+      weights, so the model *can* score wider spans — but it saw zero positive
+      spans wider than 8 words during training, so whether scores generalize is an
+      open empirical question. Plan:
+      1. Measure the word-length distribution of gold spans in the tier-1 corpus
+         (especially ADDRESS) to pick candidate widths — expect 10/12/16.
+      2. Override BOTH `model.max_width` and `model.span_rep.span_rep_layer.max_width`
+         after from_pretrained (SpanMarkerV0 keeps its own copy used in a .view();
+         overriding only the model attr shape-errors).
+      3. Rerun the tier-1 eval per width vs the width-8 baseline: per-class P/R with
+         exact-span matching; the headline metric is multi-part addresses emitted as
+         a single span at usable score (address passes run at threshold 0.3). Watch
+         for new wide-span false positives (spans swallowing neighbours) and for
+         greedy NMS still preferring a high-scoring fragment over the full span.
+      4. Measure latency (candidate spans scale L×8 → L×W; encoder unchanged, so
+         expect a small delta).
+      Success: fragmented addresses come out whole with no precision regression
+      elsewhere → adopt as a recognizer option. Failure is still informative: it
+      pins the LoRA task's design (fine-tune with a larger max_width; no weights
+      are width-shaped, so LoRA on span_rep suffices — no tensor surgery).
+- [ ] Experiment: labels-per-pass (schema partitioning). Label competition
+      suppresses sibling scores (documented in pii/gliner2_recognizer.py — the same
+      span scores 1.0 alone vs 0.49 among siblings); addresses already get dedicated
+      passes. Question: does everything benefit from isolation? Grid to evaluate on
+      tier-1, per-class P/R + layer-2 latency:
+      (a) all-in-one (current baseline, minus the address passes),
+      (b) full isolation — one label per pass (~11 passes; each pass re-encodes the
+          3000-char window, so expect roughly linear cost growth),
+      (c) themed groups — e.g. semantic {person, org, address, DOB} split from
+          numeric IDs {TFN, Medicare, phone, bank account, licence, passport},
+      (d) current production config as reference.
+      Hypotheses: isolation lifts recall on semantic classes (competition is what we
+      pay descriptions to overcome) but hurts precision on confusable numeric IDs,
+      where competition doubles as disambiguation — a lone "9-digit number" label
+      will claim TFNs, ACNs and phone fragments alike. Numeric precision loss is
+      partly tolerable since layer-1 checksum/regex recognizers dominate those
+      classes and validation filters impostors. Expected sweet spot: a few themed
+      groups, not full isolation. Sequencing: needs at least a provisional
+      cross-pass overlap-resolution rule — best run together with (or right after)
+      the overlaps-merging task above.
 
 Evaluation (constraint: real documents are classified until stripped — cloud models can only
 ever see synthetic/declassified data or aggregate metrics):
