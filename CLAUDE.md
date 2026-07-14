@@ -35,7 +35,3 @@ Data flow: PDF → header-detected section tree → token chunks → embeddings 
 
 - `rag_tools/tokenizer.py` is a vendored Llama 3 tiktoken tokenizer that is currently unused by the pipeline (the HF AutoTokenizer is used instead).
 - `frontend/js` and `frontend/css` contain vendored jQuery UI and PDF.js builds; jQuery itself is loaded from Google's CDN in `index.html`.
-
-## Semantic Search (ChunkHound)
-
-A ChunkHound MCP server is registered for this repo (`search`, `code_research` tools). Use semantic search for *conceptual* queries where the wording is unknown â€” "is this idea already explained somewhere?" â€” e.g. duplication/consistency checks before writing a new section. Grep still wins for symbols/exact strings; trust only the top 1â€“2 hits. Requires the local llama-server (manual start; on connection errors ask Sergei to launch it). Details, quirks, and the full setup: memory file `chunkhound-ollama-setup.md`.
