@@ -34,6 +34,7 @@ from presidio_analyzer.predefined_recognizers import (
     AuMedicareRecognizer,
     AuTfnRecognizer,
     PhoneRecognizer,
+    SpacyRecognizer,
 )
 
 from pii.invalid_recognizers import (
@@ -134,6 +135,20 @@ class PiiPipeline:
             from pii.gliner2_recognizer import Gliner2Recognizer
 
             registry.add_recognizer(Gliner2Recognizer())
+            # With GLiNER2 owning PERSON/ORG/dates, en_core_web_sm's
+            # emissions of those types only add glue and false positives
+            # (PERSON spans crossing OCR line breaks, dates as PERSON).
+            # Its LOCATION stays: bare city names in prose are the only
+            # partial coverage of contextual identifiers ("a teacher in
+            # Cairns") until the layer-3 LLM audit lands — tier-1 ablation
+            # 2026-07-14: removing spacy entirely turns CONTEXTUAL_ID
+            # 3x partial into 3x leaked, everything else unchanged.
+            # Without NER the default SpacyRecognizer is kept as the only
+            # name detector (patterns-only mode documents its leaks).
+            registry.remove_recognizer("SpacyRecognizer")
+            registry.add_recognizer(
+                SpacyRecognizer(supported_entities=["LOCATION"])
+            )
         self.analyzer = AnalyzerEngine(
             nlp_engine=nlp_engine, registry=registry, supported_languages=["en"]
         )
