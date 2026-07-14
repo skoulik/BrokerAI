@@ -37,6 +37,20 @@ around, with different results:
 
 GLiNER2 schemas attach a description to each label; descriptions carry the
 AU-specific definitions instead of overloading the label string.
+
+The model ships with max_width=8: spans are enumerated over 1..8 words, so
+longer entities can never be emitted — the root cause of one-line AU
+addresses ('Flat 66 7 Maddox Alleyway, New Kaylamouth NSW 2926', 9 words;
+the tokenizer counts the comma as a word, so 10) coming out as fragments.
+max_width is an enumeration parameter, not baked into weights (SpanMarkerV0
+scores a span from its start/end tokens only), so it is lifted at inference
+by overriding BOTH model.max_width and the span_rep layer's copy (used in a
+.view(); overriding only the model attribute shape-errors). Experiment
+2026-07-14 on the tier-1 corpus: the scorer generalizes past its training
+width — full one-line addresses score 0.99 as single spans (fragments
+0.29), NMS keeps the whole span, no precision change at width 10-12, +1.5%
+layer-2 latency at 12; width 16 showed the first extra ORGANIZATION
+over-strip, so stay below it.
 """
 
 import contextlib
@@ -48,6 +62,8 @@ from presidio_analyzer import EntityRecognizer, RecognizerResult
 
 DEFAULT_MODEL = "fastino/gliner2-privacy-filter-PII-multi"
 CACHE_DIR = "models/hf-cache"
+# Widest span (in words) the model may emit; see module docstring.
+DEFAULT_MAX_WIDTH = 12
 
 # GLiNER2 label -> (description, Presidio entity type). Same target entity
 # set as the removed GLiNER v1 backend used, so eval scores stay comparable.
@@ -137,10 +153,12 @@ class Gliner2Recognizer(EntityRecognizer):
         self,
         model_name: str = DEFAULT_MODEL,
         threshold: float = 0.4,
+        max_width: int = DEFAULT_MAX_WIDTH,
         **kwargs,
     ):
         self.model_name = model_name
         self.threshold = threshold
+        self.max_width = max_width
         self._model = None
         super().__init__(
             supported_entities=sorted({e for _, e in LABELS.values()}),
@@ -164,6 +182,8 @@ class Gliner2Recognizer(EntityRecognizer):
                     self.model_name,
                     map_location="cuda" if torch.cuda.is_available() else None,
                 )
+            self._model.max_width = self.max_width
+            self._model.span_rep.span_rep_layer.max_width = self.max_width
         return self._model
 
     def analyze(self, text, entities, nlp_artifacts=None):

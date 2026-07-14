@@ -95,6 +95,10 @@ Tasks:
       fragmentation gap at the model level (GLiNER2 ships open training code and
       load_adapter(); pii_eval's generator can produce the training pairs). Revisit after
       the overlaps-merging task lands, which should already close most of the gap.
+      *(2026-07-14: priority further reduced — the max_width=12 lift below closed the
+      one-line-address fragmentation on tier-1; LoRA now only matters if real-world
+      wide spans score poorly, or for the '53 MILES SUBWAY'-style bare street-line
+      recall misses.)*
 - [x] Cleanup sources by removing GLiNER (v1) implementation — it is in git anyways, we
       can get back to it at any time. *(2026-07-13: removed `pii/gliner_recognizer.py`,
       the `--ner-backend` switch, and the `gliner` dep; GLiNER2 is the sole layer-2
@@ -131,27 +135,46 @@ Tasks:
       (e) Their export scripts default to a self-fine-tuned GLiNER2 checkpoint —
       independent evidence GLiNER2 fine-tunes fine (relevant to the LoRA task).
       (f) If we ever use the ort crate: pin =2.0.0-rc.9 (rc.11/rc.12 hang).
-- [ ] Experiment: lift GLiNER2 max_width at inference. Follow-up to the gliner2-rs
+- [x] Experiment: lift GLiNER2 max_width at inference. Follow-up to the gliner2-rs
       review above: max_width=8 is a span-enumeration parameter, not baked into
       weights, so the model *can* score wider spans — but it saw zero positive
-      spans wider than 8 words during training, so whether scores generalize is an
-      open empirical question. Plan:
-      1. Measure the word-length distribution of gold spans in the tier-1 corpus
-         (especially ADDRESS) to pick candidate widths — expect 10/12/16.
-      2. Override BOTH `model.max_width` and `model.span_rep.span_rep_layer.max_width`
-         after from_pretrained (SpanMarkerV0 keeps its own copy used in a .view();
-         overriding only the model attr shape-errors).
-      3. Rerun the tier-1 eval per width vs the width-8 baseline: per-class P/R with
-         exact-span matching; the headline metric is multi-part addresses emitted as
-         a single span at usable score (address passes run at threshold 0.3). Watch
-         for new wide-span false positives (spans swallowing neighbours) and for
-         greedy NMS still preferring a high-scoring fragment over the full span.
-      4. Measure latency (candidate spans scale L×8 → L×W; encoder unchanged, so
-         expect a small delta).
-      Success: fragmented addresses come out whole with no precision regression
-      elsewhere → adopt as a recognizer option. Failure is still informative: it
-      pins the LoRA task's design (fine-tune with a larger max_width; no weights
-      are width-shaped, so LoRA on span_rep suffices — no tensor surgery).
+      spans wider than 8 words during training, so whether scores generalize was an
+      open empirical question.
+      Result (2026-07-14): **success — adopted, default max_width=12** (constructor
+      option on Gliner2Recognizer, override applied after from_pretrained to both
+      `model.max_width` and `model.span_rep.span_rep_layer.max_width`; the plan's
+      caveat about the span_rep copy was right). Findings, per plan step:
+      1. Corpus width distribution: only ADDRESS exceeds 8 words; widest gold
+         spans are the four 9-word one-line addresses (the known fragmentation
+         cases); everything else ≤ 4 words.
+      2. The scorer generalizes past its training width: 'Flat 66 7 Maddox
+         Alleyway, New Kaylamouth NSW 2926' scores 0.99 as ONE span at width ≥ 10
+         vs 0.29 for the locality fragment at width 8. Width 9 was NOT enough —
+         the model's word tokenizer counts the comma as a word, so nominal word
+         counts need ~+1 margin. NMS keeps the whole span and drops fragments.
+      3. Tier-1 eval (same code, per width): ADDRESS 6/4/2 (stripped/partial/
+         leaked) at w8 → 10/0/2 at w10/12/16 — all four one-line addresses flip
+         partial→stripped; every other class unchanged; ORGANIZATION over-strips
+         unchanged at w10/12 (52k/8o) with one extra over-strip at w16 → first
+         sign of wide-span FP creep, so 12 chosen, not 16. The 2 remaining
+         ADDRESS leaks ('53 MILES SUBWAY', 3 words) are width-independent recall
+         misses (all-caps street line with no state/postcode context).
+      4. Latency (warmed-up, 3-pass schema on a 3000-char window, CUDA): 36.8 ms
+         (w8) → 37.3 ms (w12, +1.5%) → 38.4 ms (w16, +4%). Negligible.
+      Implication for the LoRA task: no architectural blocker and inference
+      already handles wide spans; fine-tuning with larger max_width remains
+      desirable only to *train* on wide positives if real-world addresses
+      regress — not needed for the synthetic corpus.
+      The address workarounds in the recognizer (dedicated address-only passes,
+      the 0.3 threshold with score flooring, adjacent-span coalescing) are
+      KEPT unchanged — max_width lifts what the model *can* emit, not the label
+      competition or the low AU-address confidences those workarounds exist for.
+- [ ] Ablation: are the address workarounds still needed at max_width=12?
+      Postponed (decision 2026-07-14) until the tier-1 corpus has more and more
+      varied address examples — 12 ADDRESS spans from a handful of templates is
+      too thin a basis for removing belt-and-braces protections. When picked up,
+      fold it into the labels-per-pass experiment below (same mechanics: rerun
+      the eval with the extra address passes disabled).
 - [ ] Experiment: labels-per-pass (schema partitioning). Label competition
       suppresses sibling scores (documented in pii/gliner2_recognizer.py — the same
       span scores 1.0 alone vs 0.49 among siblings); addresses already get dedicated
