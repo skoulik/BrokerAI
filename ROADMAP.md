@@ -36,6 +36,18 @@ engineering records live in [pii/ROADMAP.md](pii/ROADMAP.md).**
 ## Phase 2 — Foundation cleanup
 
 - [ ] `pyproject.toml` + uv; pin dependencies
+- [ ] **Testbench** (agreed 2026-07-14; pull forward — applies to the Phase 1 pii work
+      first, starting with the checksum-invalid eval-generator extension): top-level
+      `tests/` with per-feature pytest tests mirroring the package layout (`tests/pii/`,
+      later `tests/rag_tools/`, ...). Markers to keep the default run fast and
+      model-free (`slow`, `model`/`gpu` for anything loading GLiNER2 or needing CUDA);
+      session-scoped fixtures so heavyweight models load once per run. Reporting:
+      terminal summary plus a machine-readable artifact (JUnit XML or pytest-html) for
+      review. Deterministic unit/regression tests complement — not replace — the
+      statistical `pii_eval` corpus harness; expose the tier-1 zero-critical-miss gate
+      as a marked slow test so "run everything" is one command. Config lands in
+      `pyproject.toml` (ties into the item above; a minimal pyproject now is fine
+      without the full uv migration).
 - [ ] **llama.cpp (`llama-server`) as the local model server** (chat + embeddings,
       OpenAI-compatible API — the existing `Embedder` needs only config changes). Decided
       2026-07-12, replacing the earlier Ollama plan; see machine topology in

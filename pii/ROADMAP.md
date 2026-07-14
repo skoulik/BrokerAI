@@ -63,6 +63,53 @@ Tasks:
       is rejected by the checksum validator, this should be logged. Evaluate if the output 
       will become too noisy because of this and if so, make the feature optional. Rationale:
       detect typos, wrong OCR output or outright forgery - all three are important classes.
+      Planned design (2026-07-14 discussion, Sergei + Claude): three orthogonal controls.
+      `--invalid-identifiers={ignore,all,likely,context}` selects which checksum-rejected
+      candidates are *collected*; `--log-invalid-identifiers={yes,no}` and
+      `--mask-invalid-identifiers={yes,no}` then act independently on the collected set.
+      Collection tiers, distinguished by *where the evidence sits*:
+      - ignore = today's silent drop; all = every pattern match failing its checksum;
+      - likely = evidence INSIDE the matched span: canonical digit grouping
+        ("123 456 782") or an immediately-adjacent label captured by the regex itself
+        ("TFN: 123456780") — purely lexical, no NLP; accidental digit runs almost never
+        carry canonical grouping or a label;
+      - context = evidence OUTSIDE the span: bare unformatted runs promoted by nearby
+        context words via Presidio's lemma-based context enhancer (label in a form header,
+        value in a cell — patterns can't reach that; the enhancer can).
+      Implementation note: no deep Presidio hook or multi-pass needed — add *shadow
+      recognizers* mirroring the checksummed recognizers (AU_TFN, AU_MEDICARE, AU_ABN,
+      AU_ACN, CREDIT_CARD/Luhn) that emit invalid-class entity types with an inverted
+      validate_result (emit only when the checksum FAILS). The collection tiers are then
+      just per-pattern base-score configuration, and `context` falls out of Presidio's own
+      context enhancer exactly the way AuAccountNumberRecognizer works today (low base
+      score + context boost). mask=yes simply adds the invalid classes to strip_entities.
+      Decided:
+      - Distinct placeholder classes, TWO per failure mode: `*_INVALID` (checksum fails,
+        e.g. AU_TFN_INVALID_1) and `*_MALFORMED` (structurally impossible, e.g. Medicare
+        first digit outside 2-6: AU_MEDICARE_MALFORMED_1) — they arise from different
+        mechanisms anyway (inverted validation on the same pattern vs a RELAXED shadow
+        pattern, since Presidio's Medicare regex constrains the first digit so such
+        numbers never reach the validator), and the checksum-typo vs structurally-
+        impossible distinction is exactly the forgery signal cloud-side analysis needs.
+        Report records the precise failed rule.
+      - Overlap rule: when an invalid-class span overlaps a valid detection, UNION the
+        extents but the valid class wins the type/placeholder regardless of score
+        (recall-first: the loser's uncovered tail must never leak; mechanically a
+        tie-break in _merge_overlaps ranking invalid classes below any valid type —
+        concrete input to the overlaps-merging task above).
+      - Warn on mask=yes with `--invalid-identifiers=all` — it would pseudonymize most
+        reference/receipt numbers on a statement (~90% of random 9-digit runs fail the
+        TFN checksum) and gut analytical utility.
+      Defaults (proposed): likely + log=yes + mask=no.
+      Still open: CSV mode needs the same per-cell span clamping NER spans got; the
+      log/report content is near-PII (a typo'd TFN is a real TFN minus a digit) —
+      document it as a local-only artifact like map.json.
+      Sequencing (decided 2026-07-14): eval generator FIRST, then the feature. Extend
+      pii_eval with checksum-invalid injection (single-digit typos, wrong first digits)
+      with ground truth known by construction, so the feature can be scored the moment it
+      lands: leak risk at mask=no (do other layers catch mangled TFNs?), log noise floor
+      on clean documents — this confirms the defaults and whether `context` earns its
+      keep. First customer of the repo-wide testbench (see root ROADMAP, Phase 2).
 - [x] Evaluate GLiNER2 (https://github.com/fastino-ai/GLiNER2) — why it exist, what it adds
       or improves compared to GLiNER, is it maintained, what license/usage terms.
       Result (2026-07-12): unified schema-driven extractor from Fastino (GLiNER lineage),
