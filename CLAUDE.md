@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 BrokerAI is a RAG (retrieval-augmented generation) semantic search tool over mortgage lender policy PDFs (Australian lenders: ANZ, AFG, Advantedge, etc.). It has an offline ingestion pipeline and a web app that searches the resulting vector store and displays hits alongside the source PDF.
 
-The project is being revived in phases (see `ROADMAP.md`). Phase 1 is a standalone PII-stripping tool in `pii/` (eval harness in `pii_eval/`), isolated from the RAG code and documented by its own `pii/README.md`, `pii/ROADMAP.md`, and `pii/CLAUDE.md`.
+The project is being revived in phases (see `ROADMAP.md`; design decisions in `ARCHITECTURE.md`). Phase 1 is a standalone PII-stripping tool in `pii/` (eval harness in `pii_eval/`), isolated from the RAG code and documented by its own set of files: `pii/README.md` (usage), `pii/ARCHITECTURE.md` (design decisions), `pii/ROADMAP.md` (overview), `pii/TODO.md` (open tasks), `pii/DONE.md` (completed-task records), `pii/CLAUDE.md`.
 
 ## Commands
 

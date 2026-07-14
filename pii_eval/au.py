@@ -192,8 +192,8 @@ def luhn_valid(d: str) -> bool:
 # --- Checksum-invalid injectors ----------------------------------------------
 # Single-digit typos (and, for Medicare, structurally impossible first
 # digits) with ground truth known by construction — the eval side of the
-# pii ROADMAP "log checksum-invalid identifiers" task: typos, wrong OCR
-# output and forgery all look exactly like this.
+# pii "log checksum-invalid identifiers" task (record in pii/DONE.md):
+# typos, wrong OCR output and forgery all look exactly like this.
 
 
 def _typo(rng: random.Random, formatted: str) -> str:

@@ -3,7 +3,8 @@
 Each recognizer mirrors a checksum-validated one (Presidio's AU_TFN,
 AU_MEDICARE, AU_ABN, AU_ACN, CREDIT_CARD) but with the validation
 INVERTED: it emits only when the mirrored rule FAILS, under a distinct
-entity type. Purpose (ROADMAP): surface typos, wrong OCR output and
+entity type. Purpose (design record in DONE.md): surface typos, wrong OCR
+output and
 outright forgery — a value that looks exactly like a TFN but fails the
 mod-11 arithmetic is one of those three.
 

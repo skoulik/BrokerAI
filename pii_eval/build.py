@@ -7,7 +7,7 @@ annotation types use the pii pipeline's entity names (pii/pipeline.py).
 
 from dataclasses import dataclass, asdict
 
-# Entity types whose leak is an automatic acceptance failure (ROADMAP:
+# Entity types whose leak is an automatic acceptance failure (pii/ROADMAP.md:
 # scoring is recall-first and severity-weighted).
 CRITICAL = {
     "AU_TFN", "AU_MEDICARE", "AU_BANK_ACCOUNT", "AU_BSB",

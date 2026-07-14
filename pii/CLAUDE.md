@@ -1,8 +1,11 @@
 # CLAUDE.md — pii/
 
-Guidance for Claude Code sessions working in this directory. See [README.md](README.md) for
-usage and detection-layer overview, and [ROADMAP.md](ROADMAP.md) for the Phase 1 task list,
-design decisions, and completed-task engineering records.
+Guidance for Claude Code sessions working in this directory. Doc layout (reorganized
+2026-07-14): [README.md](README.md) — usage; [ARCHITECTURE.md](ARCHITECTURE.md) — module
+map, pipelines, and dated design decisions; [ROADMAP.md](ROADMAP.md) — activity overview
+and eval tiers; [TODO.md](TODO.md) — open tasks with full detail; [DONE.md](DONE.md) —
+completed tasks with their engineering records, verbatim. New decisions go to
+ARCHITECTURE.md; finished TODO items move to DONE.md with their records.
 
 ## Working agreements
 
@@ -20,7 +23,7 @@ design decisions, and completed-task engineering records.
   past ~12 (wide-span false-positive creep starts around 16).
 - **SpacyRecognizer is LOCATION-only when NER is on.** GLiNER2 owns PERSON/ORG; spaCy's
   PERSON/DATE_TIME emissions are glue/FP-prone on OCR text (2026-07-14 debug, see
-  `tests/pii/test_spacy_policy.py` and the ROADMAP record). Patterns-only mode (`--no-ner`)
+  `tests/pii/test_spacy_policy.py` and the DONE.md record). Patterns-only mode (`--no-ner`)
   keeps the full spaCy recognizer — it is the only name detector there.
 - **Eval harness is in [`../pii_eval/`](../pii_eval/)** (`python -m pii_eval generate` / `score`).
   Run it to check for regressions; the scorer gates on zero critical misses.

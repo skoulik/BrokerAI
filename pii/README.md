@@ -1,6 +1,6 @@
 # pii — local PII stripping tool
 
-Phase 1 of the BrokerAI revival ([ROADMAP.md](../ROADMAP.md)). Strips
+Phase 1 of the BrokerAI revival ([../ROADMAP.md](../ROADMAP.md)). Strips
 personally identifiable information from documents locally so the stripped
 version can be shared with cloud models. Uses **pseudonymization with a
 consistent mapping** (`John Smith → PERSON_1` everywhere), not blank
@@ -8,6 +8,10 @@ redaction, so cloud answers can be rehydrated and analytical utility is
 preserved.
 
 Standalone from the RAG app — nothing here imports `rag_tools` or the web app.
+
+This file covers installation and usage. Architecture and design decisions:
+[ARCHITECTURE.md](ARCHITECTURE.md); activity overview: [ROADMAP.md](ROADMAP.md);
+open tasks: [TODO.md](TODO.md); completed-task records: [DONE.md](DONE.md).
 
 ## Install
 
@@ -99,37 +103,13 @@ logged 44 noise findings over 11 docs.
    side-by-side and removed 2026-07-13 (it's in git history).
 3. **Local-LLM audit pass** — planned; will use llama-server.
 
-Design notes:
-
-- Recall-first: in `strip()`, spans are filtered to strip-listed entity types
-  *before* overlap resolution, so a kept-type span (e.g. spacy's frequent
-  bogus high-score `DATE_TIME` hits) can never shadow real PII.
-- With NER on, spacy's own recognizer is restricted to `LOCATION`: GLiNER2
-  owns PERSON/ORG, and en_core_web_sm's PERSON/DATE_TIME emissions produced
-  cross-line glue spans and date-as-name false positives on OCR text
-  (2026-07-14 debug, `tests/pii/test_spacy_policy.py`). Bare city names in
-  prose are what it still contributes — the only partial coverage of
-  contextual identifiers until the layer-3 audit lands.
-- `DATE_TIME` and `ORGANIZATION` are detected but kept by default:
-  transaction dates and merchant names are the analytical substance of a
-  statement. `DATE_OF_BIRTH` (via NER) is stripped.
-- Placeholders are allocated in document order and matched case-insensitively
-  with whitespace collapsed; rehydration restores the first-seen surface form.
-- The NER layer is tuned around GLiNER2's measured failure modes (details
-  in the recognizer's docstring): it needs windowing for memory (quadratic
-  attention), re-finding of repeated mentions (its formatter returns one
-  span per unique entity text), separate schema passes for addresses
-  (labels compete inside a schema), and honorific span extension.
-  Over-stripping (e.g. a merchant line labeled as an address) is the
-  accepted recall-first cost. (GLiNER v1's weaknesses — recall collapse on
-  ALL-CAPS text and on lines embedded in context — do not apply to
-  GLiNER2.)
-- GLiNER2 address fragmentation (multi-part AU addresses split into
-  street/suburb spans) was mostly closed 2026-07-14 by lifting the span
-  enumeration width to `max_width=12` — all four one-line addresses on
-  Tier-1 went partial→stripped. Remaining backstops if real-world wide
-  spans regress: adjacent-span merging (ROADMAP overlaps task) and a LoRA
-  adapter trained on synthetic AU addresses.
+Behaviour worth knowing when running the tool: `DATE_TIME` and
+`ORGANIZATION` are detected but **kept** by default (transaction dates and
+merchant names are the analytical substance of a statement; `DATE_OF_BIRTH`
+is stripped); some over-stripping is the accepted recall-first cost — every
+ambiguity resolves toward stripping. The design rationale behind all of
+this (recall-first span handling, the spaCy LOCATION restriction, GLiNER2
+tuning) lives in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Performance
 

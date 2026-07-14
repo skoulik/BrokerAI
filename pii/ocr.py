@@ -6,7 +6,7 @@ words carrying (text, bbox, conf, line) and an OcrResult whose assembled
 text records each word's character interval AT ASSEMBLY TIME. Mapping a
 detected PII span back to pixel boxes is then pure interval intersection —
 never re-derived from word lengths, which is the silent-leak class found in
-the presidio-image-redactor review (ROADMAP.md).
+the presidio-image-redactor review (DONE.md).
 
 Assembly preserves line structure (words joined by spaces, lines by
 newlines) rather than flat-joining the whole page: the GLiNER2 recognizer

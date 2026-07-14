@@ -1,7 +1,8 @@
 # pii_eval — Tier 1 synthetic evaluation corpus
 
-Evaluation harness for the [pii](../pii/README.md) stripping tool
-(ROADMAP Phase 1, Tier 1). Generates Australian financial documents
+Evaluation harness for the [pii](../pii/README.md) stripping tool —
+Tier 1 of the eval plan in [pii/ROADMAP.md](../pii/ROADMAP.md).
+Generates Australian financial documents
 populated with fake PII, ground truth known by construction, and scores
 the pipeline against it. **Everything is synthetic and shareable** —
 layouts and phrasing are modeled on the (classified, gitignored) reference
@@ -16,7 +17,7 @@ python -m pii_eval score              # full pipeline, ~1 min/doc on CPU
 ```
 
 `score` exits 1 if any critical-type entity (TFN, Medicare, BSB, account,
-card, person name) leaked — the ROADMAP's zero-critical-miss gate.
+card, person name) leaked — the roadmap's zero-critical-miss gate.
 
 ## What gets generated
 
@@ -77,4 +78,5 @@ scorer tracks as over-stripping.
 
 PDF/image tier: reportlab statement templates mimicking the reference
 layouts (mail barcodes included), pdftoppm rendering, degradation pipeline
-(DPI/skew/blur/JPEG), bbox ground truth. See ROADMAP Phase 1.
+(DPI/skew/blur/JPEG), bbox ground truth. See the image-tier task in
+[pii/TODO.md](../pii/TODO.md).

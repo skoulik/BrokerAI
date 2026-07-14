@@ -1,6 +1,6 @@
 """Score the pii pipeline against a generated corpus.
 
-Recall-first, severity-weighted (ROADMAP Tier 1): the headline number per
+Recall-first, severity-weighted (pii/ROADMAP.md, Tier 1): the headline number per
 entity type is coverage — was the PII value fully removed from the output?
 Text documents are scored by span coverage against the applied replacement
 spans (catches partial leaks); CSV documents by per-cell value survival.

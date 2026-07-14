@@ -28,10 +28,12 @@ can be shared with cloud models — **pseudonymization with a consistent local m
 rehydrated locally and analytical utility is preserved. Standalone tool in [`pii/`](pii/),
 isolated from the RAG app; eval harness in [`pii_eval/`](pii_eval/).
 
-Status: text and transaction-CSV paths done; detection layers 1–2 (Presidio + custom AU
-recognizers, GLiNER2 NER) shipped. Pending: the image/PDF-as-image path, the layer-3 local-LLM
-audit pass, and eval tiers 2–3. **Full task list, design decisions, and completed-task
-engineering records live in [pii/ROADMAP.md](pii/ROADMAP.md).**
+Status: text, transaction-CSV and image paths done; detection layers 1–2 (Presidio + custom
+AU recognizers, GLiNER2 NER) shipped. Pending: PDF-as-image mode, the layer-3 local-LLM audit
+pass, and eval tiers 2–3. **Details live in `pii/`: overview in
+[pii/ROADMAP.md](pii/ROADMAP.md), open tasks in [pii/TODO.md](pii/TODO.md), completed-task
+engineering records in [pii/DONE.md](pii/DONE.md), design decisions in
+[pii/ARCHITECTURE.md](pii/ARCHITECTURE.md).**
 
 ## Phase 2 — Foundation cleanup
 

@@ -1,5 +1,5 @@
 """Checksum-invalid identifier handling: collection tiers, suppression,
-masking, overlap ranking (pii/ROADMAP.md task, design decided 2026-07-14)."""
+masking, overlap ranking (design decided 2026-07-14, record in pii/DONE.md)."""
 
 import pytest
 from presidio_analyzer import RecognizerResult
