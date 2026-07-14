@@ -111,9 +111,20 @@ the reference documents → pii_eval image tier → OCR bake-off.
       acronyms (NAB, ANZ, BHP) live there, so a floor is a leak risk / pointless respectively
       (confirmed with Sergei). Cleaner single lever than N per-class floors: constrain
       GLiNER2's numeric-ID emissions — either drop those labels (layer-1 validates them) or
-      route each guess through its layer-1 checksum recognizer before it may strip. Quick
-      safe subset available now: a min-digit floor on AU_BANK_ACCOUNT (≥5; kills the `'42'`
-      fragment, zero recall cost). Overlaps the invalid-identifiers and overlaps-merging work.
+      route each guess through its layer-1 checksum recognizer before it may strip. The
+      quick safe subset is DONE: `AU_BANK_ACCOUNT_MIN_DIGITS=5` floor on GLiNER2's account
+      guesses (kills the `'42'` fragment, zero recall cost — spaced accounts survive because
+      the model emits them as one span and the floor counts digits, not chars;
+      tests/pii/test_gliner2_floors.py). The general per-class/validation policy for the
+      other numeric IDs (TFN junk like `'K3EN5L'`, etc.) remains open. Overlaps the
+      invalid-identifiers and overlaps-merging work.
+- [ ] Layer-1 gap: space-grouped bank accounts leak (found 2026-07-14). `a/c 1234 5678`
+      (4+4) is detected by nobody — AuAccountNumberRecognizer's `\d{5,10}` needs a
+      contiguous run so each 4-digit half falls short, no pattern spans the internal space,
+      and GLiNER2's recall on the form is inconsistent (it catches `0007 3111 4` but missed
+      `1234 5678`). `a/c 12345678` contiguous is fine. Add a labeled/space-tolerant account
+      pattern (e.g. `a/c` or `account` followed by digit groups) guarded against eating
+      transaction amounts and date ranges.
 - [ ] Ablation: are the address workarounds still needed at max_width=12?
       Postponed (decision 2026-07-14) until the tier-1 corpus has more and more
       varied address examples — 12 ADDRESS spans from a handful of templates is

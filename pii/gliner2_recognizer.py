@@ -176,6 +176,14 @@ LOCATION_THRESHOLD = 0.4
 # LLM audit is meant to own anyway.
 LOCATION_MIN_CHARS = 4
 
+# Always-on floor on GLiNER2's AU_BANK_ACCOUNT *guesses* (a fragment like
+# '42' otherwise strips two stray digits). Australian bare account numbers
+# are 5-10 digits — matching the layer-1 AuAccountNumberRecognizer pattern
+# (\d{5,10}) — so a real account can never fall below this; counted on digits
+# only, robust to BSB prefixes and separators. Same spirit as LOCATION_MIN_
+# CHARS but the meaningful unit here is digits, not characters (2026-07-14).
+AU_BANK_ACCOUNT_MIN_DIGITS = 5
+
 WINDOW_CHARS = 3000
 OVERLAP_CHARS = 300
 BATCH_SIZE = 4
@@ -269,6 +277,12 @@ class Gliner2Recognizer(EntityRecognizer):
                         if (
                             entity_type == "LOCATION"
                             and len(ent["text"].strip()) < LOCATION_MIN_CHARS
+                        ):
+                            continue
+                        if (
+                            entity_type == "AU_BANK_ACCOUNT"
+                            and sum(c.isdigit() for c in ent["text"])
+                            < AU_BANK_ACCOUNT_MIN_DIGITS
                         ):
                             continue
                         for start, end in _occurrences(window_text, ent["text"]):
