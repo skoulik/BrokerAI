@@ -140,6 +140,36 @@ entirely. Corollary requirement from the reference docs: mailing barcodes (Austr
 4-state) encode the delivery address and are invisible to text-based detection — the image
 pass must detect and mask barcode regions.
 
+### Image path is orthogonal to presidio-image-redactor (2026-07-14)
+
+The OCR/image pipeline is built around our own `PiiPipeline`, not Microsoft's
+`presidio-image-redactor` package. Presidio stays exactly where it is today — as the engine
+inside the *text-analysis* layer — and the image path is a front-end (render → OCR → assembled
+text with offset↔word-box bookkeeping) plus a back-end (span → boxes → paint → reassemble PDF)
+around the unchanged text pipeline. Reasons:
+
+- **Wrong hook point.** `ImageAnalyzerEngine` plugs in at the bare `AnalyzerEngine` level, but
+  our value-add lives above it in `pii/pipeline.py`: recall-first union overlap merging (theirs
+  drops overlaps by score rank — the leaky approach rejected 2026-07-12), invalid-identifier
+  collection/reporting, strip planning, pseudonym mapping. Adopting it means bypassing or
+  forking all of that.
+- **Wrong output model.** `ImageRedactorEngine` draws filled boxes — blank redaction. Our core
+  requirement is pseudonymization: paint the region and draw the placeholder (`PERSON_1`) into
+  it, emitting the same rehydratable `map.json`.
+- **No home for roadmap items.** Barcode masking is not text-driven (no OCR span to map);
+  the OCR bake-off needs an engine interface we own (theirs is shaped like Tesseract's TSV, so
+  wiring PaddleOCR/Surya is the same work either way); a future local-VLM path does OCR+detection
+  in one pass, which an OCR-then-analyze frame can't express; PDF reassembly and the
+  belt-and-braces text-layer scan are ours to build regardless.
+- **The eval needs to own the mapping.** pii_eval's planned degradation tier and the Tier-3
+  cross-OCR-engine disagreement metric both require control over the assembled-text/offset/box
+  contract — that must not be buried in a third-party engine.
+
+What we do reuse: the entire eval-gated text pipeline verbatim on OCR output, and their
+span→bbox mapping logic as a *reference* (the one solved piece — small, MIT; see the
+source-review task in `pii/ROADMAP.md`). `presidio-image-redactor` is not installed as a
+dependency; only `presidio-analyzer` remains.
+
 ### Evaluation (designed 2026-07-05/12, not yet built)
 
 Three tiers, because real documents are classified until stripped: (1) synthetic corpus with

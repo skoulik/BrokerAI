@@ -51,6 +51,16 @@ Tasks:
 - [ ] OCR engine choice — *decide later:* Tesseract vs PaddleOCR vs Surya/docTR vs a local VLM
       (e.g. Qwen-VL class) doing OCR+PII detection in one pass. Start by benchmarking on real
       bank statements/scans.
+- [ ] Review presidio-image-redactor sources (same drill as the gliner2-rs review below, same
+      reasons: harvest insights/know-how, not adopt). Decision already made
+      (2026-07-14, recorded in ../ARCHITECTURE.md): our image path is orthogonal — wrong hook
+      point (below our pipeline's merge/invalid/pseudonym layers), wrong output model
+      (box-fill redaction, not pseudonymization), no home for barcodes/VLM/PDF-reassembly.
+      Review targets: their OCR-word → assembled-text → span → bbox mapping (the one solved
+      piece we want as a reference for `pii/ocr.py`), OCR preprocessing knobs (they do
+      image preprocessing for Tesseract — bilateral filtering, thresholding variants),
+      allow-list/score-threshold plumbing, DICOM handling (skim only — out of scope), and
+      any Tesseract quirks encoded in their tests.
 - [ ] Metadata scrubbing on all output formats
 - [ ] Barcode masking: mailing barcodes on statements (Australia Post 4-state, and 1-D codes)
       encode the delivery address/customer ref — text-based detection can't see them, so
