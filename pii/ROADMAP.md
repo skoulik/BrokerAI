@@ -206,6 +206,18 @@ Tasks:
       too thin a basis for removing belt-and-braces protections. When picked up,
       fold it into the labels-per-pass experiment below (same mechanics: rerun
       the eval with the extra address passes disabled).
+- [ ] Experiment: per-class max_width for GLiNER2 (requested by Sergei 2026-07-14 —
+      discomfort with the blanket default max_width=12). Only ADDRESS needs wide
+      spans (tier-1: every other class ≤ 4 words), and w16 already showed wide-span
+      FP creep, so enumerating 12-word candidate spans for *all* labels buys nothing
+      for the narrow classes and may cost precision. Try per-pass widths — the
+      recognizer already runs dedicated address passes, and max_width is an
+      inference-time attribute that can be set before each pass (both copies:
+      `model.max_width` and `model.span_rep.span_rep_layer.max_width`): address
+      passes at 12, everything else back at the trained 8. Rerun tier-1 per-class
+      P/R + latency. Natural companion to the labels-per-pass experiment below
+      (same grid infrastructure); if per-pass mutation proves racy or awkward,
+      evaluate two recognizer instances as the fallback.
 - [ ] Experiment: labels-per-pass (schema partitioning). Label competition
       suppresses sibling scores (documented in pii/gliner2_recognizer.py — the same
       span scores 1.0 alone vs 0.49 among siblings); addresses already get dedicated
