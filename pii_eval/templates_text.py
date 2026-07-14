@@ -71,7 +71,13 @@ def legacy_statement(pool: Pool) -> Doc:
     return doc
 
 
-def loan_application(pool: Pool) -> Doc:
+def loan_application(pool: Pool, invalid: bool = False) -> Doc:
+    """invalid=True renders the checksum-invalid variant: applicant 1's TFN,
+    applicant 2's Medicare (structurally impossible first digit), the ABN
+    and the repayment card carry injected single-digit errors, annotated as
+    *_INVALID / *_MALFORMED with evidence="in-span" (the field label sits
+    immediately before the value and the digit grouping is canonical). The
+    sibling fields stay valid so the document mixes both classes."""
     rng = pool.rng
     a, b = pool.couple()
     biz = pool.business()
@@ -85,8 +91,20 @@ def loan_application(pool: Pool) -> Doc:
         doc.raw(f"Applicant {i}\n")
         doc.raw("  Name:            ").pii(f"{person.title} {person.full}", "PERSON").nl()
         doc.raw("  Date of birth:   ").pii(person.dob, "DATE_OF_BIRTH").nl()
-        doc.raw("  TFN:             ").pii(au.tfn(rng), "AU_TFN").nl()
-        doc.raw("  Medicare card:   ").pii(au.medicare(rng), "AU_MEDICARE").nl()
+        doc.raw("  TFN:             ")
+        if invalid and i == 1:
+            doc.pii(au.invalid_tfn(rng), "AU_TFN_INVALID",
+                    strip_expected=False, evidence="in-span")
+        else:
+            doc.pii(au.tfn(rng), "AU_TFN")
+        doc.nl()
+        doc.raw("  Medicare card:   ")
+        if invalid and i == 2:
+            doc.pii(au.malformed_medicare(rng), "AU_MEDICARE_MALFORMED",
+                    strip_expected=False, evidence="in-span")
+        else:
+            doc.pii(au.medicare(rng), "AU_MEDICARE")
+        doc.nl()
         doc.raw("  Driver licence:  ").pii(au.drivers_licence(rng), "AU_DRIVERS_LICENCE").nl()
         doc.raw("  Mobile:          ").pii(person.mobile, "PHONE_NUMBER").nl()
         doc.raw("  Email:           ").pii(person.email, "EMAIL_ADDRESS").nl()
@@ -94,14 +112,26 @@ def loan_application(pool: Pool) -> Doc:
 
     doc.raw("Self-employment\n")
     doc.raw("  Entity:          ").org(biz.name).nl()
-    doc.raw("  ABN:             ").pii(biz.abn, "AU_ABN").nl()
+    doc.raw("  ABN:             ")
+    if invalid:
+        doc.pii(au.invalid_abn(rng), "AU_ABN_INVALID",
+                strip_expected=False, evidence="in-span")
+    else:
+        doc.pii(biz.abn, "AU_ABN")
+    doc.nl()
     doc.raw("  ACN:             ").pii(biz.acn, "AU_ACN").nl(2)
 
     doc.raw("Salary credit account\n")
     doc.raw(f"  Bank:            {acct.bank}\n")
     doc.raw("  BSB:             ").pii(acct.bsb, "AU_BSB").nl()
     doc.raw("  Account:         ").pii(acct.number, "AU_BANK_ACCOUNT").nl()
-    doc.raw("  Card for repayments: ").pii(au.card_number(rng), "CREDIT_CARD").nl(2)
+    doc.raw("  Card for repayments: ")
+    if invalid:
+        doc.pii(au.invalid_card(rng), "CREDIT_CARD_INVALID",
+                strip_expected=False, evidence="in-span")
+    else:
+        doc.pii(au.card_number(rng), "CREDIT_CARD")
+    doc.nl(2)
 
     occupation = rng.choice(["dentist", "electrician", "GP", "teacher"])
     town = rng.choice(["Wagga Wagga", "Ballarat", "Dubbo", "Cairns"])

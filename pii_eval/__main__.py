@@ -13,6 +13,11 @@ def main() -> int:
     gen.add_argument("-o", "--out", default="pii_eval/corpus")
     gen.add_argument("--seed", type=int, default=42)
     gen.add_argument("--docs", type=int, default=9)
+    gen.add_argument(
+        "--invalid", action=argparse.BooleanOptionalAction, default=True,
+        help="append checksum-invalid injection docs (typo'd/malformed "
+             "identifiers with ground truth)",
+    )
 
     sc = sub.add_parser("score", help="run the pii pipeline and score it")
     sc.add_argument("-c", "--corpus", default="pii_eval/corpus")
@@ -24,7 +29,8 @@ def main() -> int:
     if args.command == "generate":
         from pii_eval.generate import generate
 
-        generate(args.out, seed=args.seed, docs=args.docs)
+        generate(args.out, seed=args.seed, docs=args.docs,
+                 invalid=args.invalid)
         return 0
     from pii_eval.score import score
 

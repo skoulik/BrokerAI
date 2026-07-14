@@ -137,3 +137,122 @@ def rego(rng: random.Random) -> str:
 
 def drivers_licence(rng: random.Random) -> str:
     return "".join(str(rng.randrange(10)) for _ in range(rng.choice([8, 9])))
+
+
+# --- Checksum validators -----------------------------------------------------
+# Mirror the detectors' arithmetic (presidio's AU recognizers / Luhn) so the
+# typo injectors below can guarantee a corrupted value really fails
+# validation. All take the bare digit string (see digits()).
+
+
+def tfn_valid(d: str) -> bool:
+    if len(d) != 9 or not d.isdigit():
+        return False
+    weights = (1, 4, 3, 7, 5, 8, 6, 9, 10)
+    return sum(w * int(x) for w, x in zip(weights, d)) % 11 == 0
+
+
+def medicare_valid(d: str) -> bool:
+    # 10 digits + optional IRN; d1 in 2-6; d9 is the checksum over d1..d8
+    if len(d) not in (10, 11) or not d.isdigit() or d[0] not in "23456":
+        return False
+    weights = (1, 3, 7, 9, 1, 3, 7, 9)
+    return sum(w * int(x) for w, x in zip(weights, d)) % 10 == int(d[8])
+
+
+def abn_valid(d: str) -> bool:
+    if len(d) != 11 or not d.isdigit():
+        return False
+    weights = (10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
+    nums = [int(x) for x in d]
+    nums[0] = 9 if nums[0] == 0 else nums[0] - 1  # as presidio computes it
+    return sum(w * x for w, x in zip(weights, nums)) % 89 == 0
+
+
+def acn_valid(d: str) -> bool:
+    if len(d) != 9 or not d.isdigit():
+        return False
+    weights = (8, 7, 6, 5, 4, 3, 2, 1)
+    remainder = sum(w * int(x) for w, x in zip(weights, d)) % 10
+    return (10 - remainder) % 10 == int(d[8])
+
+
+def luhn_valid(d: str) -> bool:
+    if not d.isdigit():
+        return False
+    total = 0
+    for i, c in enumerate(reversed(d)):
+        x = int(c)
+        if i % 2 == 1:
+            x *= 2
+        total += x - 9 if x > 9 else x
+    return total % 10 == 0
+
+
+# --- Checksum-invalid injectors ----------------------------------------------
+# Single-digit typos (and, for Medicare, structurally impossible first
+# digits) with ground truth known by construction — the eval side of the
+# pii ROADMAP "log checksum-invalid identifiers" task: typos, wrong OCR
+# output and forgery all look exactly like this.
+
+
+def _typo(rng: random.Random, formatted: str) -> str:
+    """Flip one digit, preserving formatting."""
+    positions = [i for i, c in enumerate(formatted) if c.isdigit()]
+    i = rng.choice(positions)
+    c = rng.choice([d for d in DIGITS if d != formatted[i]])
+    return formatted[:i] + c + formatted[i + 1 :]
+
+
+def invalid_tfn(rng: random.Random) -> str:
+    # Must fail the ACN checksum too: 9-digit shadow patterns overlap, and a
+    # typo'd TFN that validates as an ACN is indistinguishable from a real
+    # ACN — allowing it would make the eval flaky by seed.
+    base = tfn(rng)
+    while True:
+        cand = _typo(rng, base)
+        d = digits(cand)
+        if not tfn_valid(d) and not acn_valid(d):
+            return cand
+
+
+def invalid_medicare(rng: random.Random) -> str:
+    """Checksum broken, structure intact (first digit stays 2-6)."""
+    base = medicare(rng)
+    while True:
+        cand = _typo(rng, base)
+        d = digits(cand)
+        if d[0] in "23456" and not medicare_valid(d):
+            return cand
+
+
+def malformed_medicare(rng: random.Random) -> str:
+    """Structurally impossible: first digit outside 2-6 (checksum
+    irrelevant — the structure alone invalidates it)."""
+    return rng.choice("01789") + medicare(rng)[1:]
+
+
+def invalid_abn(rng: random.Random) -> str:
+    base = abn(rng)
+    while True:
+        cand = _typo(rng, base)
+        if not abn_valid(digits(cand)):
+            return cand
+
+
+def invalid_acn(rng: random.Random) -> str:
+    base = acn(rng)
+    while True:
+        cand = _typo(rng, base)
+        d = digits(cand)
+        if not acn_valid(d) and not tfn_valid(d):
+            return cand
+
+
+def invalid_card(rng: random.Random) -> str:
+    # any single-digit flip breaks Luhn, but keep the guard loop for symmetry
+    base = card_number(rng)
+    while True:
+        cand = _typo(rng, base)
+        if not luhn_valid(digits(cand)):
+            return cand

@@ -22,6 +22,12 @@ class Ann:
     start: int
     end: int
     strip_expected: bool = True
+    # For injected checksum-invalid identifiers: where the evidence that the
+    # digits are an identifier sits — "in-span" (canonical grouping or an
+    # immediately adjacent label), "context" (nearby context words only) or
+    # "none" (bare digit run). Drives per-tier collection expectations in the
+    # scorer; None for ordinary (valid) entities.
+    evidence: str | None = None
 
     @property
     def critical(self) -> bool:
@@ -45,9 +51,18 @@ class Doc:
             self._line_start = self._len - (len(text) - text.rfind("\n") - 1)
         return self
 
-    def pii(self, value: str, type: str, strip_expected: bool = True) -> "Doc":
+    def pii(
+        self,
+        value: str,
+        type: str,
+        strip_expected: bool = True,
+        evidence: str | None = None,
+    ) -> "Doc":
         self.anns.append(
-            Ann(type, value, self._len, self._len + len(value), strip_expected)
+            Ann(
+                type, value, self._len, self._len + len(value),
+                strip_expected, evidence,
+            )
         )
         return self.raw(value)
 

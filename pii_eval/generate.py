@@ -8,7 +8,8 @@ from pii_eval.templates_csv import transactions_csv
 from pii_eval.templates_text import legacy_statement, loan_application
 
 
-def generate(outdir: str, seed: int = 42, docs: int = 9) -> Path:
+def generate(outdir: str, seed: int = 42, docs: int = 9,
+             invalid: bool = True) -> Path:
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
     pool = make_pool(seed)
@@ -19,8 +20,16 @@ def generate(outdir: str, seed: int = 42, docs: int = 9) -> Path:
         ("loan", "txt", loan_application),
         ("tx", "csv", transactions_csv),
     ]
-    for i in range(docs):
-        stem, ext, make = makers[i % len(makers)]
+    entries = [makers[i % len(makers)] for i in range(docs)]
+    if invalid:
+        # Checksum-invalid injection docs are appended AFTER the base
+        # rotation so a given seed keeps producing byte-identical base docs
+        # with or without them.
+        entries += [
+            ("loan_inv", "txt", lambda pool: loan_application(pool, invalid=True)),
+            ("tx_inv", "csv", lambda pool: transactions_csv(pool, invalid=True)),
+        ]
+    for i, (stem, ext, make) in enumerate(entries):
         name = f"{stem}_{i:02d}.{ext}"
         if ext == "csv":
             text, anns = make(pool)
@@ -40,5 +49,5 @@ def generate(outdir: str, seed: int = 42, docs: int = 9) -> Path:
         json.dumps(manifest, indent=1), encoding="utf-8"
     )
     n_ents = sum(len(d["entities"]) for d in manifest["docs"])
-    print(f"{docs} docs, {n_ents} annotated entities -> {out}")
+    print(f"{len(entries)} docs, {n_ents} annotated entities -> {out}")
     return out
