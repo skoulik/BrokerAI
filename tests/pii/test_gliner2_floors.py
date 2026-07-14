@@ -40,7 +40,6 @@ class _FakeModel:
 
 
 def _spans(rec, text, entity_type):
-    rec._model = rec._model  # already set by caller
     return sorted(
         text[r.start:r.end]
         for r in rec.analyze(text, entities=None)

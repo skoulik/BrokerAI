@@ -116,7 +116,10 @@ the reference documents → pii_eval image tier → OCR bake-off.
       guesses (kills the `'42'` fragment, zero recall cost — spaced accounts survive because
       the model emits them as one span and the floor counts digits, not chars;
       tests/pii/test_gliner2_floors.py). The general per-class/validation policy for the
-      other numeric IDs (TFN junk like `'K3EN5L'`, etc.) remains open. Overlaps the
+      other numeric IDs (TFN junk like `'K3EN5L'`, etc.) remains open. Edge to decide
+      there: masked last-4 disclosures ("card ending 1234") fall under the digit floors by
+      design — consistent with layer-1 (`\d{5,10}` never matched them), but the policy
+      should take a deliberate stance on whether last-4 fragments are strip-worthy. Overlaps the
       invalid-identifiers and overlaps-merging work.
 - [ ] Ablation: are the address workarounds still needed at max_width=12?
       Postponed (decision 2026-07-14) until the tier-1 corpus has more and more

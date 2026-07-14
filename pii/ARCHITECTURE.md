@@ -242,6 +242,19 @@ floor (the raw FPs were all short codes/acronyms — 'AU', 'NSW', 'NAB'). Not ye
 flag stays off pending the decision to flip defaults and drop `SpacyRecognizer`, best landed
 together with the ORG-absorbs-contained-location merge rule (overlaps task, TODO.md).
 
+### Min-length floors on GLiNER2 guesses — where they apply and where they must not (2026-07-14)
+
+Same-day siblings of the location floor, from the "short strings shouldn't qualify" discussion:
+- **AU_BANK_ACCOUNT: always-on digit floor** (`AU_BANK_ACCOUNT_MIN_DIGITS=5`, matching layer-1's
+  `\d{5,10}`) — kills fragment guesses ('42') at zero recall cost. Digits, not characters:
+  GLiNER2 emits space-grouped accounts ('0007 3111 4') as one span, and separators must not
+  push a real account under the floor (regression-tested in `tests/pii/test_gliner2_floors.py`).
+  Layer-1's `AuAccountNumberRecognizer.validate_result` applies the same >=5-digit rule.
+- **PERSON and ORGANIZATION: no floor, deliberately** (confirmed with Sergei) — real 2-char
+  surnames (Wu, Ng) make a PERSON floor a leak risk on a CRITICAL type; real 3-char orgs
+  (NAB, ANZ, BHP) make an ORG floor wrong. The measured short FPs cluster on numeric-ID
+  types instead; the general policy for those guesses is an open TODO item.
+
 ### What is deliberately kept (2026-07-12)
 
 `ORGANIZATION` (merchant names — the analytical substance of spending data) and `DATE_TIME`

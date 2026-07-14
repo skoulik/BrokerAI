@@ -60,6 +60,13 @@ labels for the same label-competition reason as the address passes. Precision
 guards live on the pass: an exclusionary description and a LOCATION_MIN_CHARS
 floor (its false positives were all short codes/acronyms — 'AU', 'NSW',
 'NAB'). Head-to-head vs spaCy LOCATION: DONE.md, 2026-07-14.
+
+Always-on digit floor on bank-account guesses (AU_BANK_ACCOUNT_MIN_DIGITS):
+the model occasionally labels a stray digit fragment ('42') as a bank
+account; a real AU account is 5-10 digits, so emissions carrying fewer than
+5 digits in total are dropped. Counted on digits, not characters — the model
+emits space-grouped accounts ('0007 3111 4') as ONE span, and internal
+separators must not push a real account under the floor.
 """
 
 import contextlib
@@ -169,8 +176,9 @@ LOCATION_THRESHOLD = 0.4
 # short ALL-CAPS tokens: the card-transaction country suffix 'AU', state
 # codes ('NSW'/'VIC'/...) and bank/merchant acronyms ('NAB'). None is a real
 # place name, and every AU place name in the corpus is >=4 chars, so a
-# minimum-length floor removes the whole class at once (subsumes the earlier
-# {AU, NSW, ...} stop-list, all of whose members are <=3 chars). Trade-off:
+# minimum-length floor removes the whole class at once (an explicit
+# {AU, NSW, ...} stop-list was evaluated first but never shipped — every
+# member is <=3 chars, so the floor subsumes it). Trade-off:
 # the handful of genuine 3-letter suburbs (Kew, Ayr) are sacrificed — an
 # acceptable loss for a contextual-identifier safety net that the layer-3
 # LLM audit is meant to own anyway.
