@@ -125,6 +125,30 @@ the move; new completed tasks append to the matching section with their records.
       model-marked test on the real stack. REVISIT when the layer-3 LLM audit lands: it
       should own contextual IDs, after which spaCy emissions can likely be dropped
       entirely (rerun the ablation).
+- [x] Experiment: GLiNER2 location label vs spaCy LOCATION (2026-07-14). The spacy
+      restriction above only *removed* SpacyRecognizer; this taught GLiNER2 a place-name
+      label instead and compared head-to-head. Added a default-off `location=True` flag on
+      Gliner2Recognizer: a dedicated single-label LOCATION schema pass (isolated from the
+      main labels to dodge label competition — the same reasoning as the address passes).
+      Corpus: 32 synthetic docs, seed 123, `--docs 30` (11 CONTEXTUAL_ID notes, 176
+      ORGANIZATION merchant keeps, 42 addresses). Three NER-on variants, one shared model:
+      A = spaCy LOCATION-only (production), B = GLiNER2 location + spaCy removed, C = both.
+      Results (CONTEXTUAL_ID town caught / ORG over-stripped / ADDRESS leaked):
+      A 6/11 · 33 · 1;  B **11/11 · 33 · 0**;  C 11/11 · 34 · 0. spaCy is simply blind to
+      'Wagga Wagga' and 'Dubbo' (never emits them); GLiNER2 catches all four towns. PERSON
+      identical across all (170/172, isolated pass didn't disturb it). B strictly dominates
+      the spaCy baseline — higher contextual recall, zero extra org over-strip, one fewer
+      address leak — and C (both) is worse than B, so spaCy's *detector* role is droppable.
+      FP tuning to reach B's parity: (1) tightened the label description to exclude
+      state/country abbreviations and bank/shop/brand names; (2) a min-length floor
+      (`LOCATION_MIN_CHARS=4`) — the raw FPs were all short ALL-CAPS tokens ('AU' country
+      suffix ×16, 'NSW', 'NAB'), none a real place, and every AU place in the corpus is ≥4
+      chars; the floor subsumes an earlier explicit {AU,NSW,…} stop-list (all members ≤3
+      chars) and removed the whole +4 incremental over-strip. Trade-off recorded: genuine
+      3-letter suburbs (Kew, Ayr) are sacrificed — acceptable for a contextual-ID net the
+      layer-3 audit is meant to own. Flag left default-off; the ship decision (flip
+      defaults, drop SpacyRecognizer, land the ORG-absorbs-location merge rule) is a
+      follow-up in TODO.md. Experiment harness: scratchpad only, not committed.
 - [x] Log checksum-invalid identifiers. If an identifier candidate passes the detectors, but
       is rejected by the checksum validator, this should be logged. Evaluate if the output
       will become too noisy because of this and if so, make the feature optional. Rationale:

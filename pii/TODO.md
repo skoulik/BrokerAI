@@ -93,14 +93,27 @@ the reference documents → pii_eval image tier → OCR bake-off.
       groups, not full isolation. Sequencing: needs at least a provisional
       cross-pass overlap-resolution rule — best run together with (or right after)
       the overlaps-merging task above.
-- [ ] GLiNER2 location label vs spaCy LOCATION (added 2026-07-14, doc-reorg discussion).
-      The 2026-07-14 ablation only tested *removing* SpacyRecognizer, not teaching GLiNER2
-      a city/location label — "a teacher in Cairns" isn't an ADDRESS, so the current schema
-      can't see it, which is exactly why spaCy LOCATION survived. Add a location/city label
-      (own pass or the semantic group — mind label competition) and compare against spaCy
-      on tier-1 CONTEXTUAL_ID recall and org/address FP creep. If it matches, SpacyRecognizer
-      becomes droppable and spaCy is reduced to a pure NLP-engine dependency. Overlaps with
-      the layer-3 revisit above — whichever lands first can retire spaCy's detector role.
+- [ ] Ship the GLiNER2 location label (experiment DONE 2026-07-14, record in DONE.md;
+      `Gliner2Recognizer(location=True)` exists, default-off). The head-to-head is settled —
+      GLiNER2's location pass strictly dominates spaCy LOCATION on tier-1 (11/11 vs 6/11
+      contextual-ID towns, zero extra org over-strip, one fewer address leak). Remaining
+      work to flip defaults: turn the flag on in pii/pipeline.py, drop SpacyRecognizer's
+      detector role (→ pure NLP-engine dependency), update test_spacy_policy.py + the
+      ARCHITECTURE/CLAUDE.md decision notes, rerun the full pii_eval gate. Best landed
+      together with the ORG-absorbs-contained-location merge rule (overlaps task above) so a
+      merchant's suburb isn't split off a kept ORGANIZATION. Decision to flip is Sergei's.
+- [ ] Policy for GLiNER2's numeric-ID *guesses* (2026-07-14, length-heuristic discussion).
+      Diagnostic on the tier-1 corpus: nearly every short false positive is GLiNER2 labeling
+      a numeric-ID type that layer-1 already owns with a checksum — `'42'` as AU_BANK_ACCOUNT,
+      `'K3EN5L'` / `'TAS 2628'` as AU_TFN. A LOCATION-style char-length floor is the wrong
+      instrument (TFN FPs are non-numeric junk; the real fix is format/digit-count) AND must
+      NOT be applied to PERSON or ORGANIZATION — real short surnames (Wu, Ng) and bank
+      acronyms (NAB, ANZ, BHP) live there, so a floor is a leak risk / pointless respectively
+      (confirmed with Sergei). Cleaner single lever than N per-class floors: constrain
+      GLiNER2's numeric-ID emissions — either drop those labels (layer-1 validates them) or
+      route each guess through its layer-1 checksum recognizer before it may strip. Quick
+      safe subset available now: a min-digit floor on AU_BANK_ACCOUNT (≥5; kills the `'42'`
+      fragment, zero recall cost). Overlaps the invalid-identifiers and overlaps-merging work.
 - [ ] Ablation: are the address workarounds still needed at max_width=12?
       Postponed (decision 2026-07-14) until the tier-1 corpus has more and more
       varied address examples — 12 ADDRESS spans from a handful of templates is

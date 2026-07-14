@@ -229,6 +229,19 @@ patterns-only mode keeps the full recognizer (sole name detector there). Regress
 `tests/pii/test_spacy_policy.py`; revisit when the layer-3 audit or the GLiNER2-location
 experiment lands (both in TODO.md).
 
+### GLiNER2 location label — experiment done, ship decision pending (2026-07-14)
+
+`Gliner2Recognizer(location=True)` (**default off**) adds a dedicated single-label LOCATION
+schema pass, isolated from the main labels to avoid label competition (same rationale as the
+address passes). Its purpose is to replace spaCy's surviving LOCATION detector role. Tier-1
+head-to-head (record in DONE.md): the GLiNER2 label catches **11/11** contextual-ID towns vs
+spaCy's 6/11 (spaCy never emits 'Wagga Wagga'/'Dubbo'), with zero extra ORGANIZATION
+over-strip and one fewer address leak — it strictly dominates the spaCy baseline. Precision
+comes from two guards on the pass: an exclusionary label description and a `LOCATION_MIN_CHARS`
+floor (the raw FPs were all short codes/acronyms — 'AU', 'NSW', 'NAB'). Not yet shipped: the
+flag stays off pending the decision to flip defaults and drop `SpacyRecognizer`, best landed
+together with the ORG-absorbs-contained-location merge rule (overlaps task, TODO.md).
+
 ### What is deliberately kept (2026-07-12)
 
 `ORGANIZATION` (merchant names — the analytical substance of spending data) and `DATE_TIME`

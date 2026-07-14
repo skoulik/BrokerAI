@@ -51,6 +51,15 @@ width — full one-line addresses score 0.99 as single spans (fragments
 0.29), NMS keeps the whole span, no precision change at width 10-12, +1.5%
 layer-2 latency at 12; width 16 showed the first extra ORGANIZATION
 over-strip, so stay below it.
+
+Optional location pass (`location=True`, default off): a dedicated
+single-label LOCATION schema pass for bare place names in prose ("a teacher
+in Cairns") — contextual identifiers that are not addresses, the one job
+SpacyRecognizer's LOCATION detector still holds. Isolated from the main
+labels for the same label-competition reason as the address passes. Precision
+guards live on the pass: an exclusionary description and a LOCATION_MIN_CHARS
+floor (its false positives were all short codes/acronyms — 'AU', 'NSW',
+'NAB'). Head-to-head vs spaCy LOCATION: DONE.md, 2026-07-14.
 """
 
 import contextlib
@@ -139,6 +148,34 @@ ADDRESS_LABELS_SPLIT = {
 }
 ADDRESS_THRESHOLD = 0.3
 
+# Optional location pass (default off), gated by the `location` constructor
+# flag. Its own single-label schema — kept apart from the main labels so it
+# neither suppresses PERSON/ORG nor is suppressed by them (label competition,
+# see docstring). Purpose: cover bare place names in prose ("a teacher in
+# Cairns") that are contextual identifiers but not addresses — the one job
+# SpacyRecognizer's LOCATION detector still holds (pii/pipeline.py). Compared
+# head-to-head with spaCy in the 2026-07-14 location-label experiment.
+LOCATION_LABELS = {
+    "location": (
+        "A geographic place name on its own: a city, town, suburb or "
+        "locality, e.g. 'Cairns', 'Wagga Wagga', 'Newtown' — NOT a full "
+        "street address, NOT a state or country abbreviation, and NOT a "
+        "company, bank, shop, brand or merchant name",
+        "LOCATION",
+    ),
+}
+LOCATION_THRESHOLD = 0.4
+# Location false positives in the 2026-07-14 experiment were dominated by
+# short ALL-CAPS tokens: the card-transaction country suffix 'AU', state
+# codes ('NSW'/'VIC'/...) and bank/merchant acronyms ('NAB'). None is a real
+# place name, and every AU place name in the corpus is >=4 chars, so a
+# minimum-length floor removes the whole class at once (subsumes the earlier
+# {AU, NSW, ...} stop-list, all of whose members are <=3 chars). Trade-off:
+# the handful of genuine 3-letter suburbs (Kew, Ayr) are sacrificed — an
+# acceptable loss for a contextual-identifier safety net that the layer-3
+# LLM audit is meant to own anyway.
+LOCATION_MIN_CHARS = 4
+
 WINDOW_CHARS = 3000
 OVERLAP_CHARS = 300
 BATCH_SIZE = 4
@@ -154,14 +191,19 @@ class Gliner2Recognizer(EntityRecognizer):
         model_name: str = DEFAULT_MODEL,
         threshold: float = 0.4,
         max_width: int = DEFAULT_MAX_WIDTH,
+        location: bool = False,
         **kwargs,
     ):
         self.model_name = model_name
         self.threshold = threshold
         self.max_width = max_width
+        self.location = location
         self._model = None
+        entity_types = {e for _, e in LABELS.values()}
+        if location:
+            entity_types |= {e for _, e in LOCATION_LABELS.values()}
         super().__init__(
-            supported_entities=sorted({e for _, e in LABELS.values()}),
+            supported_entities=sorted(entity_types),
             name="Gliner2Recognizer",
             **kwargs,
         )
@@ -198,11 +240,13 @@ class Gliner2Recognizer(EntityRecognizer):
             if start + WINDOW_CHARS >= len(text):
                 break
 
-        passes = (
+        passes = [
             (LABELS, self.threshold),
             (ADDRESS_LABELS_GENERIC, ADDRESS_THRESHOLD),
             (ADDRESS_LABELS_SPLIT, ADDRESS_THRESHOLD),
-        )
+        ]
+        if self.location:
+            passes.append((LOCATION_LABELS, LOCATION_THRESHOLD))
         results = []
         seen = set()
         for labels, threshold in passes:
@@ -222,6 +266,11 @@ class Gliner2Recognizer(EntityRecognizer):
                     if wanted is not None and entity_type not in wanted:
                         continue
                     for ent in ents:
+                        if (
+                            entity_type == "LOCATION"
+                            and len(ent["text"].strip()) < LOCATION_MIN_CHARS
+                        ):
+                            continue
                         for start, end in _occurrences(window_text, ent["text"]):
                             if entity_type == "PERSON":
                                 m = _HONORIFIC.search(window_text, 0, start)
