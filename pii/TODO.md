@@ -7,6 +7,89 @@ plan are in [ROADMAP.md](ROADMAP.md); completed tasks and their engineering reco
 Grouped by theme. Suggested order on the image/PDF track (2026-07-14): PDF mode → demo on
 the reference documents → pii_eval image tier → OCR bake-off.
 
+## Next up — spaCy track (planned 2026-07-15)
+
+Two tasks, in this order; they are independent — the review does not block the retirement.
+Plan agreed with Sergei 2026-07-15; scope decisions recorded inline.
+
+- [ ] Deep source review of spaCy — same drill as the gliner2-rs and presidio-image-redactor
+      reviews (records in [DONE.md](DONE.md)): harvest knowledge/know-how/experience/
+      things-to-avoid, not adopt. Target: the installed spaCy 3.8.13 (all `.pyx` sources ship
+      in the wheel — review in place at site-packages, no clone) plus en_core_web_sm 3.8.0
+      (its `config.cfg`/`meta.json` are reviewable too). Scope decided 2026-07-15 (~920
+      source files make a full read infeasible): **focused core + architecture**.
+      Core — the parts we depend on via Presidio, or are retiring:
+      - tokenizer (`tokenizer.pyx`, `lang/en` punctuation/exceptions, char classes): the
+        token boundaries Presidio's context enhancer lives on; explains recognizers.py's
+        documented "a/c never survives tokenization into a context term" quirk; harvest
+        rules affecting our label/context matching (infix `/`, hyphens, number+unit);
+      - lemmatizer (`pipeline/lemmatizer.py` + `lang/en` rules/lookups): what
+        `token.lemma_` actually is in en_core_web_sm — the input quality of Presidio's
+        LemmaContextAwareEnhancer;
+      - NER (`pipeline/ner.pyx`, `transition_parser.pyx`, `_parser_internals` BILUO
+        transition system, `tok2vec.py` + MultiHashEmbed/Bloom embeddings in `ml/models`,
+        and en_core_web_sm's config): explain from mechanism the failure modes we measured
+        — cross-line glue spans, date-as-PERSON, total blindness to 'Wagga Wagga'/'Dubbo' —
+        so the retirement rationale in ARCHITECTURE.md rests on mechanism, not just eval
+        numbers;
+      - pattern machinery (`matcher/matcher.pyx`, `phrasematcher.pyx`, entity/span/
+        attribute rulers): token-level pattern DSL and trie-based phrase matching vs our
+        char-level regexes; candidate harvest: a PhraseMatcher-style AU place-name
+        gazetteer as a cheap LOCATION layer, token patterns robust to OCR whitespace;
+      - span/overlap handling (`Doc.char_span` alignment modes, `util.filter_spans`,
+        SpanGroup): their longest-first-greedy overlap resolution vs our recall-first
+        union merge; char↔token alignment discipline vs our assembly-time interval
+        recording in `ocr.py`.
+      Architecture/engineering: the config/registry/factory system, Language pipeline
+      composition and `pipe()` batching, model packaging (versioned pip package,
+      compat ranges), serialization contracts (DocBin), Vocab/StringStore hash interning,
+      the Doc memory model; testing/versioning practices worth stealing for a growing
+      codebase. Method/deliverables as before: read in place, spacy.io/GitHub only to
+      confirm findings; raw harvest appended to DONE.md (lettered findings), durable
+      decisions distilled into ARCHITECTURE.md, actionable ideas become TODO items.
+- [ ] Retire the last spaCy recognizer and remove the `--no-ner` regime. Ships the GLiNER2
+      location label — experiment settled 2026-07-14 (11/11 vs 6/11 contextual towns, zero
+      extra org over-strip, one fewer address leak; record in [DONE.md](DONE.md); this item
+      subsumes the former "Ship the GLiNER2 location label" experiment item) — with the
+      scope decision made by Sergei 2026-07-15: **drop the patterns-only regime entirely**.
+      SpacyRecognizer disappears from the codebase; spaCy remains solely as Presidio's
+      mandatory NLP engine (tokens/lemmas → context enhancer). Steps:
+      - `gliner2_recognizer.py`: flip the `location` constructor default to True (flag kept
+        for ablations); docstring — the location pass is now the production
+        contextual-identifier net, not a stand-in for a surviving spaCy role;
+      - `pipeline.py`: remove `use_ner`; always register Gliner2Recognizer (import stays
+        deferred inside `__init__` — that is what lets tests shim `pii.gliner2_recognizer`
+        in sys.modules); remove the SpacyRecognizer import and both regime branches;
+        unconditional `remove_recognizer("SpacyRecognizer")` after
+        `load_predefined_recognizers`; NLP_CONFIG untouched; update docstring + the
+        registry-policy comment;
+      - `cli.py`: drop `--no-ner` from strip and analyze; `pii_eval`: drop
+        `use_ner`/`--no-ner` from score.py/`__main__.py`/README;
+      - tests: move the `_NoopGliner2` stub from test_spacy_policy.py into conftest;
+        `make_pipeline` grows a `stub_ner=True` default (constructed under the shim →
+        fast, model-free, preserving today's fast-suite semantics; part of the cache key,
+        not forwarded to PiiPipeline), `stub_ner=False` for model-marked tests; expose the
+        shim as a fixture for CLI tests; replace test_spacy_policy.py with a slimmer
+        registry-policy test file (SpacyRecognizer absent; Gliner2Recognizer present and
+        supporting LOCATION; keep the model-marked Emily-Watson nuance test; add a
+        model-marked "a teacher in Cairns" → LOCATION test); test_invalid.py's CLI test
+        loses `--no-ner` and runs under the shim;
+      - docs: ARCHITECTURE.md (spaCy table row → NLP-engine role only; drop the SPA node
+        from the diagram; replace the "Two regimes" section — single pipeline now; rewrite
+        the "spaCy-as-detector survives" bullet; supersede the two 2026-07-14 decision
+        sections with a dated retirement decision carrying the eval numbers), pii/CLAUDE.md
+        working agreement, README flags + timing note (keep the en_core_web_sm download —
+        still required), move this item to DONE.md with the ship record, reword the layer-3
+        bundled revisit (spaCy ablation → "consider dropping the GLiNER2 location pass once
+        layer 3 owns contextual IDs").
+      Verification: default `pytest` green and still model-free; `pytest -m "slow or
+      model"`; full pii_eval generate+score on seeds 42 and 123 — expect the experiment-B
+      numbers (11/11 towns, zero critical misses, org over-strips at baseline, no new
+      address leaks); CLI smoke (no `--no-ner` anywhere, LOCATION placeholders appear for
+      bare town names). Out of scope: the ORG-absorbs-contained-location merge rule (stays
+      in the overlaps task below — the location pass reaches org-over-strip parity
+      without it).
+
 ## Next up — image/PDF path
 
 - [ ] PDFs — **treat as images**: render pages → OCR → redact pixels → reassemble PDF.
@@ -93,15 +176,6 @@ the reference documents → pii_eval image tier → OCR bake-off.
       groups, not full isolation. Sequencing: needs at least a provisional
       cross-pass overlap-resolution rule — best run together with (or right after)
       the overlaps-merging task above.
-- [ ] Ship the GLiNER2 location label (experiment DONE 2026-07-14, record in DONE.md;
-      `Gliner2Recognizer(location=True)` exists, default-off). The head-to-head is settled —
-      GLiNER2's location pass strictly dominates spaCy LOCATION on tier-1 (11/11 vs 6/11
-      contextual-ID towns, zero extra org over-strip, one fewer address leak). Remaining
-      work to flip defaults: turn the flag on in pii/pipeline.py, drop SpacyRecognizer's
-      detector role (→ pure NLP-engine dependency), update test_spacy_policy.py + the
-      ARCHITECTURE/CLAUDE.md decision notes, rerun the full pii_eval gate. Best landed
-      together with the ORG-absorbs-contained-location merge rule (overlaps task above) so a
-      merchant's suburb isn't split off a kept ORGANIZATION. Decision to flip is Sergei's.
 - [ ] Policy for GLiNER2's numeric-ID *guesses* (2026-07-14, length-heuristic discussion).
       Diagnostic on the tier-1 corpus: nearly every short false positive is GLiNER2 labeling
       a numeric-ID type that layer-1 already owns with a checksum — `'42'` as AU_BANK_ACCOUNT,
