@@ -96,13 +96,17 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
       ADDRESS 'NEWTOWN' (stripped), so the merchant name loses its suburb. Question:
       should a kept ORGANIZATION absorb contained ADDRESS fragments, or is that a leak
       vector (real addresses legitimately appear inside org-labeled spans)?
+      *(2026-07-15: the tier-1 corpus now generates suburb-suffixed merchants as
+      whole keep-ORGANIZATION spans, so this wart is measured on the over-strip
+      axis — a fix here shows up as the ORGANIZATION over-stripped count dropping.)*
       Input (2026-07-14, invalid-identifiers work): invalid-class spans already rank below
       any valid type in `_merge_overlaps` (union extents, valid class wins the placeholder)
       — fold that rule into the general algorithm definition.
 - [ ] Configurable strip-entity selection — let a run choose which data types to strip
       (e.g. names and addresses only). The pipeline already takes a `strip_entities` set
       internally; needs CLI exposure (`--entities` / named profiles) and documentation.
-- [ ] Metadata scrubbing on all output formats
+- [ ] Metadata scrubbing on all output formats *(eval note 2026-07-15: no pii_eval
+      corpus format carries metadata — extend a tier alongside this task)*
 - [ ] Slim the Presidio NLP engine: exclude `parser` and `ner` from the en_core_web_sm
       pipeline. Presidio loads the model with bare `spacy.load()` (spacy_nlp_engine.py, no
       component exclusions), so every analyzed text pays for the full 6-component pipeline;
@@ -124,6 +128,14 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
       kill the short-acronym FP class ('AU', 'NSW', 'NAB') — recorded 2026-07-14 in
       gliner2_recognizer.py/ARCHITECTURE.md. Gazetteer matches are exact lookups, so no
       length floor is needed and the 3-letter suburbs come back for free.
+      *(2026-07-15: the tier-1 corpus now carries bare-town `LOCATION` and
+      3-letter-suburb `LOCATION_SHORT` truth rows, so this task has a metric. First
+      numbers, seed 42: both 100% — but the short suburbs are being rescued by the
+      GLiNER2 ADDRESS pass on sentence context ("resided in Kew"), at barely-above-
+      threshold scores (Kew scored 0.433 vs threshold 0.4), not by the floored
+      location pass. Fragile; bare/contextless short suburbs are still the exposed
+      case and the corpus doesn't generate those yet — add a no-context surface form
+      when picking this up.)*
 
 ## Experiments — GLiNER2 tuning
 
@@ -177,11 +189,16 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
       there: masked last-4 disclosures ("card ending 1234") fall under the digit floors by
       design — consistent with layer-1 (`\d{5,10}` never matched them), but the policy
       should take a deliberate stance on whether last-4 fragments are strip-worthy. Overlaps the
-      invalid-identifiers and overlaps-merging work.
+      invalid-identifiers and overlaps-merging work. *(Corpus note 2026-07-15: pii_eval
+      generates no masked last-4 forms yet — add them, with a truth convention for
+      whichever stance is chosen, when this policy lands.)*
 - [ ] Ablation: are the address workarounds still needed at max_width=12?
       Postponed (decision 2026-07-14) until the tier-1 corpus has more and more
       varied address examples — 12 ADDRESS spans from a handful of templates is
-      too thin a basis for removing belt-and-braces protections. When picked up,
+      too thin a basis for removing belt-and-braces protections. *(2026-07-15:
+      variety widened — PO Box postal lines, `ADDRESS_BARE` bare street lines in
+      transaction descriptions; seed 42 now has 18 ADDRESS + 12 ADDRESS_BARE
+      spans. Better, but still template-thin; judge again when picked up.)* When picked up,
       fold it into the labels-per-pass experiment above (same mechanics: rerun
       the eval with the extra address passes disabled).
 - [ ] LoRA adapter for Australian addresses on GLiNER2 — close the multi-part address
@@ -198,6 +215,14 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
 (The tier plan and constraints are described in [ROADMAP.md](ROADMAP.md); the completed
 text tier's record is in [DONE.md](DONE.md).)
 
+- [ ] **Pseudonym-consistency scoring** (gap found 2026-07-15): the persona pool was
+      built so the same people/accounts recur across a corpus, but the scorer creates a
+      fresh `PseudonymMap` per document (`pii_eval/score.py`) and asserts nothing about
+      placeholder identity — cross-document consistency is prepared for, never checked.
+      Task: decide the intended semantics (one shared map per document *set* is the
+      product story — pseudonyms consistent across a submission bundle), run the scorer
+      with a shared map, and add an axis asserting same canonical value ⇒ same
+      placeholder across documents (the truth manifest already carries the values).
 - [ ] **Tier 1 — image/degradation tier**: extend the synthetic generator with rendered
       documents and a degradation pipeline (DPI, skew, blur, JPEG artifacts) for OCR
       benchmarking; bbox-level ground truth. Match painted boxes with pixel tolerance from

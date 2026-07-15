@@ -530,3 +530,30 @@ the move; new completed tasks append to the matching section with their records.
       Good layout diversity: multiple major-bank statement formats, home-loan and business
       account variants, a plain-text legacy format, and an insurance certificate; at least
       one has a **broken text layer**, confirming the render-as-image rationale.
+
+- [x] Text-tier corpus coverage audit + known-fail-mode probes *(2026-07-15: audited the
+      generator against the open corner-case inventory; three gaps were measurable-now and
+      got probe truth types (PERSON_JOINT convention: distinct row, not in `build.CRITICAL`),
+      the rest were filed as TODO notes (pseudonym-consistency scoring, masked last-4 forms,
+      metadata coverage, no-context short suburbs). Added: **`LOCATION`** bare-town mentions
+      and **`LOCATION_SHORT`** real 3-letter suburbs (Kew/Ayr/Hay — the `LOCATION_MIN_CHARS=4`
+      sacrifice) in the loan notes; **`ADDRESS_BARE`** street-only lines ("RENT 53 MILES ST")
+      and **suburb-suffixed merchants** ("EFTPOS WOOLWORTHS NEWTOWN") as whole
+      keep-ORGANIZATION spans in transaction descriptions; PO Box postal addresses; and
+      `Business.trust` (previously generated but unused) wired in as statement account
+      holders / loan trustee lines — decided with Sergei: trusts are business entities, so
+      keep-ORGANIZATION despite the surname stem. Real-suburb vocabulary (`TOWNS`,
+      `SHORT_SUBURBS`) added to personas.py because Faker's en_AU fabricates city names —
+      fine for ADDRESS format signal, wrong for gazetteer/NER-knowledge probes. First
+      numbers (seed 42, regenerated — older score logs are not comparable): gate still
+      PASS, PERSON 66/66; LOCATION 4/4; LOCATION_SHORT 4/4 **but** verified rescued by the
+      GLiNER2 ADDRESS pass on sentence context at near-threshold score (Kew 0.433 vs 0.4),
+      not by the floored location pass — fragile, contextless short suburbs still exposed;
+      ADDRESS_BARE 11/12 (the documented miss class reproduces); ORGANIZATION 35 kept /
+      21 over-stripped — the trust and merchant-suburb probes bite, giving the
+      overlaps-merging task its metric; PERSON_JOINT 1/6, PERSON_REVERSED 4/6 on the
+      reshuffled draws. Testbench counterparts (edge cases get BOTH a pytest and a corpus
+      probe — working agreement 2026-07-15): `test_known_hard_forms_present_and_not_gated`
+      (generator), `test_kept_org_does_not_shield_nested_address` (the wart, model-free),
+      the 'Kew' floor case in `test_gliner2_floors`, and the `model`-marked
+      `test_real_ner_short_suburb_rescued_by_address_pass`.)*

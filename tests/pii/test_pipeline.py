@@ -90,6 +90,24 @@ def test_consistent_placeholders_across_calls(pipeline):
     assert "TFN_1" in out1 and "TFN_1" in out2
 
 
+def test_kept_org_does_not_shield_nested_address(pipeline, monkeypatch):
+    # The 2026-07-14 image-demo wart, pinned: detect() filters kept-type
+    # spans out BEFORE overlap merging (a kept span must never shadow PII),
+    # so an ADDRESS nested inside a kept ORGANIZATION still strips and the
+    # merchant name loses its suburb. The eval corpus measures the same
+    # wart on the over-strip axis (suburb-suffixed merchants). If the
+    # overlaps-merging task (pii/TODO.md) changes this policy, update the
+    # test and the corpus expectation together.
+    text = "EFTPOS WOOLWORTHS NEWTOWN 4821 AU"
+    results = [
+        _rr("ORGANIZATION", 7, 25, 0.95),  # WOOLWORTHS NEWTOWN (kept type)
+        _rr("ADDRESS", 18, 25, 0.6),       # NEWTOWN
+    ]
+    monkeypatch.setattr(pipeline.analyzer, "analyze", lambda **kw: results)
+    out, _, _ = pipeline.strip(text, PseudonymMap())
+    assert out == "EFTPOS WOOLWORTHS ADDRESS_1 4821 AU"
+
+
 def test_merge_overlaps_unions_extents_higher_score_wins_type():
     # A small high-score span must not evict the wider covering span —
     # extents union, label follows the higher score.

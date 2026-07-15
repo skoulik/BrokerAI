@@ -14,7 +14,7 @@ import random
 
 from pii_eval import au, txbank
 from pii_eval.build import Doc
-from pii_eval.personas import Pool
+from pii_eval.personas import SHORT_SUBURBS, TOWNS, Pool
 
 
 def _date(rng: random.Random, year: int) -> str:
@@ -51,7 +51,10 @@ def legacy_statement(pool: Pool) -> Doc:
     )
     doc.pad_to(46).raw(f"Statement Number :{rng.randrange(1, 60):>8}").nl(2)
 
-    doc.raw("ACCOUNT OF: ").org(biz.name).nl(2)
+    # trust names are business entities — keep-ORGANIZATION like the PTY LTD
+    # names, even though the stem is a surname (over-strip axis watches them)
+    account_of = biz.trust if biz.trust and rng.random() < 0.5 else biz.name
+    doc.raw("ACCOUNT OF: ").org(account_of).nl(2)
     doc.raw("Date    Particulars").pad_to(55).raw("Debit     Credit       Balance").nl()
 
     balance = round(rng.uniform(100, 90000), 2)
@@ -108,10 +111,21 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
         doc.raw("  Driver licence:  ").pii(au.drivers_licence(rng), "AU_DRIVERS_LICENCE").nl()
         doc.raw("  Mobile:          ").pii(person.mobile, "PHONE_NUMBER").nl()
         doc.raw("  Email:           ").pii(person.email, "EMAIL_ADDRESS").nl()
-        doc.raw("  Current address: ").pii(person.address_oneline, "ADDRESS").nl(2)
+        doc.raw("  Current address: ").pii(person.address_oneline, "ADDRESS").nl()
+        if i == 1:
+            # PO Box — a mailing-address surface form the one-line street
+            # addresses don't exercise
+            po_box = (f"PO Box {rng.randrange(1, 999)}, "
+                      f"{person.suburb} {person.state} {person.postcode}")
+            doc.raw("  Postal address:  ").pii(po_box, "ADDRESS").nl()
+        doc.nl()
 
     doc.raw("Self-employment\n")
     doc.raw("  Entity:          ").org(biz.name).nl()
+    if biz.trust:
+        # keep-ORGANIZATION, same stance as the PTY LTD name (see the
+        # legacy template)
+        doc.raw("  Trustee for:     ").org(biz.trust).nl()
     doc.raw("  ABN:             ")
     if invalid:
         doc.pii(au.invalid_abn(rng), "AU_ABN_INVALID",
@@ -146,4 +160,15 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
         "Genuine savings held with "
     )
     doc.raw(f"{acct.bank}.").nl()
+    # Bare-town mentions: LOCATION measures the GLiNER2 location pass on
+    # standalone names (no address context); LOCATION_SHORT is the real
+    # 3-letter-suburb class the LOCATION_MIN_CHARS=4 floor knowingly
+    # sacrifices — expected to leak until the gazetteer task lands, so it
+    # reports per-form (the PERSON_JOINT precedent). Neither is in
+    # build.CRITICAL.
+    doc.raw("  Security property is in ")
+    doc.pii(rng.choice(TOWNS), "LOCATION")
+    doc.raw(". Applicant 1 previously resided in ")
+    doc.pii(rng.choice(SHORT_SUBURBS), "LOCATION_SHORT")
+    doc.raw(".").nl()
     return doc

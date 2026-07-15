@@ -63,3 +63,19 @@ def test_real_ner_bare_town_is_location(make_pipeline):
         text[r.start : r.end] for r in results if r.entity_type == "LOCATION"
     ]
     assert "Cairns" in locations
+
+
+@pytest.mark.model
+def test_real_ner_short_suburb_rescued_by_address_pass(make_pipeline):
+    # 3-letter suburbs are dropped by the location pass's char floor
+    # (test_gliner2_floors), but in sentence context the ADDRESS pass emits
+    # them — verified 2026-07-15 at barely-above-threshold score (Kew 0.433
+    # vs threshold 0.4). If this starts failing, the rescue is gone and the
+    # short-suburb exposure widened from contextless mentions to in-context
+    # ones too — raise the priority of the gazetteer task in pii/TODO.md.
+    # Corpus counterpart: the LOCATION_SHORT probe rows.
+    pipe = make_pipeline(stub_ner=False)
+    text = "Applicant 1 previously resided in Kew."
+    plan = pipe.plan(text)
+    kew = text.index("Kew")
+    assert any(r.start <= kew < r.end for r in plan)

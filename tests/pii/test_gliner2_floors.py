@@ -8,7 +8,9 @@ model by feeding controlled predictions through a fake:
   model as ONE span and survives — the count is on digits, so the internal
   spaces don't push it under the floor. This is the reassembly case.
 - LOCATION char floor (always on): short codes/acronyms ('NAB')
-  are dropped, real place names ('Wagga Wagga') kept.
+  are dropped, real place names ('Wagga Wagga') kept — and genuine
+  3-letter suburbs ('Kew') knowingly fall with the acronyms (the
+  LOCATION_SHORT corpus probe; the gazetteer task is the recovery path).
 """
 
 from pii.gliner2_recognizer import Gliner2Recognizer
@@ -58,8 +60,11 @@ def test_bank_account_digit_floor_keeps_spaced_account():
 
 def test_location_char_floor_drops_short_tokens():
     rec = Gliner2Recognizer()
-    rec._model = _FakeModel({"location": ["NAB", "Wagga Wagga"]})
-    text = "paid NAB while visiting Wagga Wagga today"
+    rec._model = _FakeModel({"location": ["NAB", "Kew", "Wagga Wagga"]})
+    text = "paid NAB near Kew while visiting Wagga Wagga today"
     got = _spans(rec, text, "LOCATION")
     assert "Wagga Wagga" in got
     assert "NAB" not in got
+    # the documented sacrifice: a real 3-letter suburb falls with the
+    # acronyms — the location pass itself cannot protect it
+    assert "Kew" not in got

@@ -27,6 +27,11 @@ ARCHITECTURE.md; finished TODO items move to DONE.md with their records.
   Presidio's context enhancer (tokens/lemmas). Its old PERSON/DATE_TIME detector emissions were
   glue/FP-prone on OCR text; see `tests/pii/test_registry_policy.py`, ARCHITECTURE.md and the
   DONE.md record.
+- **Edge cases get dual coverage (2026-07-15).** Every newly identified corner case or fail
+  mode gets BOTH a pytest test (model-free via the fake-model/stub patterns where possible,
+  `model`-marked otherwise) AND a pii_eval corpus probe (distinct truth type per the
+  PERSON_JOINT convention for known-hard forms). The harness measures trends but runs
+  manually; the testbench runs on every change — one without the other is a blind spot.
 - **Eval harness is in [`../pii_eval/`](../pii_eval/)** (`python -m pii_eval generate` / `score`).
   Run it to check for regressions; the scorer gates on zero critical misses. Generated
   synthetic corpora (text and image alike) live under `pii_eval/corpora/<modality>/s<seed>`

@@ -5,6 +5,7 @@ import io
 import json
 
 from pii_eval.generate import generate
+from pii_eval.personas import TOWNS
 
 
 def _load(outdir):
@@ -57,6 +58,30 @@ def test_invalid_docs_appended_without_disturbing_base(tmp_path):
             assert p.read_bytes() == (full / p.name).read_bytes()
     names = {p.name for p in full.iterdir()} - {p.name for p in plain.iterdir()}
     assert names == {"loan_inv_03.txt", "tx_inv_04.csv"}
+
+
+def test_known_hard_forms_present_and_not_gated(tmp_path):
+    """The per-form probe types (corpus additions 2026-07-15) must keep
+    appearing: bare-town locations, the 3-letter-suburb floor sacrifice,
+    bare street lines, suburb-suffixed merchants and trust names as
+    keep-orgs. None of them may enter the critical gate."""
+    generate(str(tmp_path), seed=42, docs=9)
+    ents = [e for d in _load(tmp_path)["docs"] for e in d["entities"]]
+    by_type = {}
+    for e in ents:
+        by_type.setdefault(e["type"], []).append(e)
+
+    for t in ("LOCATION", "LOCATION_SHORT", "ADDRESS_BARE",
+              "PERSON_JOINT", "PERSON_REVERSED", "CONTEXTUAL_ID"):
+        assert by_type.get(t), f"probe type {t} missing from corpus"
+        assert all(e["strip_expected"] and not e["critical"]
+                   for e in by_type[t]), t
+
+    orgs = [e["value"] for e in by_type["ORGANIZATION"]]
+    assert any("TRUST" in v for v in orgs), "no trust name as keep-org"
+    towns = {t.upper() for t in TOWNS}
+    assert any(v.split()[-1] in towns for v in orgs), \
+        "no suburb-suffixed merchant keep-org"
 
 
 def test_invalid_annotations_cover_types_and_evidence_tiers(tmp_path):

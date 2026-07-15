@@ -45,6 +45,21 @@ pseudonym-mapping consistency across a document set.
   can catch — reported as a gap, not gated on.
 - `tx_*.csv` — transaction CSV with per-cell ground truth; scored through
   `pii`'s column-aware CSV mode on the Description column.
+
+Transaction descriptions (shared by the legacy statements and the CSVs)
+also carry two per-form probes added 2026-07-15: `ADDRESS_BARE` street
+lines with no suburb/state context ("RENT 53 MILES ST", the documented
+GLiNER2 recall-miss class) and suburb-suffixed merchants ("EFTPOS
+WOOLWORTHS NEWTOWN 4821 AU") ground-truthed whole as keep-ORGANIZATION —
+GLiNER2 stripping the embedded suburb (the 2026-07-14 image-demo wart)
+registers as over-stripped. Trust names ("OAKFIELD FAMILY TRUST") appear
+as statement account holders and loan trustee lines; they are business
+entities, so keep-ORGANIZATION despite the surname stem. The loan notes
+carry bare-town mentions: `LOCATION` (real towns, standalone — no address
+context) and `LOCATION_SHORT` (real 3-letter suburbs: Kew, Ayr, Hay — the
+class the `LOCATION_MIN_CHARS=4` floor knowingly sacrifices, expected to
+leak until the gazetteer task lands). Loan applicant 1 additionally gets a
+PO Box postal address (`ADDRESS`).
 - `loan_inv_*.txt` / `tx_inv_*.csv` — checksum-invalid injection docs
   (`--no-invalid` omits them; they are appended after the base rotation so
   base docs stay byte-identical per seed). Single-digit typos and a
@@ -81,7 +96,9 @@ scorer tracks as over-stripping.
   (`PERSON_JOINT` "E & J Moore", `PERSON_REVERSED` "MOORE OLGA") so their
   intermittent GLiNER2 misses report per-form without tripping the
   layers-1/2 gate — the CONTEXTUAL_ID precedent; both move into CRITICAL
-  when the layer-3 LLM audit lands.
+  when the layer-3 LLM audit lands. `ADDRESS_BARE`, `LOCATION` and
+  `LOCATION_SHORT` (2026-07-15) follow the same convention: distinct rows
+  for known-hard forms, none of them gate members.
 
 ## Not here yet
 

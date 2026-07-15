@@ -12,13 +12,20 @@ OLGA") — following the CONTEXTUAL_ID precedent: GLiNER2 misses them
 intermittently (known layer-2 gap, on the layer-3 LLM-audit backlog), so
 they report per-form in the strip table without tripping the layers-1/2
 zero-critical-miss gate. Promote both into build.CRITICAL when layer-3
-lands.
+lands. Two more per-form probes (2026-07-15):
+
+- ADDRESS_BARE — a street line with no suburb/state context ("RENT 53
+  MILES ST"), the documented '53 MILES SUBWAY'-class recall miss.
+- suburb-suffixed merchants ("EFTPOS WOOLWORTHS NEWTOWN 4821 AU") — the
+  whole value is a keep-ORGANIZATION; GLiNER2 also emitting ADDRESS for
+  the suburb (the 2026-07-14 image-demo wart) shows up as over-stripped
+  on the keep axis. Input to the overlaps-merging task in pii/TODO.md.
 """
 
 import random
 
 from pii_eval import au
-from pii_eval.personas import Pool
+from pii_eval.personas import TOWNS, Pool
 
 
 def _ref(rng: random.Random, prefix: str, n: int = 10) -> str:
@@ -75,6 +82,14 @@ def description(pool: Pool) -> list:
             (pool.merchant(), "ORGANIZATION", False),
             f" {rng.randrange(1000, 9999)} AU",
         ],
+        lambda: [
+            "EFTPOS ",
+            (f"{pool.merchant()} {rng.choice(TOWNS).upper()}",
+             "ORGANIZATION", False),
+            f" {rng.randrange(1000, 9999)} AU",
+        ],
+        lambda: ["RENT ", (p.street.upper(), "ADDRESS_BARE"),
+                 " ", _ref(rng, "RW")],
         lambda: [
             "#",
             (pool.merchant(), "ORGANIZATION", False),
