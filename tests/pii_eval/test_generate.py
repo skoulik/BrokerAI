@@ -64,7 +64,9 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     """The per-form probe types (corpus additions 2026-07-15) must keep
     appearing: bare-town locations, the 3-letter-suburb floor sacrifice,
     bare street lines, suburb-suffixed merchants and trust names as
-    keep-orgs. None of them may enter the critical gate."""
+    keep-orgs. The unfixed ones may not enter the critical gate;
+    PERSON_JOINT is gated since the layer-1 joint-name recognizer took
+    ownership (2026-07-15)."""
     generate(str(tmp_path), seed=42, docs=9)
     ents = [e for d in _load(tmp_path)["docs"] for e in d["entities"]]
     by_type = {}
@@ -74,8 +76,9 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     for t in ("LOCATION", "LOCATION_SHORT", "ADDRESS_BARE",
               "PERSON_JOINT", "PERSON_REVERSED", "CONTEXTUAL_ID"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
-        assert all(e["strip_expected"] and not e["critical"]
-                   for e in by_type[t]), t
+        assert all(e["strip_expected"] for e in by_type[t]), t
+        gated = t == "PERSON_JOINT"
+        assert all(e["critical"] == gated for e in by_type[t]), t
 
     orgs = [e["value"] for e in by_type["ORGANIZATION"]]
     assert any("TRUST" in v for v in orgs), "no trust name as keep-org"

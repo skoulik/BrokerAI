@@ -93,12 +93,15 @@ scorer tracks as over-stripping.
   `all` produces 44 noise findings over 11 docs — licences, ATO/policy
   refs — as predicted.
 - Two documented-hard person surface forms carry distinct truth types
-  (`PERSON_JOINT` "E & J Moore", `PERSON_REVERSED` "MOORE OLGA") so their
-  intermittent GLiNER2 misses report per-form without tripping the
-  layers-1/2 gate — the CONTEXTUAL_ID precedent; both move into CRITICAL
-  when the layer-3 LLM audit lands. `ADDRESS_BARE`, `LOCATION` and
-  `LOCATION_SHORT` (2026-07-15) follow the same convention: distinct rows
-  for known-hard forms, none of them gate members.
+  (`PERSON_JOINT` "E & J Moore", `PERSON_REVERSED` "MOORE OLGA") — the
+  CONTEXTUAL_ID precedent: distinct rows for known-hard forms.
+  `PERSON_JOINT` is a CRITICAL gate member since 2026-07-15, when the
+  layer-1 joint-name recognizer took ownership of the mechanical joint
+  forms (100% on seeds 42/123); `PERSON_REVERSED` still reports per-form
+  without gating — reversed caps has no mechanical pattern and GLiNER2
+  covers it only intermittently (see the residual task in pii/TODO.md).
+  `ADDRESS_BARE`, `LOCATION` and `LOCATION_SHORT` (2026-07-15) follow the
+  per-form convention too; none of them are gate members.
 
 ## Not here yet
 

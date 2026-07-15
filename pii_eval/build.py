@@ -8,10 +8,13 @@ annotation types use the pii pipeline's entity names (pii/pipeline.py).
 from dataclasses import dataclass, asdict
 
 # Entity types whose leak is an automatic acceptance failure (pii/ROADMAP.md:
-# scoring is recall-first and severity-weighted).
+# scoring is recall-first and severity-weighted). PERSON_JOINT joined
+# 2026-07-15 when the layer-1 JointNameRecognizer took ownership of the
+# joint-initials form (100% on seeds 42/123); PERSON_REVERSED stays a
+# per-form probe until its residual GLiNER2 misses get a fix.
 CRITICAL = {
     "AU_TFN", "AU_MEDICARE", "AU_BANK_ACCOUNT", "AU_BSB",
-    "CREDIT_CARD", "PERSON",
+    "CREDIT_CARD", "PERSON", "PERSON_JOINT",
 }
 
 

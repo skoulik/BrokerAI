@@ -1,7 +1,8 @@
-"""Custom Presidio recognizers for Australian entities.
+"""Custom Presidio recognizers for Australian financial documents.
 
 Presidio ships AU_TFN, AU_MEDICARE, AU_ABN, AU_ACN with checksum validation.
-Added here: BSB (+ combined BSB+account), account numbers, and PayID context.
+Added here: BSB (+ combined BSB+account), account numbers, PayID context,
+and the joint-account name forms GLiNER2 loses inside transaction junk.
 Recall-first: base pattern scores are low and rely on the context enhancer
 (+0.35) to cross the pipeline threshold, except unambiguous combined forms.
 """
@@ -104,6 +105,71 @@ class AuAccountNumberRecognizer(PatternRecognizer):
             patterns=self.PATTERNS,
             context=self.CONTEXT,
             name="AuAccountNumberRecognizer",
+            **kwargs,
+        )
+
+
+class JointNameRecognizer(PatternRecognizer):
+    """Joint-account name forms as layer-1 patterns: initials-pair
+    'E & J Moore' / 'J & E LAWRENCE' and shared-surname 'Julie and Brian
+    Summers' / 'JULIE AND BRIAN SUMMERS'.
+
+    GLiNER2 scores these forms 0.93+ in clean context but loses span
+    segmentation when they sit inside transaction-line junk — adjacent
+    ref-codes/keywords produce glue spans ('LAWRENCE RENT'), dropped
+    initials, or split pairs ('BRIAN SUMMERS' + 'JULIE') — the 2026-07-15
+    diagnostic (DONE.md). The context that breaks the NER is regular,
+    machine-generated text, which is exactly where a pattern is reliable,
+    so the mechanical forms are owned here.
+
+    Scores are confident rather than context-gated: the context enhancer
+    only looks 5 tokens back, and on statement lines the joint name often
+    trails a payee/ref tail longer than that ('Online W... Loan to ORG PTY
+    LTD J & E Moore'). The cost is that three capitalised words joined by
+    'and' can also be an organization or a statement phrase; validate_result
+    rejects matches containing statement/corporate vocabulary (TERMS AND
+    CONDITIONS APPLY, ANGUS AND ROBERTSON PTY). Accepted trade-offs
+    (recall-first): surnames colliding with that vocabulary are sacrificed,
+    and 'X AND Y Z' organizations without a corporate tail get stripped —
+    the eval's ORGANIZATION over-strip axis watches for creep."""
+
+    # A name word: capitalised, 2+ chars, allows O'Brien / Smith-Jones /
+    # McDonald and their ALL-CAPS forms.
+    _NAME = r"[A-Z][A-Za-z'’-]+"
+    PATTERNS = [
+        Pattern("joint initials", rf"\b[A-Z]\s?&\s?[A-Z]\s+{_NAME}\b", 0.5),
+        # Mixed case like 'JULIE and Brian' is accepted too — harmless.
+        Pattern(
+            "joint full names",
+            rf"\b{_NAME}\s+(?:and|AND|And)\s+{_NAME}\s+{_NAME}\b",
+            0.45,
+        ),
+    ]
+    # Vocabulary that marks a match as a statement phrase or an organization
+    # rather than a couple. Kept tight: every entry costs the (unlikely)
+    # surname that collides with it.
+    STOP_WORDS = {
+        "TERMS", "CONDITIONS", "APPLY", "PRINCIPAL", "INTEREST", "FEE",
+        "FEES", "CHARGE", "CHARGES", "PAYMENT", "PAYMENTS", "SAVINGS",
+        "CHEQUE", "LOAN", "LOANS", "ACCOUNT", "ACCOUNTS", "SALARY", "WAGES",
+        "CREDIT", "DEBIT", "CARD", "TRANSFER", "DEPOSIT", "WITHDRAWAL",
+        "BALANCE", "STATEMENT", "INSURANCE", "BANKING",
+        "PTY", "LTD", "LIMITED", "GROUP", "TRUST", "HOLDINGS", "SERVICES",
+        "CONSULTING", "MANAGEMENT",
+    }
+
+    def validate_result(self, pattern_text: str) -> bool | None:
+        """None (not True) on pass — True would boost the score to 1.0 and
+        erase the deliberate confidence ordering of the patterns."""
+        if any(w.upper() in self.STOP_WORDS for w in pattern_text.split()):
+            return False
+        return None
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            supported_entity="PERSON",
+            patterns=self.PATTERNS,
+            name="JointNameRecognizer",
             **kwargs,
         )
 

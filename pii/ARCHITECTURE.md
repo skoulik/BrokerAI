@@ -263,6 +263,33 @@ Same-day siblings of the location floor, from the "short strings shouldn't quali
   (NAB, ANZ, BHP) make an ORG floor wrong. The measured short FPs cluster on numeric-ID
   types instead; the general policy for those guesses is an open TODO item.
 
+### Mechanical joint-name forms are layer-1 patterns, not an NER problem (2026-07-15)
+
+`JointNameRecognizer` (pii/recognizers.py, emits PERSON) owns the joint-account name
+shapes: initials-pair 'E & J Moore' (@0.5) and shared-surname 'Julie and Brian Summers' /
+'JULIE AND BRIAN SUMMERS' (@0.45). Rationale from the raw-emission diagnostic (DONE.md):
+GLiNER2 labels these forms confidently (0.93+) in clean context but loses *span
+segmentation* when adjacent ref-codes/keywords crowd them in transaction lines — glue
+spans, dropped initials, split pairs. The very regularity that breaks the NER makes the
+forms pattern-matchable, so the fix belongs in layer 1, not in schema/description tuning.
+
+Two design points:
+
+- **Confident scores, no context gating.** Presidio's context enhancer looks 5 tokens
+  back and 0 forward; on statement lines the joint name routinely trails a payee/ref tail
+  longer than that. Context-promoted sub-threshold patterns (the account-number idiom)
+  would systematically miss exactly the lines the recognizer exists for.
+- **Precision guard is a stop-vocabulary, not a floor.** 'X AND Y Z' caps triples collide
+  with statement phrases ('PRINCIPAL AND INTEREST PAYMENT') and org names ('ANGUS AND
+  ROBERTSON PTY'); `validate_result` rejects matches containing statement/corporate
+  vocabulary. Accepted trade-offs, recall-first: surnames that collide with that
+  vocabulary are sacrificed, and 'X AND Y Z' orgs without a corporate tail strip — the
+  eval's ORGANIZATION over-strip axis watches for creep (unmoved at ship time).
+
+With this, `PERSON_JOINT` moved into the eval's CRITICAL gate (100% on seeds 42/123).
+`PERSON_REVERSED` ('MOORE OLGA') stays a per-form probe: two bare caps words admit no
+pattern, so the reversed-caps residual keeps its own TODO item.
+
 ### What is deliberately kept (2026-07-12)
 
 `ORGANIZATION` (merchant names — the analytical substance of spending data) and `DATE_TIME`
@@ -363,7 +390,8 @@ be expressed as an OCR adapter feeding the analyze step — if pursued, it becom
 only; layer 3 gets built only if those results prove unsatisfactory (Sergei, 2026-07-15).
 Consequence: known layer-1/2 gaps must not be parked as "layer 3 will own it" — each needs
 its own fix or an explicit accepted-loss record (the joint/reversed person-name gap got its
-own TODO item the same day).
+own TODO item the same day; the joint half was then fixed at layer 1 — see the joint-name
+decision above — leaving the reversed-caps residual as the open item).
 
 The design, should it be built: a local-LLM pass over the layer-1/2-stripped text — "does
 this still contain anything identifying?" — served by llama-server (the one piece of

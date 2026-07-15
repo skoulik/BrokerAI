@@ -506,6 +506,34 @@ the move; new completed tasks append to the matching section with their records.
       tagger+attribute_ruler only). → TODO: benchmark excluding parser+ner from the
       Presidio NLP engine.
 
+- [x] **Joint-name GLiNER2 gap → layer-1 JointNameRecognizer** *(2026-07-15; the
+      reversed-caps residual stays in TODO.md)*. The diagnostic (previous entry in git
+      history / TODO item) showed the joint forms score 0.93+ in clean context but lose
+      span segmentation inside transaction-line junk — glue spans ('LAWRENCE RENT'@0.55,
+      initials dropped), split pairs ('BRIAN SUMMERS'@0.98 + 'JULIE'@0.49, connector
+      leaks) — i.e. the failure lives exactly where text is machine-regular, so the
+      mechanical forms moved to layer 1. `JointNameRecognizer` (pii/recognizers.py,
+      emits PERSON): 'A & B Surname' initials pattern @0.5 and 'First and First Surname'
+      @0.45 (one pattern covers title-case and ALL-CAPS; mixed case accepted). Scores
+      are confident, NOT context-gated — the Presidio context enhancer looks only 5
+      tokens back (verified: `LemmaContextAwareEnhancer(context_prefix_count=5,
+      context_suffix_count=0)`) and the corpus's 'Online W... Loan to ORG PTY LTD
+      <joint>' line puts the name beyond that window. Precision guard: validate_result
+      rejects matches containing statement/corporate vocabulary (TERMS AND CONDITIONS
+      APPLY, PRINCIPAL AND INTEREST PAYMENT, ANGUS AND ROBERTSON PTY) — accepted
+      trade-offs, documented on the class: surnames colliding with that vocabulary are
+      sacrificed, and 'X AND Y Z' orgs without a corporate tail get stripped
+      (recall-first; the ORGANIZATION over-strip axis watches for creep — it did not
+      move: 21 on seed 42 before and after). Results: PERSON_JOINT 1/6 → **6/6** (seed
+      42), **18/18** (seed 123); PERSON 100% on both seeds including the previously
+      missed 'JULIE AND BRIAN SUMMERS' / 'BRIAN AND AARON MILLER' joint-full draws;
+      gate PASS on both. **PERSON_JOINT promoted into pii_eval `build.CRITICAL`**;
+      PERSON_REVERSED unchanged (4/6, 6/8) — no mechanical pattern exists for two bare
+      caps words, so it stays a per-form probe with its own TODO item. Dual coverage
+      per the working agreement: tests/pii/test_joint_names.py (8 model-free tests:
+      the diagnostic lines, the beyond-context-window line, stop-vocabulary and
+      lowercase-prose negatives) + the existing PERSON_JOINT corpus probes now gated.
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (the image/degradation tier is still open —

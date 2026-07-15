@@ -67,31 +67,16 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
 
 ## Detection pipeline
 
-- [ ] **Joint/reversed person-name GLiNER2 gap** — the only remaining tier-1 critical
-      misses: joint names ('Jeffrey and Randall Lawrence' seed 42; 'JULIE AND BRIAN
-      SUMMERS' / 'BRIAN AND AARON MILLER' seed 123; joint initials 'E & J Moore') and
-      reversed caps ('ROCHA RANDALL') — PERSON_JOINT 70% / PERSON_REVERSED 90% recall on
-      seed 42 (records in DONE.md; 1/6 and 4/6 on the regenerated seed-42 corpus,
-      2026-07-15). Was parked as layer-3 backlog, but layer 3 is now contingent (below),
-      so the gap needs its own owner.
-      **Diagnostic (2026-07-15, raw-emission probe at threshold 0.05):** the joint form
-      itself is NOT the problem — 'J & E Lawrence' scores 0.93–0.98 bare or after 'Loan
-      Repayment', in both the production schema and a person-only pass. What fails is the
-      form embedded in transaction-line junk: 'OSKO P12345678 J & E LAWRENCE RENT' emits
-      the glue span 'LAWRENCE RENT'@0.55 (initials dropped), and 'JULIE AND BRIAN
-      SUMMERS' splits into 'BRIAN SUMMERS'@0.98 + 'JULIE'@0.49 (connector leaks).
-      Segmentation failure under adjacent ref-codes/keywords, not labeling blindness;
-      label competition only shaves points (person-only pass shows the same shapes).
-      Consequence: a description tweak is unlikely to help; the **layer-1 pattern for the
-      mechanical forms** ('X and Y SURNAME', 'A & B Surname') is the primary candidate —
-      the context that breaks the NER is regular, machine-generated text. The reversed
-      form mostly survives as glue ('MOORE OLGA RENT'@0.77 covers the name; over-strips
-      the keyword). The split-pair outputs are also input to the adjacent-span
-      coalescing piece of the overlaps-merging task below. Other candidates (dedicated
-      joint-name schema pass, labels-per-pass fold-in) stay as fallbacks. When a fix
-      lands, promote PERSON_JOINT/PERSON_REVERSED into pii_eval `build.CRITICAL`
-      (currently reported per-form without tripping the gate — see the
-      invalid-identifiers record in DONE.md).
+- [ ] **Reversed-caps person-name residual** ('ROCHA RANDALL' / 'MOORE OLGA') — what
+      remains of the joint/reversed GLiNER2 gap after the layer-1 JointNameRecognizer
+      took the mechanical joint forms (2026-07-15, record in DONE.md): PERSON_REVERSED
+      4/6 on seed 42, 6/8 on seed 123. No layer-1 pattern exists for this form — two
+      bare caps words are indistinguishable from any caps text — and GLiNER2 covers it
+      only intermittently, usually via glue spans ('MOORE OLGA RENT'@0.77). Candidates:
+      the adjacent-span coalescing piece of the overlaps-merging task below, the
+      labels-per-pass / dedicated-schema experiments, or the contingent layer-3 audit.
+      When a fix lands, promote PERSON_REVERSED into pii_eval `build.CRITICAL`
+      (PERSON_JOINT was promoted with the joint-form fix).
 - [ ] **Layer-3 local-LLM audit pass** — *contingent, not committed (expectation set
       2026-07-15): the plan is to evaluate the tool end-to-end with layers 1+2 only, and
       build layer 3 only if those results prove unsatisfactory — see ROADMAP.md and

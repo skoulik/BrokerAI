@@ -8,11 +8,14 @@ ignores whatever the pipeline does with them.
 
 The two documented-hard person surface forms are annotated with distinct
 truth types — PERSON_JOINT ("E & J Moore") and PERSON_REVERSED ("MOORE
-OLGA") — following the CONTEXTUAL_ID precedent: GLiNER2 misses them
-intermittently (known layer-2 gap, on the layer-3 LLM-audit backlog), so
-they report per-form in the strip table without tripping the layers-1/2
-zero-critical-miss gate. Promote both into build.CRITICAL when layer-3
-lands. Two more per-form probes (2026-07-15):
+OLGA") — following the CONTEXTUAL_ID precedent. PERSON_JOINT entered
+build.CRITICAL 2026-07-15: the layer-1 JointNameRecognizer owns the
+mechanical joint forms now (GLiNER2 lost their span boundaries inside
+transaction junk — diagnostic in pii/DONE.md). PERSON_REVERSED still
+reports per-form without tripping the gate: reversed caps has no
+mechanical pattern, GLiNER2 covers it only intermittently via glue spans;
+promote it when its fix lands (candidates in pii/TODO.md). Two more
+per-form probes (2026-07-15):
 
 - ADDRESS_BARE — a street line with no suburb/state context ("RENT 53
   MILES ST"), the documented '53 MILES SUBWAY'-class recall miss.

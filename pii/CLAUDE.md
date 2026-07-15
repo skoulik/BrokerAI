@@ -30,7 +30,7 @@ ARCHITECTURE.md; finished TODO items move to DONE.md with their records.
 - **Edge cases get dual coverage (2026-07-15).** Every newly identified corner case or fail
   mode gets BOTH a pytest test (model-free via the fake-model/stub patterns where possible,
   `model`-marked otherwise) AND a pii_eval corpus probe (distinct truth type per the
-  PERSON_JOINT convention for known-hard forms). The harness measures trends but runs
+  PERSON_REVERSED convention for known-hard forms). The harness measures trends but runs
   manually; the testbench runs on every change — one without the other is a blind spot.
 - **Eval harness is in [`../pii_eval/`](../pii_eval/)** (`python -m pii_eval generate` / `score`).
   Run it to check for regressions; the scorer gates on zero critical misses. Generated

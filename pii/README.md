@@ -95,7 +95,9 @@ logged 44 noise findings over 11 docs.
    `AU_ABN`, `AU_ACN` (checksum-validated, explicit registration needed —
    they are not in Presidio's default registry), credit cards, emails, URLs,
    IPs, AU-region phones; custom recognizers in `recognizers.py` for BSB
-   (`AU_BSB`), account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`).
+   (`AU_BSB`), account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`), and
+   joint-account name forms ("E & J Moore", "JULIE AND BRIAN SUMMERS" →
+   `PERSON`) — mechanical shapes GLiNER2 loses inside transaction-line junk.
 2. **Zero-shot NER** — names, addresses, DOB, and bare place names (a
    contextual-identifier LOCATION pass); distinguishes person vs
    organization for bank transaction descriptions. GLiNER2

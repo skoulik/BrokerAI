@@ -2,8 +2,8 @@
 
 Layer 1: Presidio pattern/checksum recognizers — built-in AU_TFN, AU_ABN,
          AU_ACN, AU_MEDICARE, credit cards, emails, URLs, IPs — plus the
-         custom AU recognizers in pii.recognizers (BSB, account, PayID) and
-         an AU-region phone recognizer.
+         custom recognizers in pii.recognizers (BSB, account, PayID,
+         joint-account name forms) and an AU-region phone recognizer.
 Layer 2: zero-shot NER (names, addresses, DOB, person-vs-org, and bare
          place names as contextual identifiers) — GLiNER2. spaCy is
          Presidio's NLP engine only (tokens/lemmas → context enhancer),
@@ -49,6 +49,7 @@ from pii.mapping import PseudonymMap
 from pii.recognizers import (
     AuAccountNumberRecognizer,
     AuBsbRecognizer,
+    JointNameRecognizer,
     PayIdRecognizer,
 )
 
@@ -137,6 +138,10 @@ class PiiPipeline:
         registry.add_recognizer(AuBsbRecognizer())
         registry.add_recognizer(AuAccountNumberRecognizer())
         registry.add_recognizer(PayIdRecognizer())
+        # Joint-account name forms ('E & J Moore', 'JULIE AND BRIAN
+        # SUMMERS') — mechanical enough for layer 1, and GLiNER2's known
+        # segmentation gap under transaction junk (2026-07-15, DONE.md).
+        registry.add_recognizer(JointNameRecognizer())
         for recognizer in make_invalid_recognizers(invalid_identifiers):
             registry.add_recognizer(recognizer)
         # Layer 2: GLiNER2 zero-shot NER. The import is deferred so tests can
