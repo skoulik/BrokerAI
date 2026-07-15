@@ -84,17 +84,39 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
       pipeline knows the person; (b) **label competition at blob scale** — a person-only
       pass emits 'FULLER CHRISTOPHER'@0.80 / 'MILLER BRIAN'@0.55, but the production
       multi-label schema collapses them to 0.33/0.23 with ORGANIZATION claiming
-      adjacent spans. NOT fixable by adjacent-span coalescing: at the production
-      threshold there is nothing near the name to coalesce (checked explicitly).
-      Candidates, in order: (1) **known-person permutation pass** — the DICOM
-      deny-list idea from the presidio-image-redactor review harvest: for every
-      detected PERSON value, also strip its word-order permutations (and 'LAST,
-      FIRST' comma form) found anywhere in the document set — deterministic, fixes
-      (a) outright and most of (b) since these personas always have canonical
-      mentions elsewhere; (2) labels-per-pass isolation (fixes (b); the experiment
-      below now has direct evidence); (3) the contingent layer-3 audit. When a fix
-      lands, promote PERSON_REVERSED into pii_eval `build.CRITICAL` (PERSON_JOINT
-      was promoted with the joint-form fix).
+      adjacent spans.
+      **Root-cause probes (2026-07-15, probe set 2 — Sergei's question: was reversed
+      order simply not learned?):** No — reversed order IS learned. A 10–20-row junk
+      blob with the reversed mention and NO canonical mention detects 'SCHAEFER
+      JOSEPH'@0.94 cleanly; adding one canonical-order row of the same person collapses
+      the reversed mention to fragments (junk=20 + canonical: 'JOSEPH SCHAEFER'@0.85
+      survives, 'SCHAEFER'@0.20 fragments). The interference needs BOTH orders of the
+      SAME person in one attention window — model-internal, not sentinel/junk-mass per
+      se. Form matrix (person-only pass): canonical order is robust for every name
+      class tried (multi-word Spanish, particle surnames 'Jan van den Berg', Indian
+      'Rajesh Kumar Sharma', hyphenated) even inside ref-code junk; reversed forms
+      are consistently weaker inside junk lines, and reversed particle surnames
+      ('VAN DEN BERG JAN') fail even bare. Description steering is a negative result:
+      a surname-first hint in the label description LOWERED scores across the board
+      (canonical 0.92→0.53) — do not retry. Isolated single lines yield
+      above-threshold fragment pairs ('JOSEPH RENT'@0.98 + 'SCHAEFER'@0.64) whose
+      union misses only the joining space — a gate-'partial' whose leaked content is
+      one space character.
+      Candidates, reordered by the probe evidence: (1) **per-cell NER windows for the
+      CSV path** — cells are independent units and NER spans are already clamped per
+      cell, so cross-cell context is pure noise; feeding cells as separate windows
+      (they batch through batch_extract_entities exactly like today's windows)
+      removes the both-orders-in-one-window interference by construction — plus
+      **same-type adjacent-span coalescing** (overlaps task below) to close the
+      one-space fragment gaps; fixes 3 of the 4 observed misses, (2) labels-per-pass
+      isolation for the remaining FULLER-class miss (ORGANIZATION claims the surname
+      in the production schema — also an overlaps-policy question), (3) LoRA
+      fine-tune on statement-style reversed/junk-context forms (pii_eval generates
+      training pairs; extends the existing LoRA TODO below), (4) known-person
+      permutation pass (DICOM deny-list idea) — deterministic belt-and-braces,
+      demoted from primary now that the failure is understood. When a fix lands,
+      promote PERSON_REVERSED into pii_eval `build.CRITICAL` (PERSON_JOINT was
+      promoted with the joint-form fix).
 - [ ] **Layer-3 local-LLM audit pass** — *contingent, not committed (expectation set
       2026-07-15): the plan is to evaluate the tool end-to-end with layers 1+2 only, and
       build layer 3 only if those results prove unsatisfactory — see ROADMAP.md and
