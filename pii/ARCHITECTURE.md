@@ -279,16 +279,25 @@ Two design points:
   back and 0 forward; on statement lines the joint name routinely trails a payee/ref tail
   longer than that. Context-promoted sub-threshold patterns (the account-number idiom)
   would systematically miss exactly the lines the recognizer exists for.
-- **Precision guard is a stop-vocabulary, not a floor.** 'X AND Y Z' caps triples collide
-  with statement phrases ('PRINCIPAL AND INTEREST PAYMENT') and org names ('ANGUS AND
-  ROBERTSON PTY'); `validate_result` rejects matches containing statement/corporate
-  vocabulary. Accepted trade-offs, recall-first: surnames that collide with that
-  vocabulary are sacrificed, and 'X AND Y Z' orgs without a corporate tail strip — the
-  eval's ORGANIZATION over-strip axis watches for creep (unmoved at ship time).
+- **Precision guard is a positional stop-vocabulary, not a floor.** 'X AND Y Z' caps
+  triples collide with statement phrases ('PRINCIPAL AND INTEREST PAYMENT') and org names
+  ('TAYLOR AND SCOTT LAWYERS PTY LTD'). `validate_result` checks by slot (reworked in the
+  2026-07-15 review round — the first any-position version sacrificed real surnames like
+  Fee/Card): given-name slots reject statement vocabulary (phrases carry their giveaway
+  word there), the surname slot rejects only corporate markers, and a corporate-tail
+  lookahead on the patterns keeps '... LAWYERS PTY LTD' orgs intact. Remaining accepted
+  trade-offs, recall-first, each pinned by a pytest test AND measured by a dedicated eval
+  keep-probe: orgs in the joint-name shape with no corporate marker anywhere ('P & O
+  CRUISES') strip — `ORGANIZATION_AND_BARE`, expected over-strips; guarded org forms must
+  stay kept — `ORGANIZATION_AND` (7/7 kept on both seeds at ship time); colliding-surname
+  couples ('Julie and Brian Fee') are drawn as ordinary critical PERSON, so a guard
+  regression trips the gate.
 
 With this, `PERSON_JOINT` moved into the eval's CRITICAL gate (100% on seeds 42/123).
 `PERSON_REVERSED` ('MOORE OLGA') stays a per-form probe: two bare caps words admit no
-pattern, so the reversed-caps residual keeps its own TODO item.
+pattern, so the reversed-caps residual keeps its own TODO item (diagnosis there: the
+misses are CSV-blob effects — mention shadowing and blob-scale label competition — not
+coalescible fragments).
 
 ### What is deliberately kept (2026-07-12)
 

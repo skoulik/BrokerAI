@@ -126,42 +126,72 @@ class JointNameRecognizer(PatternRecognizer):
     only looks 5 tokens back, and on statement lines the joint name often
     trails a payee/ref tail longer than that ('Online W... Loan to ORG PTY
     LTD J & E Moore'). The cost is that three capitalised words joined by
-    'and' can also be an organization or a statement phrase; validate_result
-    rejects matches containing statement/corporate vocabulary (TERMS AND
-    CONDITIONS APPLY, ANGUS AND ROBERTSON PTY). Accepted trade-offs
-    (recall-first): surnames colliding with that vocabulary are sacrificed,
-    and 'X AND Y Z' organizations without a corporate tail get stripped —
-    the eval's ORGANIZATION over-strip axis watches for creep."""
+    'and' can also be an organization or a statement phrase. The guards are
+    positional (2026-07-15 review round — an any-position stop-list
+    sacrificed real surnames like Fee/Card):
+
+    - given-name slots (before/right after the connector) reject statement
+      vocabulary — phrases carry their giveaway word there ('PRINCIPAL AND
+      INTEREST PAYMENT', 'HOME AND CONTENTS INSURANCE');
+    - the surname slot rejects only corporate markers ('HARVEY AND MILLER
+      HOLDINGS'), so 'Julie and Brian Fee' still strips;
+    - a corporate-tail lookahead keeps 'TAYLOR AND SCOTT LAWYERS PTY LTD'
+      intact (the marker sits just past the three-word match).
+
+    Remaining accepted trade-offs (recall-first), each pinned by a pytest
+    test and an eval keep-probe (ORGANIZATION_AND / ORGANIZATION_AND_BARE
+    in pii_eval): org names with no corporate marker anywhere ('P & O
+    CRUISES', 'ANGUS AND ROBERTSON BOOKSHOP') get stripped, and statement
+    phrases whose giveaway word sits only in the surname slot ('FIRE AND
+    THEFT COVER') get stripped."""
 
     # A name word: capitalised, 2+ chars, allows O'Brien / Smith-Jones /
     # McDonald and their ALL-CAPS forms.
     _NAME = r"[A-Z][A-Za-z'’-]+"
-    PATTERNS = [
-        Pattern("joint initials", rf"\b[A-Z]\s?&\s?[A-Z]\s+{_NAME}\b", 0.5),
-        # Mixed case like 'JULIE and Brian' is accepted too — harmless.
-        Pattern(
-            "joint full names",
-            rf"\b{_NAME}\s+(?:and|AND|And)\s+{_NAME}\s+{_NAME}\b",
-            0.45,
-        ),
-    ]
-    # Vocabulary that marks a match as a statement phrase or an organization
-    # rather than a couple. Kept tight: every entry costs the (unlikely)
-    # surname that collides with it.
-    STOP_WORDS = {
+    # Statement vocabulary — rejected in the given-name slots only.
+    STATEMENT_WORDS = {
         "TERMS", "CONDITIONS", "APPLY", "PRINCIPAL", "INTEREST", "FEE",
         "FEES", "CHARGE", "CHARGES", "PAYMENT", "PAYMENTS", "SAVINGS",
         "CHEQUE", "LOAN", "LOANS", "ACCOUNT", "ACCOUNTS", "SALARY", "WAGES",
         "CREDIT", "DEBIT", "CARD", "TRANSFER", "DEPOSIT", "WITHDRAWAL",
-        "BALANCE", "STATEMENT", "INSURANCE", "BANKING",
-        "PTY", "LTD", "LIMITED", "GROUP", "TRUST", "HOLDINGS", "SERVICES",
-        "CONSULTING", "MANAGEMENT",
+        "BALANCE", "STATEMENT", "INSURANCE", "BANKING", "HOME", "CONTENTS",
     }
+    # Corporate markers — rejected in the surname slot, and looked ahead
+    # for right past the match (organization names, not couples).
+    CORPORATE_WORDS = {
+        "PTY", "LTD", "LIMITED", "CO", "GROUP", "TRUST", "HOLDINGS",
+        "SERVICES", "CONSULTING", "MANAGEMENT", "PARTNERS", "ASSOCIATES",
+        "LAWYERS", "SOLICITORS", "ACCOUNTANTS", "BROTHERS", "SONS",
+        "TRADING",
+    }
+    _GIVEN_SLOT_STOP = STATEMENT_WORDS | CORPORATE_WORDS
+    _NO_CORP_TAIL = rf"(?!\s+(?i:{'|'.join(sorted(CORPORATE_WORDS))})\b)"
+    PATTERNS = [
+        Pattern(
+            "joint initials",
+            rf"\b[A-Z]\s?&\s?[A-Z]\s+{_NAME}\b{_NO_CORP_TAIL}",
+            0.5,
+        ),
+        # Mixed case like 'JULIE and Brian' is accepted too — harmless.
+        Pattern(
+            "joint full names",
+            rf"\b{_NAME}\s+(?:and|AND|And)\s+{_NAME}\s+{_NAME}\b"
+            rf"{_NO_CORP_TAIL}",
+            0.45,
+        ),
+    ]
 
     def validate_result(self, pattern_text: str) -> bool | None:
-        """None (not True) on pass — True would boost the score to 1.0 and
-        erase the deliberate confidence ordering of the patterns."""
-        if any(w.upper() in self.STOP_WORDS for w in pattern_text.split()):
+        """Positional vocabulary check (see class docstring). None (not
+        True) on pass — True would boost the score to 1.0 and erase the
+        deliberate confidence ordering of the patterns."""
+        tokens = [t.upper() for t in pattern_text.split()]
+        if tokens[-1] in self.CORPORATE_WORDS:
+            return False
+        # Given-name slots: everything before the surname except the
+        # connector and the single-letter initials/'&'.
+        given = [t for t in tokens[:-1] if len(t) > 1 and t != "AND"]
+        if any(t in self._GIVEN_SLOT_STOP for t in given):
             return False
         return None
 

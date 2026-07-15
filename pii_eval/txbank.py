@@ -23,12 +23,37 @@ per-form probes (2026-07-15):
   whole value is a keep-ORGANIZATION; GLiNER2 also emitting ADDRESS for
   the suburb (the 2026-07-14 image-demo wart) shows up as over-stripped
   on the keep axis. Input to the overlaps-merging task in pii/TODO.md.
+
+The layer-1 JointNameRecognizer's precision trade-offs are probed per-form
+too (2026-07-15 review round):
+
+- ORGANIZATION_AND — 'X and Y Z' org names carrying a corporate marker
+  (surname slot or tail); the recognizer's guards must keep them intact.
+- ORGANIZATION_AND_BARE — the documented recall-first sacrifice: org
+  names in the joint-name shape with no corporate marker anywhere
+  ("P & O CRUISES") get stripped by the person patterns; expected
+  over-strips, watched so the loss never silently grows.
+- colliding surnames (Fee, Card — real surnames that are also statement
+  vocabulary) are drawn as ordinary PERSON joint forms: the positional
+  guard must still strip them, and PERSON is gate-critical, so a guard
+  regression trips the gate.
 """
 
 import random
 
 from pii_eval import au
 from pii_eval.personas import TOWNS, Pool
+
+AND_ORGS_GUARDED = [
+    "TAYLOR AND SCOTT LAWYERS PTY LTD",
+    "ANGUS AND ROBERTSON PTY LTD",
+    "HARVEY AND MILLER HOLDINGS",
+]
+AND_ORGS_BARE = [
+    "P & O CRUISES",
+    "ANGUS AND ROBERTSON BOOKSHOP",
+]
+COLLIDING_SURNAMES = ["Fee", "Card"]
 
 
 def _ref(rng: random.Random, prefix: str, n: int = 10) -> str:
@@ -54,6 +79,12 @@ def description(pool: Pool) -> list:
             (f"{couple_a.first} and {couple_b.first} {couple_a.last}",
              "PERSON"),
             (couple_a.reversed_caps, "PERSON_REVERSED"),
+            # Colliding surname: statement vocabulary in the surname slot
+            # (see module docstring) — deterministic layer-1 strip, so it
+            # rides the critical PERSON gate.
+            (f"{couple_a.first} and {couple_b.first} "
+             f"{rng.choice(COLLIDING_SURNAMES)}",
+             "PERSON"),
         ]
     )
     patterns = [
@@ -97,6 +128,16 @@ def description(pool: Pool) -> list:
             "#",
             (pool.merchant(), "ORGANIZATION", False),
             f" AU INV-{rng.randrange(10**7, 10**8)} AU",
+        ],
+        lambda: [
+            "PAYMENT TO ",
+            (rng.choice(AND_ORGS_GUARDED), "ORGANIZATION_AND", False),
+            f" INV {rng.randrange(10**5, 10**6)}",
+        ],
+        lambda: [
+            "EFTPOS ",
+            (rng.choice(AND_ORGS_BARE), "ORGANIZATION_AND_BARE", False),
+            f" {rng.randrange(1000, 9999)} AU",
         ],
         lambda: ["Loan Repayment ", (joint, joint_type)],
         lambda: [

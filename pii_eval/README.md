@@ -102,6 +102,13 @@ scorer tracks as over-stripping.
   covers it only intermittently (see the residual task in pii/TODO.md).
   `ADDRESS_BARE`, `LOCATION` and `LOCATION_SHORT` (2026-07-15) follow the
   per-form convention too; none of them are gate members.
+- The joint-name recognizer's precision trade-offs are measured per-form
+  (2026-07-15): `ORGANIZATION_AND` — 'X and Y Z' orgs with a corporate
+  marker, must stay kept; `ORGANIZATION_AND_BARE` — orgs in the joint-name
+  shape with no marker anywhere ("P & O CRUISES"), the documented
+  recall-first sacrifice, expected to report over-stripped. Colliding
+  surnames (Fee, Card — also statement vocabulary) are drawn as ordinary
+  critical `PERSON` joint forms, so a guard regression trips the gate.
 
 ## Not here yet
 

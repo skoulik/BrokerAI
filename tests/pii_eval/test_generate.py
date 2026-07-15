@@ -80,6 +80,20 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
         gated = t == "PERSON_JOINT"
         assert all(e["critical"] == gated for e in by_type[t]), t
 
+    # Joint-name recognizer trade-off keep-probes (2026-07-15): 'AND'-orgs
+    # with a corporate marker (must keep) and without one (the documented
+    # sacrifice). Per-form keep rows, never gate members.
+    for t in ("ORGANIZATION_AND", "ORGANIZATION_AND_BARE"):
+        assert by_type.get(t), f"probe type {t} missing from corpus"
+        assert all(not e["strip_expected"] and not e["critical"]
+                   for e in by_type[t]), t
+
+    # Colliding-surname joint draws ride the critical PERSON gate.
+    assert any(
+        e["value"].split()[-1].upper() in ("FEE", "CARD")
+        for e in by_type["PERSON"]
+    ), "no colliding-surname joint draw in corpus"
+
     orgs = [e["value"] for e in by_type["ORGANIZATION"]]
     assert any("TRUST" in v for v in orgs), "no trust name as keep-org"
     towns = {t.upper() for t in TOWNS}

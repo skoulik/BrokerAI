@@ -70,13 +70,31 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
 - [ ] **Reversed-caps person-name residual** ('ROCHA RANDALL' / 'MOORE OLGA') — what
       remains of the joint/reversed GLiNER2 gap after the layer-1 JointNameRecognizer
       took the mechanical joint forms (2026-07-15, record in DONE.md): PERSON_REVERSED
-      4/6 on seed 42, 6/8 on seed 123. No layer-1 pattern exists for this form — two
-      bare caps words are indistinguishable from any caps text — and GLiNER2 covers it
-      only intermittently, usually via glue spans ('MOORE OLGA RENT'@0.77). Candidates:
-      the adjacent-span coalescing piece of the overlaps-merging task below, the
-      labels-per-pass / dedicated-schema experiments, or the contingent layer-3 audit.
-      When a fix lands, promote PERSON_REVERSED into pii_eval `build.CRITICAL`
-      (PERSON_JOINT was promoted with the joint-form fix).
+      runs 20–75% per seed. No layer-1 pattern exists for this form — two bare caps
+      words are indistinguishable from any caps text.
+      **Diagnosis (2026-07-15 review round, blob probes):** every leak is a CSV doc —
+      the reversed draws inside legacy statements got covered. On the bare line GLiNER2
+      covers the form fine (glue 'LAWRENCE JEFFREY RENT'@0.97); in the sentinel-joined
+      *column blob* that csv_mode analyzes, it fails by two distinct mechanisms:
+      (a) **mention shadowing** — the model detects the same person under their
+      canonical first-last mention from another row ('JOSEPH SCHAEFER'@0.93,
+      'Jeffrey Lawrence'@0.94) while the reversed-order mention itself only surfaces
+      as sub-threshold fragments ('LAWRENCE'@0.15); since occurrence re-finding is a
+      literal case-insensitive search, the reversed surface form leaks even though the
+      pipeline knows the person; (b) **label competition at blob scale** — a person-only
+      pass emits 'FULLER CHRISTOPHER'@0.80 / 'MILLER BRIAN'@0.55, but the production
+      multi-label schema collapses them to 0.33/0.23 with ORGANIZATION claiming
+      adjacent spans. NOT fixable by adjacent-span coalescing: at the production
+      threshold there is nothing near the name to coalesce (checked explicitly).
+      Candidates, in order: (1) **known-person permutation pass** — the DICOM
+      deny-list idea from the presidio-image-redactor review harvest: for every
+      detected PERSON value, also strip its word-order permutations (and 'LAST,
+      FIRST' comma form) found anywhere in the document set — deterministic, fixes
+      (a) outright and most of (b) since these personas always have canonical
+      mentions elsewhere; (2) labels-per-pass isolation (fixes (b); the experiment
+      below now has direct evidence); (3) the contingent layer-3 audit. When a fix
+      lands, promote PERSON_REVERSED into pii_eval `build.CRITICAL` (PERSON_JOINT
+      was promoted with the joint-form fix).
 - [ ] **Layer-3 local-LLM audit pass** — *contingent, not committed (expectation set
       2026-07-15): the plan is to evaluate the tool end-to-end with layers 1+2 only, and
       build layer 3 only if those results prove unsatisfactory — see ROADMAP.md and
@@ -152,7 +170,10 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
 - [ ] Labels-per-pass (schema partitioning). Label competition
       suppresses sibling scores (documented in pii/gliner2_recognizer.py — the same
       span scores 1.0 alone vs 0.49 among siblings); addresses already get dedicated
-      passes. Question: does everything benefit from isolation? Grid to evaluate on
+      passes. New direct evidence (2026-07-15, reversed-caps diagnosis above): on CSV
+      column blobs a person-only pass emits 'FULLER CHRISTOPHER'@0.80 where the
+      production schema emits 0.33 — isolation rescues real misses, not just points.
+      Question: does everything benefit from isolation? Grid to evaluate on
       tier-1, per-class P/R + layer-2 latency:
       (a) all-in-one (current baseline, minus the address passes),
       (b) full isolation — one label per pass (~11 passes; each pass re-encodes the

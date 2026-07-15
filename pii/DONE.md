@@ -533,6 +533,32 @@ the move; new completed tasks append to the matching section with their records.
       per the working agreement: tests/pii/test_joint_names.py (8 model-free tests:
       the diagnostic lines, the beyond-context-window line, stop-vocabulary and
       lowercase-prose negatives) + the existing PERSON_JOINT corpus probes now gated.
+      **Review round (same day, Sergei's challenge on the stop-vocabulary trade-off):**
+      the sacrificed classes were documented but unmeasured — the corpus generated no
+      'AND'-orgs and no colliding surnames. Fixes: (1) the guard went **positional** —
+      given-name slots reject statement vocabulary, the surname slot rejects only
+      corporate markers, plus a corporate-tail lookahead on both patterns — so real
+      colliding surnames (Fee, Card) now strip while 'TAYLOR AND SCOTT LAWYERS PTY
+      LTD' / 'HARVEY AND MILLER HOLDINGS' stay kept; (2) dual coverage for every
+      trade-off class: `ORGANIZATION_AND` keep-probe (guarded org forms, 7/7 kept
+      both seeds), `ORGANIZATION_AND_BARE` keep-probe (the no-marker sacrifice,
+      expected over-strips: 0/7, 0/8 kept — measured, not just documented),
+      colliding-surname joint draws annotated critical PERSON (a guard regression
+      trips the gate), and pytest counterparts (10 model-free tests total). Gate PASS
+      both seeds after all additions. **Reversed-caps diagnosis (same round, blob
+      probes):** all PERSON_REVERSED leaks are CSV docs; on bare lines GLiNER2 covers
+      the form ('LAWRENCE JEFFREY RENT'@0.97 glue) but in the sentinel-joined column
+      blob it fails via (a) mention shadowing — the person is detected under their
+      canonical first-last mention from another row ('JOSEPH SCHAEFER'@0.93) while
+      the reversed mention itself only yields sub-threshold fragments
+      ('LAWRENCE'@0.15), unreachable by literal occurrence re-finding — and (b)
+      blob-scale label competition — person-only emits 'FULLER CHRISTOPHER'@0.80,
+      the production schema 0.33. Adjacent-span coalescing cannot fix either: at the
+      production threshold there is nothing near the name to coalesce (checked
+      explicitly). The sentinel char itself was ruled out (plain-\n joins reproduce
+      the failures). Candidates recorded in the TODO item, led by a known-person
+      permutation pass (the DICOM deny-list idea from the presidio-image-redactor
+      harvest); the labels-per-pass experiment gained direct rescue evidence.
 
 ## Evaluation
 
