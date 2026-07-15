@@ -45,6 +45,14 @@ pseudonym-mapping consistency across a document set.
   can catch — reported as a gap, not gated on.
 - `tx_*.csv` — transaction CSV with per-cell ground truth; scored through
   `pii`'s column-aware CSV mode on the Description column.
+- `names_*.csv` — name-form statistics doc (2026-07-15,
+  `pii_eval/nameforms.py`): 32 curated distinct names (Anglo, particle
+  surnames, multi-word non-Anglo), each drawn once per surface form —
+  canonical, reversed caps, comma form — so per-form n is fixed by
+  construction (~74 rows) instead of a handful of random pool draws.
+  Every person appears both canonically and reversed in the same doc,
+  reproducing the same-window interference condition the cell-isolation
+  windows fix (pii/DONE.md).
 
 Transaction descriptions (shared by the legacy statements and the CSVs)
 also carry two per-form probes added 2026-07-15: `ADDRESS_BARE` street
@@ -92,16 +100,17 @@ scorer tracks as over-stripping.
   `context` both zero-noise (context also catches its bare-run injection);
   `all` produces 44 noise findings over 11 docs — licences, ATO/policy
   refs — as predicted.
-- Two documented-hard person surface forms carry distinct truth types
-  (`PERSON_JOINT` "E & J Moore", `PERSON_REVERSED` "MOORE OLGA") — the
+- Documented-hard person surface forms carry distinct truth types — the
   CONTEXTUAL_ID precedent: distinct rows for known-hard forms.
-  `PERSON_JOINT` is a CRITICAL gate member since 2026-07-15, when the
-  layer-1 joint-name recognizer took ownership of the mechanical joint
-  forms (100% on seeds 42/123); `PERSON_REVERSED` still reports per-form
-  without gating — reversed caps has no mechanical pattern and GLiNER2
-  covers it only intermittently (see the residual task in pii/TODO.md).
-  `ADDRESS_BARE`, `LOCATION` and `LOCATION_SHORT` (2026-07-15) follow the
-  per-form convention too; none of them are gate members.
+  `PERSON_JOINT` ("E & J Moore") is a CRITICAL gate member since
+  2026-07-15, when the layer-1 joint-name recognizer took ownership of
+  the mechanical joint forms (100% on seeds 42/123). `PERSON_REVERSED`
+  ("MOORE OLGA") still reports per-form without gating — 70/72 across
+  seeds after the cell-isolation window fix, residual is GLiNER2 label
+  competition (see the residual task in pii/TODO.md). `PERSON_COMMA`,
+  `PERSON_PARTICLE` and `PERSON_MULTIWORD` (the names doc's other forms)
+  follow the same convention, as do `ADDRESS_BARE`, `LOCATION` and
+  `LOCATION_SHORT`; none of them are gate members.
 - The joint-name recognizer's precision trade-offs are measured per-form
   (2026-07-15): `ORGANIZATION_AND` — 'X and Y Z' orgs with a corporate
   marker, must stay kept; `ORGANIZATION_AND_BARE` — orgs in the joint-name

@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from pii_eval.nameforms import name_forms_csv
 from pii_eval.personas import make_pool
 from pii_eval.templates_csv import transactions_csv
 from pii_eval.templates_text import legacy_statement, loan_application
@@ -21,6 +22,10 @@ def generate(outdir: str, seed: int = 42, docs: int = 9,
         ("tx", "csv", transactions_csv),
     ]
     entries = [makers[i % len(makers)] for i in range(docs)]
+    # Name-form statistics doc (2026-07-15): fixed per-form n by
+    # construction, appended after the base rotation so base docs stay
+    # byte-identical per seed.
+    entries.append(("names", "csv", name_forms_csv))
     if invalid:
         # Checksum-invalid injection docs are appended AFTER the base
         # rotation so a given seed keeps producing byte-identical base docs

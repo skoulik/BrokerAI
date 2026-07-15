@@ -559,6 +559,46 @@ the move; new completed tasks append to the matching section with their records.
       the failures). Candidates recorded in the TODO item, led by a known-person
       permutation pass (the DICOM deny-list idea from the presidio-image-redactor
       harvest); the labels-per-pass experiment gained direct rescue evidence.
+      **Root-cause round (same day, Sergei's question: was reversed order simply not
+      learned?):** No. Probe set 2 (form matrix × context frames, junk-mass ×
+      canonical-mention sweep, description steering): reversed order IS learned — a
+      10–20-row junk blob without a canonical mention detects 'SCHAEFER JOSEPH'@0.94;
+      adding ONE canonical-order row of the same person collapses the reversed mention
+      to fragments. The interference requires both orders of the same person in one
+      attention window. Canonical order proved robust across name classes (Spanish
+      double surnames, particle surnames, Indian multi-word, hyphenated) even inside
+      ref-code junk; reversed forms weaken in junk; reversed particle surnames
+      ('VAN DEN BERG JAN') fail even bare. Negative result, do not retry: a
+      surname-first hint in the person label description LOWERED all scores
+      (canonical 0.92→0.53).
+      **Fix shipped (2026-07-15): cell-isolation NER windows + PERSON coalescing +
+      name-forms statistics doc.** `RECORD_SEPARATOR` (U+241E, defined in
+      pii/__init__.py) is now a hard GLiNER2 window boundary — csv_mode's sentinel
+      embeds it, so every CSV cell predicts in its own window (cells are independent;
+      spans were already clamped per cell, so cross-cell context was pure noise;
+      batching through batch_extract_entities is unchanged). The ADDRESS
+      adjacent-span coalescing generalized to `_coalesce_adjacent` over
+      {ADDRESS, PERSON}: isolated lines emit reversed names as fragment pairs
+      ('SCHAEFER' + 'JOSEPH RENT') whose union misses only the joining space —
+      coalescing closes it; merging two genuinely distinct adjacent names costs a
+      pseudonym wart, never a leak. Statistics (Sergei's requirement: real numbers,
+      not n=5 noise): new `pii_eval/nameforms.py` — 32 curated distinct names
+      (12 Anglo + 10 particle + 10 multi-word non-Anglo), each drawn once per form
+      into a names_*.csv per corpus; fixed per-form n by construction. New per-form
+      truth types PERSON_COMMA / PERSON_PARTICLE / PERSON_MULTIWORD (convention
+      unchanged: distinct rows, not gated). Results: PERSON_REVERSED **33/35 (s42) +
+      37/37 (s123) = 70/72**, PERSON_COMMA 32/32, PERSON_PARTICLE 20/20,
+      PERSON_MULTIWORD 20/20, PERSON 100% both seeds, gate PASS; ORGANIZATION
+      over-strips *improved* (13→7 on s42) — cell isolation helped merchants too.
+      The two residual leaks are label competition on isolated caps lines
+      (person-only 'REID'@0.86+'THOMAS'@0.85 vs production org 'REID THOMAS
+      RENT'@0.86) — re-owned by the labels-per-pass experiment; a person-names
+      database layer was added to TODO as the deterministic fallback (Sergei).
+      Watch item: ADDRESS_BARE dropped to 4/7 on the reshuffled s42 draws (was
+      11/12) — known un-gated miss class, possibly draw noise vs lost cross-cell
+      context; judge on the next few runs. Tests: tests/pii/test_gliner2_windows.py
+      (window split at the separator, offset mapping, fragment coalescing,
+      distinct-names non-merge; model-free fakes).
 
 ## Evaluation
 

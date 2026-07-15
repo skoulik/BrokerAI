@@ -12,6 +12,16 @@ around, with different results:
   whole text, and quadratic attention makes long inputs explode (20k chars
   = 15 s, 60k chars = CUDA OOM). Overlapping windows are therefore still
   required — for memory/speed, not recall — and can be wider than GLiNER's;
+- global attention has a second cost (2026-07-15 diagnosis, records in
+  DONE.md): when the SAME person appears in one window under two word
+  orders ('PAYID ... JOSEPH SCHAEFER' and 'OSKO ... SCHAEFER JOSEPH'), the
+  canonical mention keeps its score and the reversed one collapses to
+  sub-threshold fragments — reversed order alone is learned fine (0.94 in
+  a junk blob without the canonical mention). Therefore text containing
+  RECORD_SEPARATOR (U+241E — csv_mode's cell sentinel) is windowed per
+  segment: cells are independent units whose spans get clamped per cell
+  anyway, so cross-cell context is pure noise and isolating it removes
+  the interference by construction;
 - formatted results carry ONE span per unique entity text even when the
   model detected several mentions, deduplicated case-insensitively
   ('Eric Smith' shadows 'ERIC SMITH'; format_results=False shows the
@@ -31,9 +41,13 @@ around, with different results:
   the model's other labels, so these passes use a lower operating
   threshold and their scores are floored to the main threshold to survive
   the pipeline's global cutoff (same spirit as Presidio's fixed pattern
-  scores). Adjacent ADDRESS spans separated only by comma/whitespace are
-  coalesced (a two-span 'street, suburb' detection must not leak the
-  comma).
+  scores). Adjacent same-type spans separated only by comma/whitespace
+  are coalesced for ADDRESS (a two-span 'street, suburb' detection must
+  not leak the comma) and PERSON (2026-07-15: isolated statement lines
+  emit reversed names as adjacent fragments — 'SCHAEFER' + 'JOSEPH RENT'
+  — whose union misses only the joining space). Coalescing two genuinely
+  distinct adjacent names into one span costs a pseudonym-consistency
+  wart, never a leak.
 
 GLiNER2 schemas attach a description to each label; descriptions carry the
 AU-specific definitions instead of overloading the label string.
@@ -78,6 +92,8 @@ import os
 import re
 
 from presidio_analyzer import EntityRecognizer, RecognizerResult
+
+from pii import RECORD_SEPARATOR
 
 DEFAULT_MODEL = "fastino/gliner2-privacy-filter-PII-multi"
 CACHE_DIR = "models/hf-cache"
@@ -200,8 +216,8 @@ OVERLAP_CHARS = 300
 BATCH_SIZE = 4
 
 _HONORIFIC = re.compile(r"\b(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+$", re.IGNORECASE)
-_ADDRESS_GAP = re.compile(r"^,?\s*$")
-ADDRESS_GAP_MAX = 4
+_COALESCE_GAP = re.compile(r"^,?\s*$")
+COALESCE_GAP_MAX = 4
 
 
 class Gliner2Recognizer(EntityRecognizer):
@@ -248,13 +264,21 @@ class Gliner2Recognizer(EntityRecognizer):
         model = self._ensure_model()
         wanted = set(entities) if entities else None
 
+        # Segments split at RECORD_SEPARATOR never share a window (cell
+        # isolation — see module docstring); ordinary text is one segment
+        # and gets the plain overlapping-window treatment.
         windows: list[tuple[int, str]] = []
-        for start in range(0, max(len(text), 1), WINDOW_CHARS - OVERLAP_CHARS):
-            window = text[start : start + WINDOW_CHARS]
-            if window.strip():
-                windows.append((start, window))
-            if start + WINDOW_CHARS >= len(text):
-                break
+        offset = 0
+        for segment in text.split(RECORD_SEPARATOR):
+            for start in range(
+                0, max(len(segment), 1), WINDOW_CHARS - OVERLAP_CHARS
+            ):
+                window = segment[start : start + WINDOW_CHARS]
+                if window.strip():
+                    windows.append((offset + start, window))
+                if start + WINDOW_CHARS >= len(segment):
+                    break
+            offset += len(segment) + len(RECORD_SEPARATOR)
 
         passes = [
             (LABELS, self.threshold),
@@ -316,28 +340,37 @@ class Gliner2Recognizer(EntityRecognizer):
                                     score=score,
                                 )
                             )
-        return _coalesce_addresses(results, text)
+        return _coalesce_adjacent(results, text)
 
 
-def _coalesce_addresses(results, text):
-    """Join ADDRESS spans separated only by comma/whitespace into one span
-    (highest member score)."""
-    addresses = sorted(
-        (r for r in results if r.entity_type == "ADDRESS"),
-        key=lambda r: (r.start, r.end),
-    )
-    out = [r for r in results if r.entity_type != "ADDRESS"]
-    for r in addresses:
-        last = out[-1] if out and out[-1].entity_type == "ADDRESS" else None
-        if (
-            last is not None
-            and r.start - last.end <= ADDRESS_GAP_MAX
-            and _ADDRESS_GAP.match(text[max(last.end, 0) : max(r.start, 0)])
+# Entity types whose adjacent same-type spans merge (module docstring):
+# fragmented multi-part addresses and fragmented person names.
+COALESCE_TYPES = ("ADDRESS", "PERSON")
+
+
+def _coalesce_adjacent(results, text):
+    """Join same-type spans separated only by comma/whitespace into one
+    span (highest member score), for the types in COALESCE_TYPES."""
+    out = [r for r in results if r.entity_type not in COALESCE_TYPES]
+    for etype in COALESCE_TYPES:
+        merged: list = []
+        for r in sorted(
+            (r for r in results if r.entity_type == etype),
+            key=lambda r: (r.start, r.end),
         ):
-            last.end = max(last.end, r.end)
-            last.score = max(last.score, r.score)
-        else:
-            out.append(r)
+            last = merged[-1] if merged else None
+            if (
+                last is not None
+                and r.start - last.end <= COALESCE_GAP_MAX
+                and _COALESCE_GAP.match(
+                    text[max(last.end, 0) : max(r.start, 0)]
+                )
+            ):
+                last.end = max(last.end, r.end)
+                last.score = max(last.score, r.score)
+            else:
+                merged.append(r)
+        out.extend(merged)
     return out
 
 

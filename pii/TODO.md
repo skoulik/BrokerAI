@@ -67,56 +67,34 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
 
 ## Detection pipeline
 
-- [ ] **Reversed-caps person-name residual** ('ROCHA RANDALL' / 'MOORE OLGA') — what
-      remains of the joint/reversed GLiNER2 gap after the layer-1 JointNameRecognizer
-      took the mechanical joint forms (2026-07-15, record in DONE.md): PERSON_REVERSED
-      runs 20–75% per seed. No layer-1 pattern exists for this form — two bare caps
-      words are indistinguishable from any caps text.
-      **Diagnosis (2026-07-15 review round, blob probes):** every leak is a CSV doc —
-      the reversed draws inside legacy statements got covered. On the bare line GLiNER2
-      covers the form fine (glue 'LAWRENCE JEFFREY RENT'@0.97); in the sentinel-joined
-      *column blob* that csv_mode analyzes, it fails by two distinct mechanisms:
-      (a) **mention shadowing** — the model detects the same person under their
-      canonical first-last mention from another row ('JOSEPH SCHAEFER'@0.93,
-      'Jeffrey Lawrence'@0.94) while the reversed-order mention itself only surfaces
-      as sub-threshold fragments ('LAWRENCE'@0.15); since occurrence re-finding is a
-      literal case-insensitive search, the reversed surface form leaks even though the
-      pipeline knows the person; (b) **label competition at blob scale** — a person-only
-      pass emits 'FULLER CHRISTOPHER'@0.80 / 'MILLER BRIAN'@0.55, but the production
-      multi-label schema collapses them to 0.33/0.23 with ORGANIZATION claiming
-      adjacent spans.
-      **Root-cause probes (2026-07-15, probe set 2 — Sergei's question: was reversed
-      order simply not learned?):** No — reversed order IS learned. A 10–20-row junk
-      blob with the reversed mention and NO canonical mention detects 'SCHAEFER
-      JOSEPH'@0.94 cleanly; adding one canonical-order row of the same person collapses
-      the reversed mention to fragments (junk=20 + canonical: 'JOSEPH SCHAEFER'@0.85
-      survives, 'SCHAEFER'@0.20 fragments). The interference needs BOTH orders of the
-      SAME person in one attention window — model-internal, not sentinel/junk-mass per
-      se. Form matrix (person-only pass): canonical order is robust for every name
-      class tried (multi-word Spanish, particle surnames 'Jan van den Berg', Indian
-      'Rajesh Kumar Sharma', hyphenated) even inside ref-code junk; reversed forms
-      are consistently weaker inside junk lines, and reversed particle surnames
-      ('VAN DEN BERG JAN') fail even bare. Description steering is a negative result:
-      a surname-first hint in the label description LOWERED scores across the board
-      (canonical 0.92→0.53) — do not retry. Isolated single lines yield
-      above-threshold fragment pairs ('JOSEPH RENT'@0.98 + 'SCHAEFER'@0.64) whose
-      union misses only the joining space — a gate-'partial' whose leaked content is
-      one space character.
-      Candidates, reordered by the probe evidence: (1) **per-cell NER windows for the
-      CSV path** — cells are independent units and NER spans are already clamped per
-      cell, so cross-cell context is pure noise; feeding cells as separate windows
-      (they batch through batch_extract_entities exactly like today's windows)
-      removes the both-orders-in-one-window interference by construction — plus
-      **same-type adjacent-span coalescing** (overlaps task below) to close the
-      one-space fragment gaps; fixes 3 of the 4 observed misses, (2) labels-per-pass
-      isolation for the remaining FULLER-class miss (ORGANIZATION claims the surname
-      in the production schema — also an overlaps-policy question), (3) LoRA
-      fine-tune on statement-style reversed/junk-context forms (pii_eval generates
-      training pairs; extends the existing LoRA TODO below), (4) known-person
-      permutation pass (DICOM deny-list idea) — deterministic belt-and-braces,
-      demoted from primary now that the failure is understood. When a fix lands,
-      promote PERSON_REVERSED into pii_eval `build.CRITICAL` (PERSON_JOINT was
-      promoted with the joint-form fix).
+- [ ] **Reversed-caps person-name residual** ('REID THOMAS' / 'BROOKS ETHAN') — what
+      remains after the 2026-07-15 fixes (full history in DONE.md: JointNameRecognizer
+      → interference diagnosis → per-cell NER windows + PERSON coalescing + name-forms
+      statistics doc). Current numbers on the fixed-n name-forms corpus: PERSON_REVERSED
+      **70/72 across seeds 42+123** (was 20–75% noise on n=5); PERSON_COMMA 32/32,
+      PERSON_PARTICLE 20/20, PERSON_MULTIWORD 20/20. The two residual leaks are pure
+      **label competition on isolated caps junk lines**: person-only pass finds both
+      name words ('REID'@0.86 + 'THOMAS'@0.85), but in the production schema
+      ORGANIZATION claims the line ('REID THOMAS RENT'@0.86 org) and person collapses
+      to 0.06–0.31 — windowing cannot help. Candidates: (1) labels-per-pass isolation
+      (the experiment below owns exactly this; person-only rescues both observed
+      leaks), (2) the person-names database layer below (deterministic recall floor),
+      (3) LoRA fine-tune on statement-style forms. The known-person permutation pass
+      idea is retired as primary (the interference it targeted is fixed at the window
+      level) but remains viable belt-and-braces. When the residual closes, promote
+      PERSON_REVERSED into pii_eval `build.CRITICAL` (PERSON_JOINT was promoted with
+      the joint-form fix).
+- [ ] **Person-names database layer** (Sergei, 2026-07-15) — if reversed/varied-name
+      recall stays unsatisfactory, integrate a names database as a deterministic
+      recall floor: match known given names/surnames (e.g. the `names-dataset`
+      package, US SSA + AU census name lists) as tokens and emit PERSON candidates
+      for adjacent known-name pairs regardless of word order — 'REID THOMAS' hits
+      (Thomas = known given name, Reid = known surname) with no NER involved. Design
+      questions when picked up: score/context policy (confident vs context-promoted),
+      precision on merchant lines (MCDONALDS, HARVEY NORMAN are surname-shaped —
+      probably require a known *given* name in the pair, not just surnames), and the
+      overlap policy vs keep-ORGANIZATION spans. Sibling of the AU place-name
+      gazetteer task (same trie/set-matching machinery, same fuzzy-budget idea).
 - [ ] **Layer-3 local-LLM audit pass** — *contingent, not committed (expectation set
       2026-07-15): the plan is to evaluate the tool end-to-end with layers 1+2 only, and
       build layer 3 only if those results prove unsatisfactory — see ROADMAP.md and

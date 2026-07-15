@@ -7,19 +7,26 @@ to named columns (header row required); default is every column.
 Cells are batched into one analyzer call per column (rows joined by a
 sentinel) — per-cell calls would pay the NER model's per-invocation cost hundreds
 of times on a big statement. The sentinel keeps pattern recognizers from
-matching across cells, but NER can still emit a span that crosses it, so
-detected spans are clamped to cell boundaries before replacement (the
-fragment in each cell is replaced independently — recall-first).
+matching across cells, AND (2026-07-15) its RECORD_SEPARATOR char is a hard
+NER window boundary — the GLiNER2 recognizer predicts each cell in its own
+window, because cross-cell context is pure noise (spans are clamped per
+cell anyway) and same-person mentions in different word orders interfere
+inside one attention window (records in pii/DONE.md). NER can still emit a
+span crossing a cell boundary within a window, so detected spans are
+clamped to cell boundaries before replacement (the fragment in each cell
+is replaced independently — recall-first).
 """
 
 import csv
 import io
 
+from pii import RECORD_SEPARATOR
 from pii.mapping import PseudonymMap
 from pii.pipeline import PiiPipeline
 
-# Never appears in bank data; blocks patterns from spanning two cells.
-_SENTINEL = "\n␞\n"
+# Never appears in bank data; blocks patterns from spanning two cells and
+# splits NER prediction windows (see module docstring).
+_SENTINEL = f"\n{RECORD_SEPARATOR}\n"
 
 
 def strip_csv(

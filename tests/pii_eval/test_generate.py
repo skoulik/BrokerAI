@@ -26,7 +26,8 @@ def test_same_seed_same_corpus(tmp_path):
 def test_truth_spans_align_with_documents(tmp_path):
     generate(str(tmp_path), seed=42, docs=9)
     manifest = _load(tmp_path)
-    assert len(manifest["docs"]) == 11  # 9 base + 2 invalid-injection docs
+    # 9 base + name-forms statistics doc + 2 invalid-injection docs
+    assert len(manifest["docs"]) == 12
     for doc in manifest["docs"]:
         text = (tmp_path / doc["file"]).read_text("utf-8")
         assert doc["entities"], doc["file"]
@@ -42,7 +43,7 @@ def test_truth_spans_align_with_documents(tmp_path):
 def test_critical_flag_present(tmp_path):
     generate(str(tmp_path), seed=1, docs=3, invalid=False)
     manifest = _load(tmp_path)
-    assert len(manifest["docs"]) == 3
+    assert len(manifest["docs"]) == 4  # 3 base + name-forms doc
     ents = [e for d in manifest["docs"] for e in d["entities"]]
     assert any(e["critical"] for e in ents)
     assert all("strip_expected" in e for e in ents)
@@ -57,7 +58,7 @@ def test_invalid_docs_appended_without_disturbing_base(tmp_path):
         if p.name != "truth.json":
             assert p.read_bytes() == (full / p.name).read_bytes()
     names = {p.name for p in full.iterdir()} - {p.name for p in plain.iterdir()}
-    assert names == {"loan_inv_03.txt", "tx_inv_04.csv"}
+    assert names == {"loan_inv_04.txt", "tx_inv_05.csv"}
 
 
 def test_known_hard_forms_present_and_not_gated(tmp_path):
@@ -74,11 +75,17 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
         by_type.setdefault(e["type"], []).append(e)
 
     for t in ("LOCATION", "LOCATION_SHORT", "ADDRESS_BARE",
-              "PERSON_JOINT", "PERSON_REVERSED", "CONTEXTUAL_ID"):
+              "PERSON_JOINT", "PERSON_REVERSED", "CONTEXTUAL_ID",
+              "PERSON_COMMA", "PERSON_PARTICLE", "PERSON_MULTIWORD"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(e["strip_expected"] for e in by_type[t]), t
         gated = t == "PERSON_JOINT"
         assert all(e["critical"] == gated for e in by_type[t]), t
+
+    # The name-forms doc fixes per-form n by construction — real
+    # statistics, not the pool templates' handful of random draws.
+    assert len(by_type["PERSON_REVERSED"]) >= 32, "reversed sample too small"
+    assert len(by_type["PERSON_COMMA"]) >= 16, "comma sample too small"
 
     # Joint-name recognizer trade-off keep-probes (2026-07-15): 'AND'-orgs
     # with a corporate marker (must keep) and without one (the documented

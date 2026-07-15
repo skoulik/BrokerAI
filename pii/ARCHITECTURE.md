@@ -299,6 +299,38 @@ pattern, so the reversed-caps residual keeps its own TODO item (diagnosis there:
 misses are CSV-blob effects — mention shadowing and blob-scale label competition — not
 coalescible fragments).
 
+### Cell-isolation NER windows and person-fragment coalescing (2026-07-15)
+
+The GLiNER2 recognizer never lets a prediction window span a `RECORD_SEPARATOR`
+(U+241E, defined in `pii/__init__.py`); csv_mode's cell sentinel embeds that char, so
+every CSV cell is predicted in its own window. Rationale (probe records in DONE.md):
+the model's global attention lets same-person mentions interfere — when 'JOSEPH
+SCHAEFER' (canonical, one row) and 'SCHAEFER JOSEPH' (reversed, another row) share a
+window, the canonical mention keeps its score and the reversed one collapses to
+sub-threshold fragments. Reversed order per se is learned (0.94 in junk blobs without
+the canonical mention), so the fix is to stop showing the model both orders at once.
+Cells are the natural isolation unit: they are independent transactions, and NER spans
+were already clamped to cell boundaries — cross-cell context could only ever mislead.
+Ordinary text (no separator) windows exactly as before.
+
+Two supporting pieces:
+
+- **Same-type adjacent-span coalescing** now covers PERSON alongside ADDRESS
+  (`_coalesce_adjacent`): isolated statement lines emit reversed names as fragment
+  pairs ('SCHAEFER' + 'JOSEPH RENT') whose union misses only the joining space.
+  Merging two genuinely distinct adjacent names would cost a pseudonym-consistency
+  wart, never a leak (both get stripped either way).
+- **Negative result, recorded so nobody retries it:** steering the person label
+  description with a surname-first hint lowered every score, canonical mentions
+  included (0.92→0.53).
+
+Measured on the name-forms statistics doc (fixed per-form n, see pii_eval):
+PERSON_REVERSED went from 20–75%-per-seed noise (n=5) to 70/72 across seeds 42+123;
+comma/particle/multiword forms 100%; ORGANIZATION over-strips improved (13→7 on
+seed 42). The two residual reversed leaks are label competition on isolated caps
+lines — owned by the labels-per-pass experiment (TODO), with a person-names database
+layer as the deterministic fallback.
+
 ### What is deliberately kept (2026-07-12)
 
 `ORGANIZATION` (merchant names — the analytical substance of spending data) and `DATE_TIME`
