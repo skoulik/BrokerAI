@@ -4,8 +4,9 @@ All open Phase 1 tasks, with full working detail. The activity overview and eval
 plan are in [ROADMAP.md](ROADMAP.md); completed tasks and their engineering records are in
 [DONE.md](DONE.md); design decisions (the *why*) in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-Grouped by theme. Suggested order on the image/PDF track (2026-07-14): PDF mode → demo on
-the reference documents → pii_eval image tier → OCR bake-off.
+Grouped by theme. Suggested order on the image/PDF track (2026-07-14, amended 2026-07-15):
+PDF mode → demo on the reference documents → pii_eval image tier → Tesseract stack review
+(docs + pytesseract source) → OCR bake-off.
 
 ## Next up — image/PDF path
 
@@ -22,11 +23,43 @@ the reference documents → pii_eval image tier → OCR bake-off.
       encode the delivery address/customer ref — text-based detection can't see them, so
       detect and paint over barcode regions in the image pass (observed on several of the
       reference examples)
-- [ ] OCR engine choice — *decide later:* Tesseract vs PaddleOCR vs Surya/docTR vs a local VLM
-      (e.g. Qwen-VL class) doing OCR+PII detection in one pass. Start by benchmarking on real
-      bank statements/scans. The engine seam is the parallel-lists word-box dict in
-      `pii/ocr.py` (each backend is an adapter normalizing into it); the VLM is the exception
-      that doesn't fit the OCR-then-analyze frame — see ARCHITECTURE.md.
+- [ ] Tesseract docs/config review (time-boxed; prep for the preprocessing-knobs and
+      bake-off tasks). Scope decision 2026-07-15: harvest operational knowledge from the
+      official docs, NOT a source review — the ~150k-line C++ codebase is OCR internals we
+      consume, not code we write, so the source-review drill that paid off on
+      presidio-image-redactor/spaCy doesn't transfer. Targets: the ImproveQuality guide
+      (Tesseract binarizes internally with Otsu — establishes which external preprocessing
+      helps vs duplicates work, feeds the preprocessing-knobs task); PSM page-segmentation
+      modes for statement layouts (sparse text vs uniform block vs single column — feeds
+      the statement-tables task); OEM engine choice (LSTM vs legacy); semantics of the
+      word-level `conf` values in the TSV output (needed before ever thresholding on
+      them); useful config variables (`preserve_interword_spaces`, char whitelists,
+      `--dpi`). Output: DONE.md record; distilled defaults into `pii/ocr.py` comments and
+      ARCHITECTURE.md.
+- [ ] pytesseract source review — companion to the docs review above, same
+      harvest-not-adopt drill as the presidio-image-redactor and spaCy reviews. It fits
+      the profile that made those pay: a single-file Python wrapper (pytesseract.py,
+      521 lines at installed 0.3.13) that `pii/ocr.py` sits directly on. Targets: how
+      `image_to_data` parses the TSV into the parallel-lists dict (type coercion of
+      `conf` — int vs float across versions; field handling when recognized text
+      contains tab/newline characters); the subprocess round-trip (PIL image → temp file
+      — does DPI metadata survive, which formats are used); config-string
+      quoting/escaping of user-supplied options; error and timeout paths. Output:
+      DONE.md record; any warts become defensive handling at our seam in `pii/ocr.py`.
+- [ ] OCR engine choice — *decide later:* Tesseract (current) vs the two candidate
+      evaluations below vs a local VLM (e.g. Qwen-VL class) doing OCR+PII detection in one
+      pass. Decide on benchmark numbers from real bank statements/scans (needs the image
+      eval tier for ground truth). The engine seam is the parallel-lists word-box dict in
+      `pii/ocr.py` (each backend is an adapter normalizing into it); the VLM is the
+      exception that doesn't fit the OCR-then-analyze frame — see ARCHITECTURE.md.
+- [ ] Evaluate PaddleOCR: write its `pii/ocr.py` adapter (detection polygons → axis-aligned
+      word boxes) and benchmark against the Tesseract baseline on the same corpus —
+      word-level accuracy on clean + degraded scans, table/statement layouts (row/column
+      integrity), runtime, and install weight (pulls the paddlepaddle runtime).
+- [ ] Evaluate Surya and docTR (same adapter shape, one bake-off pass): benchmark against
+      the Tesseract baseline as above; both are GPU-first, which fits our setup. Check
+      license fit before adopting (docTR is Apache-2.0; Surya's model weights carry a
+      revenue-conditional commercial-use clause — verify current terms).
 - [ ] OCR preprocessing knobs: opt-in preprocessing chain for low-quality scans (bilateral
       filter / contrast stretch / adaptive threshold / rescale — see the harvested
       presidio-image-redactor chain in DONE.md). Preprocessed image feeds OCR only; painting
@@ -34,14 +67,26 @@ the reference documents → pii_eval image tier → OCR bake-off.
 
 ## Detection pipeline
 
-- [ ] **Layer-3 local-LLM audit pass** — "does this still contain anything identifying?"
+- [ ] **Joint/reversed person-name GLiNER2 gap** — the only remaining tier-1 critical
+      misses: joint names ('Jeffrey and Randall Lawrence' seed 42; 'JULIE AND BRIAN
+      SUMMERS' / 'BRIAN AND AARON MILLER' seed 123; joint initials 'E & J Moore') and
+      reversed caps ('ROCHA RANDALL') — PERSON_JOINT 70% / PERSON_REVERSED 90% recall on
+      seed 42 (records in DONE.md). Was parked as layer-3 backlog, but layer 3 is now
+      contingent (below), so the gap needs its own owner. Candidate fixes: a dedicated
+      joint-name schema pass or description tweak ("names of two or more people joined
+      by 'and' or '&'"), a layer-1 pattern for the mechanical forms ('X and Y SURNAME',
+      'A & B Surname'), or fold into the labels-per-pass experiment below. When a fix
+      lands, promote PERSON_JOINT/PERSON_REVERSED into pii_eval `build.CRITICAL`
+      (currently reported per-form without tripping the gate — see the
+      invalid-identifiers record in DONE.md).
+- [ ] **Layer-3 local-LLM audit pass** — *contingent, not committed (expectation set
+      2026-07-15): the plan is to evaluate the tool end-to-end with layers 1+2 only, and
+      build layer 3 only if those results prove unsatisfactory — see ROADMAP.md and
+      ARCHITECTURE.md.* Design if built: "does this still contain anything identifying?"
       via llama-server; catches contextual identifiers NER can't see ("the borrower's wife,
-      a dentist in Wagga Wagga"). Bundled revisits for when it lands:
-      - promote PERSON_JOINT ("E & J Moore") and PERSON_REVERSED ("ROCHA RANDALL") into
-        pii_eval `build.CRITICAL` (intermittent GLiNER2 misses, currently reported per-form
-        without tripping the gate — see the invalid-identifiers record in DONE.md);
-      - consider dropping the GLiNER2 location pass once layer 3 owns contextual IDs (the
-        SpacyRecognizer it replaced was retired 2026-07-15 — records in DONE.md).
+      a dentist in Wagga Wagga"). Bundled revisit for when it lands: consider dropping the
+      GLiNER2 location pass once layer 3 owns contextual IDs (the SpacyRecognizer it
+      replaced was retired 2026-07-15 — records in DONE.md).
 - [ ] Overlaps merging algorithm — define and document. Interesting areas: how the weights are
       combined (max, average, bayesian/aposteriori), what if winning classes of overlaps
       do not agree, should we merge at all in some cases. Adjacent-span coalescing for
@@ -74,6 +119,11 @@ the reference documents → pii_eval image tier → OCR bake-off.
       layer-3 audit when it lands); decide its overlap policy vs the location label when
       the overlaps-merging task above is done. Consider a fuzzy edit budget of
       `max(2, 0.3·len)` for OCR damage (review finding (i)).
+      Also the recovery path for the `LOCATION_MIN_CHARS=4` trade-off: the floor on the
+      GLiNER2 location pass knowingly sacrifices genuine 3-letter suburbs (Kew, Ayr) to
+      kill the short-acronym FP class ('AU', 'NSW', 'NAB') — recorded 2026-07-14 in
+      gliner2_recognizer.py/ARCHITECTURE.md. Gazetteer matches are exact lookups, so no
+      length floor is needed and the 3-letter suburbs come back for free.
 
 ## Experiments — GLiNER2 tuning
 
@@ -152,7 +202,8 @@ text tier's record is in [DONE.md](DONE.md).)
       documents and a degradation pipeline (DPI, skew, blur, JPEG artifacts) for OCR
       benchmarking; bbox-level ground truth. Match painted boxes with pixel tolerance from
       day one — exact-box assertions break across Tesseract versions (see the
-      presidio-image-redactor review, DONE.md item (i)).
+      presidio-image-redactor review, DONE.md item (i)). Output follows the corpus
+      convention (2026-07-15): `pii_eval/corpora/image/s<seed>`.
 - [ ] **Tier 2 — PII-transplanted real documents**: Sergey manually replaces real PII with fake
       in 4–6 real documents (one per major bank layout, one bad scan, one transactions CSV),
       keeping layout intact. Real layouts + known ground truth + declassified. One-time effort,

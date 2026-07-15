@@ -52,7 +52,7 @@ width — full one-line addresses score 0.99 as single spans (fragments
 layer-2 latency at 12; width 16 showed the first extra ORGANIZATION
 over-strip, so stay below it.
 
-Location pass (`location=True`, the default; flag kept for ablations): a
+Location pass (always on; the ablation flag was retired 2026-07-15): a
 dedicated single-label LOCATION schema pass for bare place names in prose
 ("a teacher in Cairns") — contextual identifiers that are not addresses.
 This is the production contextual-identifier net; it replaced the retired
@@ -158,9 +158,8 @@ ADDRESS_LABELS_SPLIT = {
 }
 ADDRESS_THRESHOLD = 0.3
 
-# Location pass (default on), gated by the `location` constructor flag (kept
-# for ablations). Its own single-label schema — kept apart from the main
-# labels so it neither suppresses PERSON/ORG nor is suppressed by them (label
+# Location pass (always on). Its own single-label schema — kept apart from the
+# main labels so it neither suppresses PERSON/ORG nor is suppressed by them (label
 # competition, see docstring). Purpose: cover bare place names in prose
 # ("a teacher in Cairns") that are contextual identifiers but not addresses —
 # the production contextual-identifier net that replaced the retired
@@ -184,8 +183,8 @@ LOCATION_THRESHOLD = 0.4
 # {AU, NSW, ...} stop-list was evaluated first but never shipped — every
 # member is <=3 chars, so the floor subsumes it). Trade-off:
 # the handful of genuine 3-letter suburbs (Kew, Ayr) are sacrificed — an
-# acceptable loss for a contextual-identifier safety net that the layer-3
-# LLM audit is meant to own anyway.
+# acceptable loss for a contextual-identifier safety net; the planned AU
+# place-name gazetteer (TODO.md) is the recovery path for those.
 LOCATION_MIN_CHARS = 4
 
 # Always-on floor on GLiNER2's AU_BANK_ACCOUNT *guesses* (a fragment like
@@ -211,17 +210,14 @@ class Gliner2Recognizer(EntityRecognizer):
         model_name: str = DEFAULT_MODEL,
         threshold: float = 0.4,
         max_width: int = DEFAULT_MAX_WIDTH,
-        location: bool = True,
         **kwargs,
     ):
         self.model_name = model_name
         self.threshold = threshold
         self.max_width = max_width
-        self.location = location
         self._model = None
         entity_types = {e for _, e in LABELS.values()}
-        if location:
-            entity_types |= {e for _, e in LOCATION_LABELS.values()}
+        entity_types |= {e for _, e in LOCATION_LABELS.values()}
         super().__init__(
             supported_entities=sorted(entity_types),
             name="Gliner2Recognizer",
@@ -264,9 +260,8 @@ class Gliner2Recognizer(EntityRecognizer):
             (LABELS, self.threshold),
             (ADDRESS_LABELS_GENERIC, ADDRESS_THRESHOLD),
             (ADDRESS_LABELS_SPLIT, ADDRESS_THRESHOLD),
+            (LOCATION_LABELS, LOCATION_THRESHOLD),
         ]
-        if self.location:
-            passes.append((LOCATION_LABELS, LOCATION_THRESHOLD))
         results = []
         seen = set()
         for labels, threshold in passes:

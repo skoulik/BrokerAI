@@ -7,7 +7,7 @@ model by feeding controlled predictions through a fake:
   but a real account written with spaces ('0007 3111 4') is emitted by the
   model as ONE span and survives — the count is on digits, so the internal
   spaces don't push it under the floor. This is the reassembly case.
-- LOCATION char floor (location=True only): short codes/acronyms ('NAB')
+- LOCATION char floor (always on): short codes/acronyms ('NAB')
   are dropped, real place names ('Wagga Wagga') kept.
 """
 
@@ -57,7 +57,7 @@ def test_bank_account_digit_floor_keeps_spaced_account():
 
 
 def test_location_char_floor_drops_short_tokens():
-    rec = Gliner2Recognizer(location=True)
+    rec = Gliner2Recognizer()
     rec._model = _FakeModel({"location": ["NAB", "Wagga Wagga"]})
     text = "paid NAB while visiting Wagga Wagga today"
     got = _spans(rec, text, "LOCATION")

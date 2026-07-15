@@ -28,7 +28,10 @@ locally and analytical utility is preserved.
    BSB/account, PayID; checksum-invalid identifiers surfaced, not silently dropped) — shipped.
 2. **Zero-shot NER** (GLiNER2 — names, addresses, DOB, person-vs-organization) — shipped.
 3. **Local-LLM audit pass** ("does this still contain anything identifying?" — contextual
-   identifiers, via llama-server) — planned; owns the known layer-1/2 gaps once it lands.
+   identifiers, via llama-server) — **contingent, not committed** (expectation set
+   2026-07-15): the plan is to evaluate the tool end-to-end with layers 1+2 only; layer 3
+   gets built only if those results prove unsatisfactory. Known layer-1/2 gaps therefore
+   need owners that don't assume layer 3 (see TODO.md).
 
 ## Evaluation tiers
 
@@ -45,9 +48,9 @@ synthetic/declassified data or aggregate metrics.
 Scoring is recall-first and severity-weighted: acceptance = zero critical misses (TFN,
 account numbers, names) on the Tier 3 review set, not a single F1 number.
 
-## Where things stand (2026-07-14)
+## Where things stand (2026-07-15)
 
 Text, CSV and image paths work end-to-end behind one CLI (`python -m pii`); detection
 layers 1–2 are eval-gated on the Tier-1 text corpus. The current front is the image/PDF
-track (PDF mode → image eval tier → OCR bake-off), then the layer-3 LLM audit — see
-[TODO.md](TODO.md) for the ordered list.
+track (PDF mode → image eval tier → OCR bake-off); after that the end-to-end evaluation
+decides whether layer 3 is needed at all — see [TODO.md](TODO.md) for the ordered list.

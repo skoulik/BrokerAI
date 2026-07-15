@@ -219,9 +219,10 @@ TODO.md.
 
 `SpacyRecognizer` is gone from the registry, and the `--no-ner` patterns-only regime with it;
 spaCy remains solely as Presidio's mandatory NLP engine (tokens/lemmas → context enhancer).
-GLiNER2's location pass — `Gliner2Recognizer(location=True)`, now the default (the flag is
-kept for ablations) — is the production contextual-identifier net. Supersedes the two
-2026-07-14 decisions (spaCy-restricted-to-LOCATION and the location-label experiment).
+GLiNER2's location pass — now unconditional (it shipped behind a `location=True` ablation
+flag, retired later the same day: trivially re-introduced if an ablation is ever wanted) —
+is the production contextual-identifier net. Supersedes the two 2026-07-14 decisions
+(spaCy-restricted-to-LOCATION and the location-label experiment).
 
 History and rationale:
 
@@ -356,16 +357,21 @@ The exception is a local VLM (Qwen-VL class) doing OCR+PII detection in one pass
 be expressed as an OCR adapter feeding the analyze step — if pursued, it becomes an
 *alternative pipeline* whose output joins at the merged-spans level. Bake-off task in TODO.md.
 
-### Layer-3 LLM audit (planned)
+### Layer-3 LLM audit (contingent — expectation set 2026-07-15)
 
-A local-LLM pass over the layer-1/2-stripped text — "does this still contain anything
-identifying?" — served by llama-server (the one piece of infrastructure shared with the RAG
-app). It joins the stack *before* overlap merging conceptually: its findings become spans like
-any other layer's, so the CSV and image wrappers inherit it for free. It owns what layers 1–2
-cannot see by nature: contextual identifiers, and the rare person-name forms GLiNER2 misses
-intermittently (joint initials, reversed caps). Its arrival triggers two recorded revisits
-(TODO.md): promote PERSON_JOINT/PERSON_REVERSED into the eval's critical gate, and rerun the
-spaCy ablation.
+**Layer 3 is not a certainty.** The plan is to evaluate the tool end-to-end with layers 1+2
+only; layer 3 gets built only if those results prove unsatisfactory (Sergei, 2026-07-15).
+Consequence: known layer-1/2 gaps must not be parked as "layer 3 will own it" — each needs
+its own fix or an explicit accepted-loss record (the joint/reversed person-name gap got its
+own TODO item the same day).
+
+The design, should it be built: a local-LLM pass over the layer-1/2-stripped text — "does
+this still contain anything identifying?" — served by llama-server (the one piece of
+infrastructure shared with the RAG app). It joins the stack *before* overlap merging
+conceptually: its findings become spans like any other layer's, so the CSV and image wrappers
+inherit it for free. It targets what layers 1–2 cannot see by nature: contextual identifiers.
+Its arrival would trigger one recorded revisit (TODO.md): consider dropping the GLiNER2
+location pass.
 
 ### Evaluation (designed 2026-07-05/12; text tier built 2026-07-12)
 
