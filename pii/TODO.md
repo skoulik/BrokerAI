@@ -7,11 +7,6 @@ plan are in [ROADMAP.md](ROADMAP.md); completed tasks and their engineering reco
 Grouped by theme. Suggested order on the image/PDF track (2026-07-14): PDF mode → demo on
 the reference documents → pii_eval image tier → OCR bake-off.
 
-## Next up — spaCy track (planned 2026-07-15)
-
-Both tasks shipped 2026-07-15 — the source review and the detector retirement (records in
-[DONE.md](DONE.md); plan agreed with Sergei 2026-07-15, scope decisions recorded inline).
-
 ## Next up — image/PDF path
 
 - [ ] PDFs — **treat as images**: render pages → OCR → redact pixels → reassemble PDF.
