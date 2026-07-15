@@ -347,6 +347,134 @@ the move; new completed tasks append to the matching section with their records.
       year-range guard, no-context kept, digit floor). Known cosmetic quirk, accepted:
       in patterns-only mode spaCy sometimes glues "Salary Ac." into a PERSON span and
       the recall-first merge unions it — digits still stripped, label off.
+- [x] Deep source review of spaCy 3.8.13 + en_core_web_sm 3.8.0 (2026-07-15; the drill from
+      the gliner2-rs and presidio-image-redactor reviews: harvest, not adopt). Scope as
+      planned: focused core (tokenizer/lemmatizer feeding Presidio's context enhancer, the
+      NER detector being retired, pattern machinery, span/overlap handling) + architecture.
+      Read in place at site-packages; findings verified with tokenizer/NER probes against
+      the installed model (tokenizer.explain, feature dumps). Harvested knowledge:
+      (a) **Tokenizer algorithm**: whitespace-first segmentation — text splits on
+      whitespace runs; a run of *exactly one space* becomes a `spacy` flag on the previous
+      token, but ANY other whitespace run (`\n`, `\t`, double spaces) becomes a real
+      token that flows into every downstream component, including NER. Per chunk:
+      special-case/cache lookup → iterative prefix/suffix regex stripping (re-checking
+      specials + token_match each round) → token_match/url_match → infix regex splits.
+      Chunk-level tokenization cache (hash of chunk string, default 10k entries);
+      multi-token special cases are re-found on the assembled Doc via an internal
+      PhraseMatcher and spliced in by a retokenizer (tokenizer.pyx `_apply_special_cases`).
+      (b) **The `a/c` quirk, explained from source**: the only infix rule for `/` and `:`
+      is `(?<=[alnum])[:<>=/](?=[ALPHA])` (lang/punctuation.py; the en override keeps it) —
+      these split ONLY when followed by a letter. So `a/c` → `a|/|c` (POS-tagged X/SYM/NOUN
+      — never a usable lemma-context term), while `ac/12345678`, `TFN:123456782`,
+      `ph:0412345678` stay SINGLE tokens — a label glued to a digit never becomes its
+      own token. Both directions make label words invisible to Presidio's
+      LemmaContextAwareEnhancer; our char-level regex label matching is immune. Verified:
+      `'A/c No: 12345678'` → `A|/|c|No|:|12345678`.
+      (c) **Other boundary rules affecting us** (lang/en/punctuation.py overrides the
+      shared defaults): hyphens split after letters AND digits → `062-000` → `062|-|000`,
+      `Anne-Marie` → `Anne|-|Marie` (3 tokens each); number+unit suffixes split
+      (`100km` → `100|km`); currency prefixes split (`$1,200.50` → `$|1,200.50`); but
+      `16/06/2024` and `120/80` stay single tokens (no letter after `/`). Tokenizer
+      exceptions are ~500 lines of generated contraction rules (incl. apostrophe-less
+      `youll`/`shes` variants, guarded by an `_exclude` list for real words like
+      Ill/Shell/Well) — exact-string match only; ORTH concat must equal the source string,
+      only NORM may differ.
+      (d) **Lemmatizer** (what `token.lemma_` actually is in en_core_web_sm): rule-mode
+      EnglishLemmatizer — POS-gated table/suffix-rule lookup with an `is_base_form`
+      short-circuit driven by morph features; POS comes from tagger+attribute_ruler, so
+      lemma quality degrades exactly where OCR text confuses the tagger. Confirmed gap:
+      capitalized header/label words get tagged PROPN and **PROPN lemmas pass through
+      unchanged** (`Direct Debits` → lemma `Debits`), so the enhancer's lemma matching
+      sees surface forms for HEADER-CASE label words; lowercase inflections lemmatize
+      fine (`accounts`→`account`, `debited`→`debit`).
+      (e) **NER architecture** (the detector being retired): transition-based BILUO
+      (B/I/L/U/O moves over a buffer, pipeline/_parser_internals/ner.pyx), decoded
+      GREEDILY — per token, argmax over *valid* transitions; no beam in the shipped
+      config, no global optimum. The classifier state is just **three token vectors**
+      (current token, first token of the open entity, previous token — _state.pxd
+      `set_context_tokens`, n=3) → 64-wide maxout → action scores. Token vectors come
+      from an NER-private tok2vec (config.cfg: the shared tok2vec feeds only
+      tagger/parser via Tok2VecListener): hash embeddings of NORM + 1-char PREFIX +
+      3-char SUFFIX + SHAPE (rows 5000/1000/2500/2500, width 96, **no static vectors**)
+      through a depth-4 window-1 maxout CNN — receptive field ±4 tokens.
+      (f) **Cross-line glue spans, from mechanism**: `Begin.is_valid` forbids an entity
+      from *starting* on an IS_SPACE token or crossing a sentence boundary — but `In`/
+      `Last` have NO whitespace check, so `\n` tokens legally sit *inside* an open
+      entity; and sentence boundaries come from the parser (senter ships disabled), which
+      emits none on punctuation-less OCR lines. Nothing stops a name from swallowing the
+      whole block; greedy decoding then commits it. Reproduced:
+      `John Citizen\n123 Fake St\nWagga Wagga` = one PERSON (+ `2650` = DATE).
+      (g) **AU-place blindness, from mechanism**: trained on OntoNotes 5 (US
+      news/broadcast; meta.json sources); no gazetteer, no vectors — an OOV town is
+      represented only as a hash-bucketed NORM + prefix/suffix/shape. `Wagga` and `Smith`
+      have identical SHAPE (`Xxxxx`), 1-char prefix, 3-char suffix; reduplicated
+      `Wagga Wagga` looks like FIRSTNAME LASTNAME → PERSON (verified in sentence
+      context); bare `Dubbo` → nothing. Self-reported in-domain scores confirm the class
+      weakness: ents_f 0.843 overall but LOC f=0.668, FAC f=0.349 — address-adjacent
+      classes were weak even on newswire. `2650` → DATE is the same story: SHAPE `dddd`
+      is year-like, and the model sees only ±4 tokens of layout-free context to
+      disambiguate. The retirement rationale now rests on mechanism, not just eval
+      numbers.
+      (h) **Preset-entity cooperation** (worth knowing for rule+model hybrids): the
+      transition validity functions honor pre-set `ent_iob` on tokens — presets can
+      force-continue an entity across whitespace/sentence bounds and block conflicting
+      moves; `doc.set_ents(..., default="unmodified")` is the seam EntityRuler uses to
+      pre-seed the model. spaCy's rule/model conflict policy is pluggable per SpanRuler
+      (`ents_filter`: prioritize-new vs prioritize-existing, both built on filter_spans).
+      (i) **Matcher** (token-pattern DSL, matcher/matcher.pyx): per-token attr dicts with
+      quantifiers `! ? + * {n} {n,m}`, predicates REGEX/IN/NOT_IN/IS_SUBSET/IS_SUPERSET/
+      INTERSECTS/comparisons, and **FUZZY/FUZZY1–9** per-attr fuzzy token matching via
+      bundled polyleven Levenshtein with the default edit budget
+      `max(2, round(0.3·len(pattern)))` (matcher/levenshtein.pyx) — ready-made prior art
+      for OCR-robust token patterns, and a defensible fuzz-budget formula worth stealing.
+      `+`/`*` return ALL matches; optional per-key `greedy="FIRST"|"LONGEST"` post-filter.
+      (j) **PhraseMatcher** (phrasematcher.pyx): the FlashText algorithm — a trie over
+      ONE hashed token attribute, nogil scan, O(tokens × depth), emits all (overlapping)
+      matches; patterns are Docs, so pattern and text share one tokenizer and cannot
+      disagree; matching on LOWER/NORM gives case-insensitivity for free (OCR ALL-CAPS).
+      This is the engine the AU place-name gazetteer idea should copy (→ TODO). Caveat
+      from (a): whitespace *tokens* sit in the sequence, so `Wagga  Wagga` (double space)
+      breaks trie continuity — normalize whitespace before matching, or match at our
+      char level instead.
+      (k) **Span/overlap handling**: `util.filter_spans` = precision-first
+      winner-take-all — sort by (length desc, start asc), keep a span iff its start and
+      end−1 tokens are both unseen, mark the whole range seen (endpoint-only check; the
+      same trick as the tokenizer's special-case filter). The documented standard
+      alternative to our recall-first union merge — useful vocabulary for the
+      overlaps-task write-up, not a replacement. `Doc.char_span` offers
+      strict/contract/expand alignment of char offsets to token boundaries (strict
+      returns None on misalignment; binary-search token lookup) — spaCy's version of the
+      char↔token alignment discipline our ocr.py solves with assembly-time interval
+      recording. `SpanGroup`/`doc.spans` is their "keep overlapping spans, resolve
+      later" container — the same recall-first philosophy as our merge input.
+      (l) **Architecture/engineering practices worth stealing**: (1) the whole pipeline
+      is one declarative config.cfg (thinc/confection) — every component/model/
+      hyperparameter is a registry reference (`@architectures = "..."`) with `${...}`
+      interpolation; a shipped model IS its config + binary weights, and meta.json embeds
+      the full per-class eval numbers — self-documenting eval provenance (pii_eval could
+      emit a machine-readable results block to live next to the config it measured).
+      (2) Models are versioned pip packages with a spacy_version compat range checked at
+      load — the packaging answer to "which code can load which artifact". (3) DocBin:
+      columnar uint64 arrays + interned-string list, gzipped msgpack, explicitly designed
+      so deserialization never executes code (anti-pickle stance for cached corpora —
+      relevant to our db/ caches). (4) Vocab/StringStore: murmurhash64 interning, attrs
+      are uint64 hashes everywhere, collision risk consciously accepted; a Doc is one
+      contiguous TokenC array in an arena (cymem Pool) whose tokens reference shared
+      LexemeC structs from the Vocab, with a per-token `spacy` bool making text
+      reconstruction lossless. (5) They ship the full test suite in the wheel
+      (`pytest --pyargs spacy` runs against the installed build) plus registry snapshot
+      files (factory_registrations.json / registry_contents.json) pinning the plugin
+      surface — cheap regression nets for a growing codebase. (6) `tokenizer.explain()`:
+      a debug mode attributing every token to the rule that produced it — the
+      attribution-first debugging pattern our layer-attribution metadata already follows;
+      worth extending as the pipeline grows.
+      (m) **Production observation** (presidio_analyzer/nlp_engine/spacy_nlp_engine.py):
+      Presidio loads the model with plain `spacy.load()` — no component exclusions — so
+      every analyzed text pays for tok2vec+tagger+parser+attribute_ruler+lemmatizer+ner.
+      With the detector retirement, spaCy's `ner` output is consumed by nobody, and
+      `parser` only produces sentence bounds nothing reads (the lemmatizer needs
+      tagger+attribute_ruler only). → TODO: benchmark excluding parser+ner from the
+      Presidio NLP engine.
 
 ## Evaluation
 

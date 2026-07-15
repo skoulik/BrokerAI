@@ -9,44 +9,9 @@ the reference documents → pii_eval image tier → OCR bake-off.
 
 ## Next up — spaCy track (planned 2026-07-15)
 
-Two tasks, in this order; they are independent — the review does not block the retirement.
-Plan agreed with Sergei 2026-07-15; scope decisions recorded inline.
+One task remaining — the source review shipped 2026-07-15 (record in [DONE.md](DONE.md);
+plan agreed with Sergei 2026-07-15, scope decisions recorded inline).
 
-- [ ] Deep source review of spaCy — same drill as the gliner2-rs and presidio-image-redactor
-      reviews (records in [DONE.md](DONE.md)): harvest knowledge/know-how/experience/
-      things-to-avoid, not adopt. Target: the installed spaCy 3.8.13 (all `.pyx` sources ship
-      in the wheel — review in place at site-packages, no clone) plus en_core_web_sm 3.8.0
-      (its `config.cfg`/`meta.json` are reviewable too). Scope decided 2026-07-15 (~920
-      source files make a full read infeasible): **focused core + architecture**.
-      Core — the parts we depend on via Presidio, or are retiring:
-      - tokenizer (`tokenizer.pyx`, `lang/en` punctuation/exceptions, char classes): the
-        token boundaries Presidio's context enhancer lives on; explains recognizers.py's
-        documented "a/c never survives tokenization into a context term" quirk; harvest
-        rules affecting our label/context matching (infix `/`, hyphens, number+unit);
-      - lemmatizer (`pipeline/lemmatizer.py` + `lang/en` rules/lookups): what
-        `token.lemma_` actually is in en_core_web_sm — the input quality of Presidio's
-        LemmaContextAwareEnhancer;
-      - NER (`pipeline/ner.pyx`, `transition_parser.pyx`, `_parser_internals` BILUO
-        transition system, `tok2vec.py` + MultiHashEmbed/Bloom embeddings in `ml/models`,
-        and en_core_web_sm's config): explain from mechanism the failure modes we measured
-        — cross-line glue spans, date-as-PERSON, total blindness to 'Wagga Wagga'/'Dubbo' —
-        so the retirement rationale in ARCHITECTURE.md rests on mechanism, not just eval
-        numbers;
-      - pattern machinery (`matcher/matcher.pyx`, `phrasematcher.pyx`, entity/span/
-        attribute rulers): token-level pattern DSL and trie-based phrase matching vs our
-        char-level regexes; candidate harvest: a PhraseMatcher-style AU place-name
-        gazetteer as a cheap LOCATION layer, token patterns robust to OCR whitespace;
-      - span/overlap handling (`Doc.char_span` alignment modes, `util.filter_spans`,
-        SpanGroup): their longest-first-greedy overlap resolution vs our recall-first
-        union merge; char↔token alignment discipline vs our assembly-time interval
-        recording in `ocr.py`.
-      Architecture/engineering: the config/registry/factory system, Language pipeline
-      composition and `pipe()` batching, model packaging (versioned pip package,
-      compat ranges), serialization contracts (DocBin), Vocab/StringStore hash interning,
-      the Doc memory model; testing/versioning practices worth stealing for a growing
-      codebase. Method/deliverables as before: read in place, spacy.io/GitHub only to
-      confirm findings; raw harvest appended to DONE.md (lettered findings), durable
-      decisions distilled into ARCHITECTURE.md, actionable ideas become TODO items.
 - [ ] Retire the last spaCy recognizer and remove the `--no-ner` regime. Ships the GLiNER2
       location label — experiment settled 2026-07-14 (11/11 vs 6/11 contextual towns, zero
       extra org over-strip, one fewer address leak; record in [DONE.md](DONE.md); this item
@@ -141,6 +106,22 @@ Plan agreed with Sergei 2026-07-15; scope decisions recorded inline.
       (e.g. names and addresses only). The pipeline already takes a `strip_entities` set
       internally; needs CLI exposure (`--entities` / named profiles) and documentation.
 - [ ] Metadata scrubbing on all output formats
+- [ ] Slim the Presidio NLP engine: exclude `parser` and `ner` from the en_core_web_sm
+      pipeline. Presidio loads the model with bare `spacy.load()` (spacy_nlp_engine.py, no
+      component exclusions), so every analyzed text pays for the full 6-component pipeline;
+      with SpacyRecognizer retired the spaCy NER output is read by nobody, and the parser
+      only produces sentence bounds nothing consumes — lemmas need tagger+attribute_ruler
+      only. Needs a small SpacyNlpEngine subclass or preloaded-nlp injection; first verify
+      no recognizer/enhancer touches `nlp_artifacts.entities`/sents, then measure layer-1+2
+      latency on the eval corpus. (spaCy source review finding (m), 2026-07-15 — record in
+      [DONE.md](DONE.md).)
+- [ ] AU place-name gazetteer as a cheap deterministic LOCATION layer (spaCy source review
+      finding (j)): FlashText/PhraseMatcher-style trie — or plain set matching at our char
+      level — over a public AU suburb/town list, case-insensitive, whitespace-normalized.
+      Gives recall on bare town names independent of GLiNER2's location pass (and of the
+      layer-3 audit when it lands); decide its overlap policy vs the location label when
+      the overlaps-merging task above is done. Consider a fuzzy edit budget of
+      `max(2, 0.3·len)` for OCR damage (review finding (i)).
 
 ## Experiments — GLiNER2 tuning
 

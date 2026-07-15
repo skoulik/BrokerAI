@@ -368,6 +368,34 @@ real corpus. Acceptance is recall-first and severity-weighted: zero critical mis
 account numbers, names), not an F1 number. Tier plan in [ROADMAP.md](ROADMAP.md); harness in
 [../pii_eval/](../pii_eval/README.md); text-tier record in DONE.md.
 
+### spaCy source review — the measured failure modes, grounded in mechanism (2026-07-15)
+
+The 2026-07-14/15 eval findings against SpacyRecognizer now have source-level explanations
+(review record with the full harvest in [DONE.md](DONE.md)); they underpin the detector
+retirement independently of the eval numbers:
+
+- **Glue spans are structural, not incidental.** en_core_web_sm's transition system forbids
+  entities *starting* on whitespace but not *containing* it, and its sentence bounds come
+  from a parser that finds none in punctuation-less OCR lines — so nothing stops a PERSON
+  from swallowing a `name\naddress\ntown` block, and greedy decoding commits the error at
+  the first token. No threshold or post-filter fixes a constraint that isn't there.
+- **AU-place blindness is representational.** OntoNotes-trained, no gazetteer, no static
+  vectors: an OOV town is just a hashed NORM + 1-char prefix + 3-char suffix + SHAPE inside
+  a ±4-token receptive field — `Wagga` is feature-identical to a surname. The model
+  self-reports LOC f=0.668 / FAC f=0.349 even in-domain.
+- **Tokenization gates Presidio's context enhancer.** `/` and `:` infixes split only before
+  letters, so `a/c` fragments (`a|/|c`) while `TFN:123456782` / `ph:0412345678` stay single
+  tokens — either way the label word never surfaces as a token for lemma-context matching,
+  and the rule lemmatizer's PROPN passthrough leaves HEADER-CASE label words unlemmatized
+  on top. Char-level regex label matching (our layer 1) is the right instrument on this
+  text; keep label/context matching char-level.
+
+Input for the overlaps-merging task: spaCy's `util.filter_spans` (longest-first greedy,
+earliest-start tiebreak, winner-take-all) is the standard precision-first alternative to our
+recall-first union merge; spaCy itself keeps overlapping candidates in `SpanGroup`s and
+resolves late, and SpanRuler exposes the rule-vs-model conflict policy as a pluggable
+filter — useful framing when we define our merge algebra.
+
 ## Dependency/runtime notes
 
 - `pii/` keeps its own `requirements.txt`; repo-wide `pyproject.toml` + uv is a Phase 2 item
