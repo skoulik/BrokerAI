@@ -9,7 +9,7 @@ pii_map.json
 models/hf-cache/
 
 # Generated synthetic eval corpora (regenerable: python -m pii_eval generate)
-pii_eval/corpus*/
+pii_eval/corpora/
 
 # Python bytecode cache (analyze_statement imports verify_examples)
 __pycache__/

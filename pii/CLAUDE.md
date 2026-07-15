@@ -28,7 +28,9 @@ ARCHITECTURE.md; finished TODO items move to DONE.md with their records.
   glue/FP-prone on OCR text; see `tests/pii/test_registry_policy.py`, ARCHITECTURE.md and the
   DONE.md record.
 - **Eval harness is in [`../pii_eval/`](../pii_eval/)** (`python -m pii_eval generate` / `score`).
-  Run it to check for regressions; the scorer gates on zero critical misses.
+  Run it to check for regressions; the scorer gates on zero critical misses. Generated
+  synthetic corpora (text and image alike) live under `pii_eval/corpora/<modality>/s<seed>`
+  (gitignored) — the CLI defaults resolve there; never write corpora to session scratchpads.
 - **Reference documents in [`../sensitive/`](../sensitive/) are classified.** They are
   gitignored — never commit, email, or upload them; cloud-LLM analysis of them is in-session
   only. Anything a cloud model sees must be synthetic or declassified.

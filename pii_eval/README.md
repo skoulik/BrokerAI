@@ -11,12 +11,22 @@ statements, but no value in a generated corpus comes from them.
 ## Usage
 
 ```
-python -m pii_eval generate -o pii_eval/corpus --seed 42 --docs 9
-python -m pii_eval score              # full pipeline (GLiNER2 on CUDA)
+python -m pii_eval generate --seed 42 --docs 9   # -> pii_eval/corpora/text/s42
+python -m pii_eval score                         # scores corpora/text/s42; full pipeline (GLiNER2 on CUDA)
+python -m pii_eval score --seed 7                # another seed's corpus
 ```
 
 `score` exits 1 if any critical-type entity (TFN, Medicare, BSB, account,
 card, person name) leaked — the roadmap's zero-critical-miss gate.
+
+## Corpus layout
+
+Every generated corpus lives under `pii_eval/corpora/` (gitignored,
+regenerable): one folder per modality — `text/` today, `image/` when that
+tier lands — with one subfolder per seed (`text/s42`, `text/s7`, ...).
+Both CLIs default to `corpora/text/s<seed>`; `-o`/`-c` override for
+throwaway experiments, but durable corpora belong in the seed folders —
+not in session scratchpads (convention set 2026-07-15).
 
 ## What gets generated
 

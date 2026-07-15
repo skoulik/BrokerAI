@@ -1,6 +1,14 @@
 import argparse
 import sys
 
+# Canonical home of every generated corpus (gitignored): one folder per
+# modality (text/ now, image/ when that tier lands), one subfolder per seed.
+CORPUS_ROOT = "pii_eval/corpora/text"
+
+
+def _default_corpus(seed: int) -> str:
+    return f"{CORPUS_ROOT}/s{seed}"
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -10,7 +18,8 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     gen = sub.add_parser("generate", help="build a corpus with ground truth")
-    gen.add_argument("-o", "--out", default="pii_eval/corpus")
+    gen.add_argument("-o", "--out", default=None,
+                     help=f"output folder (default: {CORPUS_ROOT}/s<seed>)")
     gen.add_argument("--seed", type=int, default=42)
     gen.add_argument("--docs", type=int, default=9)
     gen.add_argument(
@@ -20,7 +29,10 @@ def main() -> int:
     )
 
     sc = sub.add_parser("score", help="run the pii pipeline and score it")
-    sc.add_argument("-c", "--corpus", default="pii_eval/corpus")
+    sc.add_argument("-c", "--corpus", default=None,
+                    help=f"corpus folder (default: {CORPUS_ROOT}/s<seed>)")
+    sc.add_argument("--seed", type=int, default=42,
+                    help="which seed's corpus to score when -c is not given")
     sc.add_argument("--threshold", type=float, default=0.4)
     sc.add_argument("--invalid-identifiers",
                     choices=["ignore", "all", "likely", "context"],
@@ -31,12 +43,13 @@ def main() -> int:
     if args.command == "generate":
         from pii_eval.generate import generate
 
-        generate(args.out, seed=args.seed, docs=args.docs,
+        generate(args.out or _default_corpus(args.seed),
+                 seed=args.seed, docs=args.docs,
                  invalid=args.invalid)
         return 0
     from pii_eval.score import score
 
-    return score(args.corpus,
+    return score(args.corpus or _default_corpus(args.seed),
                  threshold=args.threshold,
                  invalid_identifiers=args.invalid_identifiers)
 
