@@ -71,11 +71,24 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
       misses: joint names ('Jeffrey and Randall Lawrence' seed 42; 'JULIE AND BRIAN
       SUMMERS' / 'BRIAN AND AARON MILLER' seed 123; joint initials 'E & J Moore') and
       reversed caps ('ROCHA RANDALL') — PERSON_JOINT 70% / PERSON_REVERSED 90% recall on
-      seed 42 (records in DONE.md). Was parked as layer-3 backlog, but layer 3 is now
-      contingent (below), so the gap needs its own owner. Candidate fixes: a dedicated
-      joint-name schema pass or description tweak ("names of two or more people joined
-      by 'and' or '&'"), a layer-1 pattern for the mechanical forms ('X and Y SURNAME',
-      'A & B Surname'), or fold into the labels-per-pass experiment below. When a fix
+      seed 42 (records in DONE.md; 1/6 and 4/6 on the regenerated seed-42 corpus,
+      2026-07-15). Was parked as layer-3 backlog, but layer 3 is now contingent (below),
+      so the gap needs its own owner.
+      **Diagnostic (2026-07-15, raw-emission probe at threshold 0.05):** the joint form
+      itself is NOT the problem — 'J & E Lawrence' scores 0.93–0.98 bare or after 'Loan
+      Repayment', in both the production schema and a person-only pass. What fails is the
+      form embedded in transaction-line junk: 'OSKO P12345678 J & E LAWRENCE RENT' emits
+      the glue span 'LAWRENCE RENT'@0.55 (initials dropped), and 'JULIE AND BRIAN
+      SUMMERS' splits into 'BRIAN SUMMERS'@0.98 + 'JULIE'@0.49 (connector leaks).
+      Segmentation failure under adjacent ref-codes/keywords, not labeling blindness;
+      label competition only shaves points (person-only pass shows the same shapes).
+      Consequence: a description tweak is unlikely to help; the **layer-1 pattern for the
+      mechanical forms** ('X and Y SURNAME', 'A & B Surname') is the primary candidate —
+      the context that breaks the NER is regular, machine-generated text. The reversed
+      form mostly survives as glue ('MOORE OLGA RENT'@0.77 covers the name; over-strips
+      the keyword). The split-pair outputs are also input to the adjacent-span
+      coalescing piece of the overlaps-merging task below. Other candidates (dedicated
+      joint-name schema pass, labels-per-pass fold-in) stay as fallbacks. When a fix
       lands, promote PERSON_JOINT/PERSON_REVERSED into pii_eval `build.CRITICAL`
       (currently reported per-form without tripping the gate — see the
       invalid-identifiers record in DONE.md).
