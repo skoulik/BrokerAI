@@ -203,20 +203,21 @@ def test_csv_mode_collects_and_masks_per_cell(make_pipeline):
     assert "50.00" in out
 
 
-def test_cli_mask_all_warns_and_logs(tmp_path, capsys):
+def test_cli_mask_all_warns_and_logs(tmp_path, capsys, gliner2_stub):
     from pii.cli import main
 
     doc = tmp_path / "doc.txt"
     doc.write_text(f"TFN: {INVALID_TFN}\n", encoding="utf-8")
     out_file = tmp_path / "out.txt"
-    rc = main(
-        [
-            "strip", str(doc), "-o", str(out_file),
-            "--map", str(tmp_path / "map.json"), "--no-ner",
-            "--invalid-identifiers", "all",
-            "--mask-invalid-identifiers", "yes",
-        ]
-    )
+    with gliner2_stub():  # keep the CLI run model-free (no GLiNER2 load)
+        rc = main(
+            [
+                "strip", str(doc), "-o", str(out_file),
+                "--map", str(tmp_path / "map.json"),
+                "--invalid-identifiers", "all",
+                "--mask-invalid-identifiers", "yes",
+            ]
+        )
     assert rc == 0
     err = capsys.readouterr().err
     assert "warning" in err and "analytical utility" in err

@@ -21,8 +21,6 @@ def main() -> int:
 
     sc = sub.add_parser("score", help="run the pii pipeline and score it")
     sc.add_argument("-c", "--corpus", default="pii_eval/corpus")
-    sc.add_argument("--no-ner", action="store_true",
-                    help="patterns only (fast; names/addresses will leak)")
     sc.add_argument("--threshold", type=float, default=0.4)
     sc.add_argument("--invalid-identifiers",
                     choices=["ignore", "all", "likely", "context"],
@@ -38,7 +36,7 @@ def main() -> int:
         return 0
     from pii_eval.score import score
 
-    return score(args.corpus, use_ner=not args.no_ner,
+    return score(args.corpus,
                  threshold=args.threshold,
                  invalid_identifiers=args.invalid_identifiers)
 

@@ -12,8 +12,7 @@ statements, but no value in a generated corpus comes from them.
 
 ```
 python -m pii_eval generate -o pii_eval/corpus --seed 42 --docs 9
-python -m pii_eval score --no-ner     # patterns only, seconds
-python -m pii_eval score              # full pipeline, ~1 min/doc on CPU
+python -m pii_eval score              # full pipeline (GLiNER2 on CUDA)
 ```
 
 `score` exits 1 if any critical-type entity (TFN, Medicare, BSB, account,

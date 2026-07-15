@@ -36,9 +36,9 @@ python -m pii rehydrate cloud_answer.txt --map map.json
 runs so placeholders stay consistent over a document set. **It contains the
 original PII — it is gitignored and must never leave the machine.**
 
-Flags: `--no-ner` (patterns only, fast), `--strip-orgs` (organization names
-are kept by default — merchant names carry analytical value), `--threshold`
-(default 0.4), and the checksum-invalid identifier controls below.
+Flags: `--strip-orgs` (organization names are kept by default — merchant
+names carry analytical value), `--threshold` (default 0.4), and the
+checksum-invalid identifier controls below.
 
 ## Images
 
@@ -96,11 +96,14 @@ logged 44 noise findings over 11 docs.
    they are not in Presidio's default registry), credit cards, emails, URLs,
    IPs, AU-region phones; custom recognizers in `recognizers.py` for BSB
    (`AU_BSB`), account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`).
-2. **Zero-shot NER** — names, addresses, DOB; distinguishes person vs
+2. **Zero-shot NER** — names, addresses, DOB, and bare place names (a
+   contextual-identifier LOCATION pass); distinguishes person vs
    organization for bank transaction descriptions. GLiNER2
    (`gliner2_recognizer.py`, Fastino's PII-tuned model, schema
    descriptions). The original GLiNER (v1) backend was evaluated
-   side-by-side and removed 2026-07-13 (it's in git history).
+   side-by-side and removed 2026-07-13 (it's in git history). spaCy
+   (`en_core_web_sm`) is Presidio's NLP engine only — its `SpacyRecognizer`
+   detector was retired 2026-07-15 (GLiNER2 now owns LOCATION too).
 3. **Local-LLM audit pass** — planned; will use llama-server.
 
 Behaviour worth knowing when running the tool: `DATE_TIME` and
@@ -108,7 +111,7 @@ Behaviour worth knowing when running the tool: `DATE_TIME` and
 merchant names are the analytical substance of a statement; `DATE_OF_BIRTH`
 is stripped); some over-stripping is the accepted recall-first cost — every
 ambiguity resolves toward stripping. The design rationale behind all of
-this (recall-first span handling, the spaCy LOCATION restriction, GLiNER2
+this (recall-first span handling, the spaCy detector retirement, GLiNER2
 tuning) lives in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Performance
@@ -116,8 +119,9 @@ tuning) lives in [ARCHITECTURE.md](ARCHITECTURE.md).
 The NER model moves itself to CUDA when available (CUDA torch installed
 2026-07-12 for the RTX 2080 Ti). On the 9-document eval corpus the NER
 share of the run is ~0.7 s (GLiNER2; the removed v1 backend took ~3.3 s,
-~15 min on CPU). `--no-ner` runs in seconds (patterns only — do not rely
-on it for names/addresses).
+~15 min on CPU). GLiNER2 always loads now that the patterns-only regime is
+retired (2026-07-15); spaCy loads too, as Presidio's NLP engine (still
+required — keep the `en_core_web_sm` download above).
 
 ## Evaluation
 

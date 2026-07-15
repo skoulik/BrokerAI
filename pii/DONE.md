@@ -149,6 +149,36 @@ the move; new completed tasks append to the matching section with their records.
       layer-3 audit is meant to own. Flag left default-off; the ship decision (flip
       defaults, drop SpacyRecognizer, land the ORG-absorbs-location merge rule) is a
       follow-up in TODO.md. Experiment harness: scratchpad only, not committed.
+- [x] Retire the last spaCy recognizer and remove the `--no-ner` regime (2026-07-15).
+      Shipped the location-label experiment above as the production decision: flipped
+      `Gliner2Recognizer(location=True)` to the default (flag kept for ablations), removed
+      `SpacyRecognizer` from the registry unconditionally, and dropped the patterns-only
+      regime entirely (Sergei's scope call, 2026-07-15) — `use_ner`/`--no-ner` gone from
+      pipeline.py, cli.py, pii_eval score.py/`__main__.py`. spaCy stays only as Presidio's
+      NLP engine (tokens/lemmas → context enhancer; NLP_CONFIG untouched). Docstrings, the
+      registry-policy comment, ARCHITECTURE.md (spaCy row, diagram, single-pipeline section,
+      the two 2026-07-14 decision sections superseded by a dated retirement decision),
+      pii/CLAUDE.md, and both READMEs updated. Tests: `_NoopGliner2` stub + a `_gliner2_stub`
+      context manager moved into tests/conftest.py; `make_pipeline` grew a `stub_ner=True`
+      default (built under the shim → model-free; part of the cache key, not forwarded to
+      PiiPipeline), `stub_ner=False` for the model-marked tests; test_spacy_policy.py
+      replaced by the slimmer tests/pii/test_registry_policy.py (SpacyRecognizer absent,
+      Gliner2Recognizer present and owning LOCATION, model-free via the shim; two
+      model-marked real-stack tests: the Emily-Watson nuance and "a teacher in Cairns"
+      → LOCATION); test_invalid.py's CLI test runs under the shim, no `--no-ner`.
+      Verification: default `pytest` 72 passed / 3 deselected, still model-free (~5 s);
+      `pytest -m "slow or model"` 3 passed. Full pii_eval generate+score, seeds 42 and 123,
+      `--docs 30` — reproduced the experiment-B numbers: CONTEXTUAL_ID **11/11** towns caught
+      both seeds (baseline spaCy: 7/11 on 42, 6/11 on 123 — blind to 'Wagga Wagga'/'Dubbo'),
+      ORGANIZATION over-strips unchanged at baseline (seed 42: 22; seed 123: 33), one fewer
+      ADDRESS leak each (seed 42: 4→3; seed 123: 2→1), PERSON identical (seed 123: 170/172).
+      The only remaining critical misses are the pre-existing joint-name GLiNER2 gap
+      ('Jeffrey and Randall Lawrence' seed 42; 'JULIE AND BRIAN SUMMERS'/'BRIAN AND AARON
+      MILLER' seed 123) — verified identical on the pre-change baseline over the same corpora,
+      i.e. untouched by this work; they are the PERSON_JOINT/PERSON_REVERSED gap already
+      queued for the layer-3 audit (the committed docs-9 gate, seed 42, still PASSes). Out of
+      scope, as planned: the ORG-absorbs-contained-location merge rule (overlaps task, TODO.md)
+      — the location pass reaches org-over-strip parity without it.
 - [x] Log checksum-invalid identifiers. If an identifier candidate passes the detectors, but
       is rejected by the checksum validator, this should be logged. Evaluate if the output
       will become too noisy because of this and if so, make the feature optional. Rationale:

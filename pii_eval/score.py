@@ -125,12 +125,11 @@ def _noise(findings, inv_entities, kind):
     return out
 
 
-def score(corpus: str, use_ner: bool = True,
-          threshold: float = 0.4,
+def score(corpus: str, threshold: float = 0.4,
           invalid_identifiers: str = "likely") -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "truth.json").read_text("utf-8"))
-    pipeline = PiiPipeline(use_ner=use_ner, threshold=threshold,
+    pipeline = PiiPipeline(threshold=threshold,
                            invalid_identifiers=invalid_identifiers)
 
     all_entities = []

@@ -64,10 +64,6 @@ def main(argv=None) -> int:
         help="pseudonym mapping store, created/extended (default pii_map.json)",
     )
     p_strip.add_argument(
-        "--no-ner", action="store_true",
-        help="skip the NER layer (patterns only, much faster)",
-    )
-    p_strip.add_argument(
         "--strip-orgs", action="store_true",
         help="also replace organization names (kept by default)",
     )
@@ -115,7 +111,6 @@ def main(argv=None) -> int:
         "analyze", help="show detections without modifying anything"
     )
     p_analyze.add_argument("input", help="input text file, or - for stdin")
-    p_analyze.add_argument("--no-ner", action="store_true")
     p_analyze.add_argument("--threshold", type=float, default=0.4)
     p_analyze.add_argument(
         "--invalid-identifiers",
@@ -152,7 +147,6 @@ def main(argv=None) -> int:
     if getattr(args, "strip_orgs", False):
         strip_entities.add("ORGANIZATION")
     pipeline = PiiPipeline(
-        use_ner=not args.no_ner,
         threshold=args.threshold,
         strip_entities=strip_entities,
         invalid_identifiers=args.invalid_identifiers,

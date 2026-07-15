@@ -52,14 +52,17 @@ width — full one-line addresses score 0.99 as single spans (fragments
 layer-2 latency at 12; width 16 showed the first extra ORGANIZATION
 over-strip, so stay below it.
 
-Optional location pass (`location=True`, default off): a dedicated
-single-label LOCATION schema pass for bare place names in prose ("a teacher
-in Cairns") — contextual identifiers that are not addresses, the one job
-SpacyRecognizer's LOCATION detector still holds. Isolated from the main
-labels for the same label-competition reason as the address passes. Precision
-guards live on the pass: an exclusionary description and a LOCATION_MIN_CHARS
-floor (its false positives were all short codes/acronyms — 'AU', 'NSW',
-'NAB'). Head-to-head vs spaCy LOCATION: DONE.md, 2026-07-14.
+Location pass (`location=True`, the default; flag kept for ablations): a
+dedicated single-label LOCATION schema pass for bare place names in prose
+("a teacher in Cairns") — contextual identifiers that are not addresses.
+This is the production contextual-identifier net; it replaced the retired
+SpacyRecognizer LOCATION detector (2026-07-15) rather than standing in for a
+surviving spaCy role. Isolated from the main labels for the same
+label-competition reason as the address passes. Precision guards live on the
+pass: an exclusionary description and a LOCATION_MIN_CHARS floor (its false
+positives were all short codes/acronyms — 'AU', 'NSW', 'NAB'). Chosen
+head-to-head over spaCy LOCATION (11/11 vs 6/11 contextual towns): DONE.md,
+2026-07-14.
 
 Always-on digit floor on bank-account guesses (AU_BANK_ACCOUNT_MIN_DIGITS):
 the model occasionally labels a stray digit fragment ('42') as a bank
@@ -155,13 +158,14 @@ ADDRESS_LABELS_SPLIT = {
 }
 ADDRESS_THRESHOLD = 0.3
 
-# Optional location pass (default off), gated by the `location` constructor
-# flag. Its own single-label schema — kept apart from the main labels so it
-# neither suppresses PERSON/ORG nor is suppressed by them (label competition,
-# see docstring). Purpose: cover bare place names in prose ("a teacher in
-# Cairns") that are contextual identifiers but not addresses — the one job
-# SpacyRecognizer's LOCATION detector still holds (pii/pipeline.py). Compared
-# head-to-head with spaCy in the 2026-07-14 location-label experiment.
+# Location pass (default on), gated by the `location` constructor flag (kept
+# for ablations). Its own single-label schema — kept apart from the main
+# labels so it neither suppresses PERSON/ORG nor is suppressed by them (label
+# competition, see docstring). Purpose: cover bare place names in prose
+# ("a teacher in Cairns") that are contextual identifiers but not addresses —
+# the production contextual-identifier net that replaced the retired
+# SpacyRecognizer LOCATION detector (2026-07-15). Chosen head-to-head over
+# spaCy in the 2026-07-14 location-label experiment.
 LOCATION_LABELS = {
     "location": (
         "A geographic place name on its own: a city, town, suburb or "
@@ -207,7 +211,7 @@ class Gliner2Recognizer(EntityRecognizer):
         model_name: str = DEFAULT_MODEL,
         threshold: float = 0.4,
         max_width: int = DEFAULT_MAX_WIDTH,
-        location: bool = False,
+        location: bool = True,
         **kwargs,
     ):
         self.model_name = model_name

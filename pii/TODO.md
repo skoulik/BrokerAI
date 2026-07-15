@@ -9,51 +9,8 @@ the reference documents → pii_eval image tier → OCR bake-off.
 
 ## Next up — spaCy track (planned 2026-07-15)
 
-One task remaining — the source review shipped 2026-07-15 (record in [DONE.md](DONE.md);
-plan agreed with Sergei 2026-07-15, scope decisions recorded inline).
-
-- [ ] Retire the last spaCy recognizer and remove the `--no-ner` regime. Ships the GLiNER2
-      location label — experiment settled 2026-07-14 (11/11 vs 6/11 contextual towns, zero
-      extra org over-strip, one fewer address leak; record in [DONE.md](DONE.md); this item
-      subsumes the former "Ship the GLiNER2 location label" experiment item) — with the
-      scope decision made by Sergei 2026-07-15: **drop the patterns-only regime entirely**.
-      SpacyRecognizer disappears from the codebase; spaCy remains solely as Presidio's
-      mandatory NLP engine (tokens/lemmas → context enhancer). Steps:
-      - `gliner2_recognizer.py`: flip the `location` constructor default to True (flag kept
-        for ablations); docstring — the location pass is now the production
-        contextual-identifier net, not a stand-in for a surviving spaCy role;
-      - `pipeline.py`: remove `use_ner`; always register Gliner2Recognizer (import stays
-        deferred inside `__init__` — that is what lets tests shim `pii.gliner2_recognizer`
-        in sys.modules); remove the SpacyRecognizer import and both regime branches;
-        unconditional `remove_recognizer("SpacyRecognizer")` after
-        `load_predefined_recognizers`; NLP_CONFIG untouched; update docstring + the
-        registry-policy comment;
-      - `cli.py`: drop `--no-ner` from strip and analyze; `pii_eval`: drop
-        `use_ner`/`--no-ner` from score.py/`__main__.py`/README;
-      - tests: move the `_NoopGliner2` stub from test_spacy_policy.py into conftest;
-        `make_pipeline` grows a `stub_ner=True` default (constructed under the shim →
-        fast, model-free, preserving today's fast-suite semantics; part of the cache key,
-        not forwarded to PiiPipeline), `stub_ner=False` for model-marked tests; expose the
-        shim as a fixture for CLI tests; replace test_spacy_policy.py with a slimmer
-        registry-policy test file (SpacyRecognizer absent; Gliner2Recognizer present and
-        supporting LOCATION; keep the model-marked Emily-Watson nuance test; add a
-        model-marked "a teacher in Cairns" → LOCATION test); test_invalid.py's CLI test
-        loses `--no-ner` and runs under the shim;
-      - docs: ARCHITECTURE.md (spaCy table row → NLP-engine role only; drop the SPA node
-        from the diagram; replace the "Two regimes" section — single pipeline now; rewrite
-        the "spaCy-as-detector survives" bullet; supersede the two 2026-07-14 decision
-        sections with a dated retirement decision carrying the eval numbers), pii/CLAUDE.md
-        working agreement, README flags + timing note (keep the en_core_web_sm download —
-        still required), move this item to DONE.md with the ship record, reword the layer-3
-        bundled revisit (spaCy ablation → "consider dropping the GLiNER2 location pass once
-        layer 3 owns contextual IDs").
-      Verification: default `pytest` green and still model-free; `pytest -m "slow or
-      model"`; full pii_eval generate+score on seeds 42 and 123 — expect the experiment-B
-      numbers (11/11 towns, zero critical misses, org over-strips at baseline, no new
-      address leaks); CLI smoke (no `--no-ner` anywhere, LOCATION placeholders appear for
-      bare town names). Out of scope: the ORG-absorbs-contained-location merge rule (stays
-      in the overlaps task below — the location pass reaches org-over-strip parity
-      without it).
+Both tasks shipped 2026-07-15 — the source review and the detector retirement (records in
+[DONE.md](DONE.md); plan agreed with Sergei 2026-07-15, scope decisions recorded inline).
 
 ## Next up — image/PDF path
 
@@ -88,8 +45,8 @@ plan agreed with Sergei 2026-07-15, scope decisions recorded inline).
       - promote PERSON_JOINT ("E & J Moore") and PERSON_REVERSED ("ROCHA RANDALL") into
         pii_eval `build.CRITICAL` (intermittent GLiNER2 misses, currently reported per-form
         without tripping the gate — see the invalid-identifiers record in DONE.md);
-      - rerun the SpacyRecognizer ablation: once layer 3 owns contextual IDs, spaCy's
-        LOCATION emissions can likely be dropped entirely (2026-07-14 record in DONE.md).
+      - consider dropping the GLiNER2 location pass once layer 3 owns contextual IDs (the
+        SpacyRecognizer it replaced was retired 2026-07-15 — records in DONE.md).
 - [ ] Overlaps merging algorithm — define and document. Interesting areas: how the weights are
       combined (max, average, bayesian/aposteriori), what if winning classes of overlaps
       do not agree, should we merge at all in some cases. Adjacent-span coalescing for

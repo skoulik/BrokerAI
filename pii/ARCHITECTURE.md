@@ -20,7 +20,7 @@ or the web app; the only planned shared infrastructure is the local llama-server
 | Module | Role |
 |---|---|
 | `presidio-analyzer` ≥ 2.2.363 | The orchestrator and layer 1: recognizer registry, pattern/checksum recognizers (including the built-in AU ones), scoring, and the lemma-based context enhancer. **Not** `presidio-image-redactor` — see the orthogonality decision below. |
-| spaCy (`en_core_web_sm`) | Two distinct roles. (1) Presidio's mandatory **NLP engine** — tokenization and lemmas that feed the context enhancer; required even if every spaCy detector is off. (2) A **detector**, `SpacyRecognizer` — restricted to LOCATION when NER is on (decision below). |
+| spaCy (`en_core_web_sm`) | Presidio's mandatory **NLP engine** — tokenization and lemmas that feed the context enhancer. Not a detector: `SpacyRecognizer` was retired 2026-07-15 (decision below); spaCy stays loaded solely for the NLP engine. |
 | GLiNER2 (`fastino/gliner2-privacy-filter-PII-multi`, ~1.2 GB) | Layer-2 zero-shot NER — names, addresses, DOB, person-vs-organization. Wrapped as an ordinary Presidio recognizer. |
 | Tesseract 5.x + `pytesseract` | The OCR engine behind the image path — first of the planned interchangeable backends. |
 | Pillow | Pixel painting for image output. |
@@ -30,7 +30,7 @@ or the web app; the only planned shared infrastructure is the local llama-server
 | Module | Role |
 |---|---|
 | `cli.py`, `__main__.py` | `strip` / `analyze` / `rehydrate` commands and all flags |
-| `pipeline.py` | `PiiPipeline` — builds the Presidio registry (regimes below), runs one analyzer pass, filters to the strip list, union-merges overlaps, collects checksum-invalid findings |
+| `pipeline.py` | `PiiPipeline` — builds the Presidio registry (all three layers), runs one analyzer pass, filters to the strip list, union-merges overlaps, collects checksum-invalid findings |
 | `recognizers.py` | Custom AU pattern recognizers: BSB, bank account (context-boosted), PayID |
 | `invalid_recognizers.py` | Shadow recognizers with inverted validation — collect checksum-fail candidates (`*_INVALID` / `*_MALFORMED`) |
 | `gliner2_recognizer.py` | GLiNER2 as a Presidio recognizer; **all layer-2 tuning lives in its docstring** — read it before touching NER behaviour |
@@ -59,13 +59,11 @@ flowchart TB
     subgraph PIPE["pipeline.py — PiiPipeline"]
         AE["Presidio AnalyzerEngine<br>(spaCy NLP engine: tokens/lemmas<br>→ context enhancer)"]
         L1["Layer 1 — patterns/checksums<br>built-in AU TFN/Medicare/ABN/ACN,<br>cards, email, phone, IBAN, IP, URL<br>+ recognizers.py: BSB, account, PayID<br>+ invalid_recognizers.py: shadows"]
-        L2["Layer 2 — gliner2_recognizer.py<br>GLiNER2: PERSON, ORG, ADDRESS, DOB"]
-        SPA["SpacyRecognizer<br>(LOCATION-only when NER on)"]
+        L2["Layer 2 — gliner2_recognizer.py<br>GLiNER2: PERSON, ORG, ADDRESS, DOB,<br>LOCATION (contextual identifiers)"]
         L3["Layer 3 — local-LLM audit<br>via llama-server (planned)"]
         MRG["filter to strip list →<br>union-merge overlapping spans"]
         AE --- L1
         AE --- L2
-        AE --- SPA
         AE -.- L3
         AE --> MRG
     end
@@ -111,23 +109,20 @@ blackout), emitting the same rehydratable `map.json`.
 Render pages → image pipeline per page → reassemble the PDF from the painted pixels
 (rationale in the "PDFs as rendered images" decision below).
 
-## Detection stack and regimes
+## Detection stack
 
 Three layers, unioned — no single detector catches everything (2026-07-05):
 
 | Layer | Engine | Owns | Status |
 |---|---|---|---|
 | 1 | Presidio patterns + checksums | TFN, Medicare, ABN/ACN, BSB, account, PayID, cards, email, phone, IBAN, IP, URL; invalid-candidate shadows | shipped |
-| 2 | GLiNER2 zero-shot NER | PERSON, ORGANIZATION, ADDRESS, DATE_OF_BIRTH (+ unvalidated guesses of layer-1 types) | shipped |
+| 2 | GLiNER2 zero-shot NER | PERSON, ORGANIZATION, ADDRESS, DATE_OF_BIRTH, LOCATION (bare place names as contextual identifiers) (+ unvalidated guesses of layer-1 types) | shipped |
 | 3 | Local LLM audit (llama-server) | contextual identifiers ("the borrower's wife, a dentist in Wagga Wagga") | planned |
 
-Two regimes, selected by `--no-ner`:
-
-- **NER on (default):** GLiNER2 owns PERSON/ORG/ADDRESS/DOB; `SpacyRecognizer` is restricted
-  to LOCATION (decision below). Slower (model load + CUDA inference), full recall.
-- **Patterns-only (`--no-ner`):** GLiNER2 is not loaded; the full `SpacyRecognizer` stays as
-  the only name detector. Runs in seconds; its name leaks are documented — do not rely on it
-  for names/addresses.
+One pipeline (the `--no-ner` patterns-only regime was retired 2026-07-15, decision below):
+GLiNER2 always loads and owns PERSON/ORG/ADDRESS/DOB and LOCATION; `SpacyRecognizer` is
+removed from the registry, and spaCy serves only as Presidio's NLP engine. Slower than a
+pattern-only pass (model load + CUDA inference), full recall.
 
 ### Do we still need Presidio and spaCy when NER does the heavy lifting? Yes.
 
@@ -142,9 +137,11 @@ Two regimes, selected by `--no-ner`:
 - **Presidio is the chassis.** The registry, scoring, and result model are what all three
   layers (and the CSV/image wrappers) plug into; our pipeline-level value-add (recall-first
   merging, invalid findings, pseudonym planning) sits on top of it.
-- **spaCy-as-detector survives for one reason only:** LOCATION on bare city names is the only
-  contextual-identifier coverage layers 1–2 have (ablation record in DONE.md). Two routes to
-  retiring it are on the TODO list: a GLiNER2 location label, or the layer-3 audit.
+- **spaCy is the NLP engine, not a detector (since 2026-07-15).** The lemma-based context
+  enhancer consumes spaCy's tokens/lemmas, so spaCy stays loaded — but `SpacyRecognizer` is
+  removed: GLiNER2's location label now owns the bare-city-name contextual identifiers spaCy's
+  LOCATION detector used to (retirement decision below). The layer-3 audit may later let even
+  the GLiNER2 location pass be dropped (TODO.md).
 
 ## Design decisions
 
@@ -218,29 +215,39 @@ those workarounds are kept regardless of width. Full experiment records and the 
 harvest are in DONE.md; per-class widths and schema partitioning are open experiments in
 TODO.md.
 
-### SpacyRecognizer is LOCATION-only when NER is on (2026-07-14)
+### spaCy detector retired; GLiNER2 owns LOCATION (2026-07-15)
 
-en_core_web_sm's PERSON/DATE_TIME emissions on OCR text produced cross-line glue spans
-('Emily Watson\nAddress') and date-as-name false positives, while GLiNER2 already owned those
-types cleanly. But the full-removal ablation turned CONTEXTUAL_ID coverage from 3× partial
-into 3× leaked — spaCy LOCATION on bare city names is the only contextual-identifier coverage
-layers 1–2 have. So with `use_ner=True` the recognizer is restricted to LOCATION;
-patterns-only mode keeps the full recognizer (sole name detector there). Regression-tested in
-`tests/pii/test_spacy_policy.py`; revisit when the layer-3 audit or the GLiNER2-location
-experiment lands (both in TODO.md).
+`SpacyRecognizer` is gone from the registry, and the `--no-ner` patterns-only regime with it;
+spaCy remains solely as Presidio's mandatory NLP engine (tokens/lemmas → context enhancer).
+GLiNER2's location pass — `Gliner2Recognizer(location=True)`, now the default (the flag is
+kept for ablations) — is the production contextual-identifier net. Supersedes the two
+2026-07-14 decisions (spaCy-restricted-to-LOCATION and the location-label experiment).
 
-### GLiNER2 location label — experiment done, ship decision pending (2026-07-14)
+History and rationale:
 
-`Gliner2Recognizer(location=True)` (**default off**) adds a dedicated single-label LOCATION
-schema pass, isolated from the main labels to avoid label competition (same rationale as the
-address passes). Its purpose is to replace spaCy's surviving LOCATION detector role. Tier-1
-head-to-head (record in DONE.md): the GLiNER2 label catches **11/11** contextual-ID towns vs
-spaCy's 6/11 (spaCy never emits 'Wagga Wagga'/'Dubbo'), with zero extra ORGANIZATION
-over-strip and one fewer address leak — it strictly dominates the spaCy baseline. Precision
-comes from two guards on the pass: an exclusionary label description and a `LOCATION_MIN_CHARS`
-floor (the raw FPs were all short codes/acronyms — 'AU', 'NSW', 'NAB'). Not yet shipped: the
-flag stays off pending the decision to flip defaults and drop `SpacyRecognizer`, best landed
-together with the ORG-absorbs-contained-location merge rule (overlaps task, TODO.md).
+- **spaCy's detector emissions hurt.** On OCR text en_core_web_sm produced cross-line glue
+  PERSON spans ('Emily Watson\nAddress') and date-as-PERSON false positives, while GLiNER2
+  already owned PERSON/ORG/dates cleanly. From 2026-07-14 it was first restricted to LOCATION —
+  its one non-redundant role — before being dropped entirely here.
+- **GLiNER2's location label strictly dominates spaCy LOCATION.** A dedicated single-label
+  LOCATION schema pass, isolated from the main labels (label competition, same as the address
+  passes), with two precision guards: an exclusionary description and a `LOCATION_MIN_CHARS=4`
+  floor (the raw FPs were all short codes/acronyms — 'AU', 'NSW', 'NAB'; trade-off: genuine
+  3-letter suburbs like Kew/Ayr are sacrificed, acceptable for a net the layer-3 audit is meant
+  to own). Tier-1 head-to-head (seed 123, 30 docs; record in DONE.md): spaCy caught 6/11
+  contextual-ID towns (blind to 'Wagga Wagga'/'Dubbo'), the GLiNER2 label 11/11, with
+  ORGANIZATION over-strips unchanged at baseline (33) and one fewer ADDRESS leak; PERSON
+  identical (170/172). The 2026-07-15 ship verification on seeds 42 and 123 reproduced these
+  numbers (the remaining critical misses are the pre-existing joint-name GLiNER2 gap —
+  PERSON_JOINT/PERSON_REVERSED — unchanged by this work, pending layer 3).
+- **Scope.** The patterns-only regime is removed outright (Sergei, 2026-07-15): its name leaks
+  made it unsafe for names/addresses, and every input mode now runs the one pipeline. The
+  ORG-absorbs-contained-location merge rule stays out of scope (overlaps task, TODO.md) — the
+  location pass reaches org-over-strip parity without it.
+
+Registry composition is regression-tested in `tests/pii/test_registry_policy.py` (SpacyRecognizer
+absent, Gliner2Recognizer present and owning LOCATION, via a model-free GLiNER2 shim; two
+model-marked tests check the real-stack nuances).
 
 ### Min-length floors on GLiNER2 guesses — where they apply and where they must not (2026-07-14)
 
