@@ -4,9 +4,12 @@ masking, overlap ranking (design decided 2026-07-14, record in pii/DONE.md)."""
 import pytest
 from presidio_analyzer import RecognizerResult
 
-from pii.invalid_recognizers import INVALID_ENTITY_TYPES, make_invalid_recognizers
-from pii.mapping import PseudonymMap
-from pii.pipeline import _merge_overlaps
+from pii.core.invalid_recognizers import (
+    INVALID_ENTITY_TYPES,
+    make_invalid_recognizers,
+)
+from pii.core.mapping import PseudonymMap
+from pii.core.pipeline import _merge_overlaps
 
 # Literals with verified checksum status (see pii_eval.au validators):
 VALID_TFN = "291 417 774"      # passes TFN mod-11
@@ -134,7 +137,7 @@ def test_ner_guess_does_not_suppress_finding():
     # suppression must key on the VALIDATING recognizer's name, or an NER
     # phone guess over a typo'd TFN silently swallows the finding
     # (regression: 'ATO PAYMENT TFN 982 827 379' on the tier-1 corpus).
-    from pii.pipeline import _collect_invalid
+    from pii.core.pipeline import _collect_invalid
 
     text = "ATO PAYMENT TFN 982 827 379"
     shadow = RecognizerResult(
@@ -180,7 +183,7 @@ def test_merge_ranks_invalid_below_any_valid_type():
 
 
 def test_csv_mode_collects_and_masks_per_cell(make_pipeline):
-    from pii.csv_mode import strip_csv
+    from pii.core.csv_mode import strip_csv
 
     text = (
         "Date,Description,Amount\n"

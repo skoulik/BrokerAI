@@ -2,8 +2,8 @@
 
 import pytest
 
-from pii.csv_mode import strip_csv
-from pii.mapping import PseudonymMap
+from pii.core.csv_mode import strip_csv
+from pii.core.mapping import PseudonymMap
 
 CSV = (
     "Date,Description,Debit,Credit,Balance\n"

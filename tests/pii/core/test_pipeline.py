@@ -2,8 +2,8 @@
 
 from presidio_analyzer import RecognizerResult
 
-from pii.mapping import PseudonymMap
-from pii.pipeline import _merge_overlaps
+from pii.core.mapping import PseudonymMap
+from pii.core.pipeline import _merge_overlaps
 
 # Checksum-valid literals (pii_eval.au generators, fixed seeds).
 VALID_TFN = "291 417 774"

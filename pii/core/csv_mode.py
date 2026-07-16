@@ -20,9 +20,9 @@ is replaced independently — recall-first).
 import csv
 import io
 
-from pii import RECORD_SEPARATOR
-from pii.mapping import PseudonymMap
-from pii.pipeline import PiiPipeline
+from pii.core.constants import RECORD_SEPARATOR
+from pii.core.mapping import PseudonymMap
+from pii.core.pipeline import PiiPipeline
 
 # Never appears in bank data; blocks patterns from spanning two cells and
 # splits NER prediction windows (see module docstring).

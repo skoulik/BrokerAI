@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from pii.ocr import Box, assemble, ocr_image, _lines_from_tesseract
+from pii.core.ocr import Box, assemble, ocr_image, _lines_from_tesseract
 
 _ARIAL = Path(r"C:\Windows\Fonts\arial.ttf")
 

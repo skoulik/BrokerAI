@@ -22,9 +22,9 @@ from functools import lru_cache
 
 from PIL import Image, ImageDraw, ImageFont
 
-from pii.mapping import PseudonymMap
-from pii.ocr import Box, OcrResult, _background_color, ocr_image
-from pii.pipeline import InvalidFinding, PiiPipeline
+from pii.core.mapping import PseudonymMap
+from pii.core.ocr import Box, OcrResult, _background_color, ocr_image
+from pii.core.pipeline import InvalidFinding, PiiPipeline
 
 # Painted boxes are grown by this many pixels per side: word boxes are
 # glyph-tight and antialiased edges would survive as a readable fringe.

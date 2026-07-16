@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from pii.image_mode import _grow, strip_from_ocr, strip_image
-from pii.mapping import PseudonymMap
-from pii.ocr import Box, assemble
+from pii.core.image_mode import _grow, strip_from_ocr, strip_image
+from pii.core.mapping import PseudonymMap
+from pii.core.ocr import Box, assemble
 
 RED = (255, 0, 0)
 
@@ -88,7 +88,7 @@ def test_grow_clamps_to_image_bounds():
 def test_strip_image_end_to_end_tfn_unreadable(pipeline):
     from PIL import ImageFont
 
-    from pii.ocr import ocr_image
+    from pii.core.ocr import ocr_image
 
     font = ImageFont.truetype(str(_ARIAL), 32)
     img = Image.new("RGB", (700, 120), "white")

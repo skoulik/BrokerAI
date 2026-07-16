@@ -13,8 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from pii.mapping import PseudonymMap
-from pii.pipeline import DEFAULT_STRIP_ENTITIES, PiiPipeline
+from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
 
 
 def _read(source: str) -> str:
@@ -159,7 +158,7 @@ def main(argv=None) -> int:
             parser.error("--image requires -o OUTPUT (an image file path)")
         from PIL import Image
 
-        from pii.image_mode import strip_image
+        from pii.core.image_mode import strip_image
 
         pmap = PseudonymMap(args.map)
         result = strip_image(Image.open(args.input), pipeline, pmap)
@@ -179,7 +178,7 @@ def main(argv=None) -> int:
 
     pmap = PseudonymMap(args.map)
     if args.csv:
-        from pii.csv_mode import strip_csv
+        from pii.core.csv_mode import strip_csv
 
         columns = args.columns.split(",") if args.columns else None
         stripped, spans, invalid = strip_csv(text, pipeline, pmap, columns=columns)

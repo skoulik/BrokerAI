@@ -35,19 +35,19 @@ class _NoopGliner2(EntityRecognizer):
 
 @contextlib.contextmanager
 def _gliner2_stub():
-    """Shim pii.gliner2_recognizer with the noop stub while a PiiPipeline is
-    constructed (its Gliner2Recognizer import is deferred into __init__)."""
-    stub = types.ModuleType("pii.gliner2_recognizer")
+    """Shim pii.core.gliner2_recognizer with the noop stub while a PiiPipeline
+    is constructed (its Gliner2Recognizer import is deferred into __init__)."""
+    stub = types.ModuleType("pii.core.gliner2_recognizer")
     stub.Gliner2Recognizer = _NoopGliner2
-    saved = sys.modules.get("pii.gliner2_recognizer")
-    sys.modules["pii.gliner2_recognizer"] = stub
+    saved = sys.modules.get("pii.core.gliner2_recognizer")
+    sys.modules["pii.core.gliner2_recognizer"] = stub
     try:
         yield
     finally:
         if saved is None:
-            del sys.modules["pii.gliner2_recognizer"]
+            del sys.modules["pii.core.gliner2_recognizer"]
         else:
-            sys.modules["pii.gliner2_recognizer"] = saved
+            sys.modules["pii.core.gliner2_recognizer"] = saved
 
 
 @pytest.fixture
@@ -64,7 +64,7 @@ def make_pipeline():
     shim → fast, model-free; pass stub_ner=False for the real stack and carry
     the `model` marker. stub_ner is part of the cache key but not forwarded to
     PiiPipeline."""
-    from pii.pipeline import PiiPipeline
+    from pii.core import PiiPipeline
 
     cache = {}
 

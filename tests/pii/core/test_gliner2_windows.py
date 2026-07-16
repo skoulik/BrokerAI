@@ -7,8 +7,8 @@ emit reversed names as adjacent fragments whose union misses only the
 joining space, so PERSON spans coalesce like ADDRESS spans always did.
 Model-free via the fake-model pattern (see test_gliner2_floors)."""
 
-from pii import RECORD_SEPARATOR
-from pii.gliner2_recognizer import Gliner2Recognizer
+from pii.core import RECORD_SEPARATOR
+from pii.core.gliner2_recognizer import Gliner2Recognizer
 
 
 class _RecordingFakeModel:

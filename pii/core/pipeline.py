@@ -39,14 +39,14 @@ from presidio_analyzer.predefined_recognizers import (
     PhoneRecognizer,
 )
 
-from pii.invalid_recognizers import (
+from pii.core.invalid_recognizers import (
     INVALID_ENTITY_TYPES,
     INVALID_RULES,
     VALIDATED_RECOGNIZERS,
     make_invalid_recognizers,
 )
-from pii.mapping import PseudonymMap
-from pii.recognizers import (
+from pii.core.mapping import PseudonymMap
+from pii.core.recognizers import (
     AuAccountNumberRecognizer,
     AuBsbRecognizer,
     JointNameRecognizer,
@@ -147,7 +147,7 @@ class PiiPipeline:
         # Layer 2: GLiNER2 zero-shot NER. The import is deferred so tests can
         # shim pii.gliner2_recognizer in sys.modules and compose the registry
         # without loading the model (fast, model-free default suite).
-        from pii.gliner2_recognizer import Gliner2Recognizer
+        from pii.core.gliner2_recognizer import Gliner2Recognizer
 
         registry.add_recognizer(Gliner2Recognizer())
         self.analyzer = AnalyzerEngine(

@@ -93,7 +93,7 @@ import re
 
 from presidio_analyzer import EntityRecognizer, RecognizerResult
 
-from pii import RECORD_SEPARATOR
+from pii.core.constants import RECORD_SEPARATOR
 
 DEFAULT_MODEL = "fastino/gliner2-privacy-filter-PII-multi"
 CACHE_DIR = "models/hf-cache"

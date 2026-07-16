@@ -13,7 +13,7 @@ model by feeding controlled predictions through a fake:
   LOCATION_SHORT corpus probe; the gazetteer task is the recovery path).
 """
 
-from pii.gliner2_recognizer import Gliner2Recognizer
+from pii.core.gliner2_recognizer import Gliner2Recognizer
 
 
 class _FakeModel:

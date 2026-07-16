@@ -1,6 +1,6 @@
 """PseudonymMap: stable placeholders, rehydration, persistence."""
 
-from pii.mapping import PseudonymMap
+from pii.core.mapping import PseudonymMap
 
 
 def test_placeholder_stable_and_case_insensitive():

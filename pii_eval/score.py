@@ -24,10 +24,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from pii.csv_mode import strip_csv
-from pii.invalid_recognizers import INVALID_ENTITY_TYPES
-from pii.mapping import PseudonymMap
-from pii.pipeline import PiiPipeline
+from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
+from pii.core.csv_mode import strip_csv
 
 
 def _norm(s: str) -> str:

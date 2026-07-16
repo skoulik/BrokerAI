@@ -7,7 +7,7 @@ strip asserted here is the pattern's own work. The corpus counterparts are
 the PERSON_JOINT probes and joint-form PERSON draws in pii_eval/txbank.py.
 """
 
-from pii.mapping import PseudonymMap
+from pii.core.mapping import PseudonymMap
 
 
 def test_joint_initials_in_transaction_junk(pipeline):
