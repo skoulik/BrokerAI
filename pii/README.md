@@ -9,9 +9,12 @@ preserved.
 
 Standalone from the RAG app — nothing here imports `rag_tools` or the web app.
 
-This file covers installation and usage. Architecture and design decisions:
-[ARCHITECTURE.md](ARCHITECTURE.md); activity overview: [ROADMAP.md](ROADMAP.md);
-open tasks: [TODO.md](TODO.md); completed-task records: [DONE.md](DONE.md).
+The tool is organised into three components under `pii/`: `pii.core` (the engine),
+`pii.cli` (this command-line front-end), and `pii.gui` (a planned GUI). This file
+covers installation and CLI usage. Component map and dependency rules:
+[ARCHITECTURE.md](ARCHITECTURE.md); status: [ROADMAP.md](ROADMAP.md). The engine's
+design and open tasks are in [core/ARCHITECTURE.md](core/ARCHITECTURE.md) and
+[core/TODO.md](core/TODO.md).
 
 ## Install
 
@@ -47,8 +50,8 @@ runs the full text pipeline on the recognized text, and paints each
 detected span's placeholder over its pixels — background-filled boxes
 with the placeholder drawn in, so the output image stays pseudonymized
 and rehydratable, not blacked out. Detection never sees pixels; painting
-happens on the original image (`ocr.py` for the engine adapter and
-span→box mapping, `image_mode.py` for the painting).
+happens on the original image (`pii/core/ocr.py` for the engine adapter and
+span→box mapping, `pii/core/image_mode.py` for the painting).
 
 Requires the Tesseract binary (`winget install UB-Mannheim.TesseractOCR`)
 and `pytesseract`. PDFs-as-images and OCR-engine alternatives are on the
@@ -58,7 +61,7 @@ roadmap.
 
 A value shaped like a TFN whose mod-11 arithmetic fails is a typo, bad OCR,
 or forgery — all three worth surfacing rather than silently dropping.
-Shadow recognizers (`invalid_recognizers.py`) mirror the checksummed
+Shadow recognizers (`pii/core/invalid_recognizers.py`) mirror the checksummed
 recognizers (TFN, Medicare, ABN, ACN, credit card/Luhn) with the validation
 inverted, emitting distinct classes: `*_INVALID` (checksum fails) and
 `*_MALFORMED` (structurally impossible, e.g. a Medicare first digit outside
@@ -94,14 +97,14 @@ logged 44 noise findings over 11 docs.
 1. **Presidio patterns/checksums** — built-in `AU_TFN`, `AU_MEDICARE`,
    `AU_ABN`, `AU_ACN` (checksum-validated, explicit registration needed —
    they are not in Presidio's default registry), credit cards, emails, URLs,
-   IPs, AU-region phones; custom recognizers in `recognizers.py` for BSB
+   IPs, AU-region phones; custom recognizers in `pii/core/recognizers.py` for BSB
    (`AU_BSB`), account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`), and
    joint-account name forms ("E & J Moore", "JULIE AND BRIAN SUMMERS" →
    `PERSON`) — mechanical shapes GLiNER2 loses inside transaction-line junk.
 2. **Zero-shot NER** — names, addresses, DOB, and bare place names (a
    contextual-identifier LOCATION pass); distinguishes person vs
    organization for bank transaction descriptions. GLiNER2
-   (`gliner2_recognizer.py`, Fastino's PII-tuned model, schema
+   (`pii/core/gliner2_recognizer.py`, Fastino's PII-tuned model, schema
    descriptions). The original GLiNER (v1) backend was evaluated
    side-by-side and removed 2026-07-13 (it's in git history). spaCy
    (`en_core_web_sm`) is Presidio's NLP engine only — its `SpacyRecognizer`

@@ -1,56 +1,30 @@
-# Phase 1 Roadmap — PII stripping tool
+# PII Tool Roadmap (umbrella)
 
-This is the Phase 1 roadmap of the [BrokerAI revival](../ROADMAP.md) — the standalone,
-local PII-stripping tool in this `pii/` directory (eval harness in [`../pii_eval/`](../pii_eval/)).
-It is deliberately a top-level overview. The details live next door:
+Phase 1 of the [BrokerAI revival](../ROADMAP.md): a standalone, local PII-stripping tool that
+lets classified documents be shared with cloud models after **pseudonymization with a
+consistent local mapping** (`John Smith → PERSON_1`), rehydratable locally.
 
-- **[TODO.md](TODO.md)** — all open tasks, grouped, with full working detail
-- **[DONE.md](DONE.md)** — completed tasks with their engineering records, verbatim
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — module map, pipelines, and dated design decisions
-- **[README.md](README.md)** — installation and usage
+As of 2026-07-16 the tool is organised into three components (rationale and dependency rules:
+[ARCHITECTURE.md](ARCHITECTURE.md)). Each has its own roadmap; this file is the top-level
+status board.
 
-Goal: locally strip personally identifiable information from documents so the stripped version
-can be shared with cloud models. Prefer **pseudonymization with a consistent local mapping**
-(`John Smith → PERSON_1` everywhere) over blank redaction, so cloud answers can be rehydrated
-locally and analytical utility is preserved.
+## Components at a glance
 
-## Input types
+| Component | Status | Roadmap |
+|---|---|---|
+| **Core** (`pii.core`) | Text, CSV and image paths shipped end-to-end; detection layers 1–2 eval-gated on the Tier-1 text corpus. Current front: the image/PDF track. Layer 3 (LLM audit) is contingent. | [core/ROADMAP.md](core/ROADMAP.md) |
+| **CLI** (`pii.cli`) | Shipped: `strip` / `analyze` / `rehydrate`, text/CSV/image modes, checksum-invalid-identifier controls. | [cli/ROADMAP.md](cli/ROADMAP.md) |
+| **GUI** (`pii.gui`) | **New direction (2026-07-16).** Planning only — requirements not yet finalized; flavor (native vs local web) undecided. Stubs in place. | [gui/ROADMAP.md](gui/ROADMAP.md) |
 
-- [x] Plain text *(2026-07-12)*
-- [x] Bank transaction CSVs — per-cell, column-aware *(2026-07-12)*
-- [x] Images (scans, screenshots) — OCR, placeholders painted onto pixels *(2026-07-14)*
-- [ ] PDFs — treated as images: render → OCR → paint → reassemble *(next up)*
-- [ ] Statement tables via the image path
+## Evaluation
 
-## Detection layers
+The [`pii_eval`](../pii_eval/README.md) harness (Tier-1 synthetic corpus, with Tier-2/3 planned)
+scores the **core** engine; it is recall-first and severity-weighted (acceptance = zero critical
+misses, not an F1 number). The tier plan lives in [core/ROADMAP.md](core/ROADMAP.md).
 
-1. **Patterns/checksums** (Presidio + custom AU recognizers: TFN, Medicare, ABN/ACN,
-   BSB/account, PayID; checksum-invalid identifiers surfaced, not silently dropped) — shipped.
-2. **Zero-shot NER** (GLiNER2 — names, addresses, DOB, person-vs-organization) — shipped.
-3. **Local-LLM audit pass** ("does this still contain anything identifying?" — contextual
-   identifiers, via llama-server) — **contingent, not committed** (expectation set
-   2026-07-15): the plan is to evaluate the tool end-to-end with layers 1+2 only; layer 3
-   gets built only if those results prove unsatisfactory. Known layer-1/2 gaps therefore
-   need owners that don't assume layer 3 (see TODO.md).
+## Near-term direction
 
-## Evaluation tiers
-
-Constraint: real documents are classified until stripped — cloud models can only ever see
-synthetic/declassified data or aggregate metrics.
-
-- **Tier 1 — synthetic corpus** (ground truth by construction; the fast iteration loop):
-  text tier shipped 2026-07-12; image/degradation tier pending.
-- **Tier 2 — PII-transplanted real documents** (real layouts, known ground truth,
-  declassified; one-time manual effort): pending.
-- **Tier 3 — metrics-only runs on the real corpus** (aggregates out, local review UI):
-  pending.
-
-Scoring is recall-first and severity-weighted: acceptance = zero critical misses (TFN,
-account numbers, names) on the Tier 3 review set, not a single F1 number.
-
-## Where things stand (2026-07-15)
-
-Text, CSV and image paths work end-to-end behind one CLI (`python -m pii`); detection
-layers 1–2 are eval-gated on the Tier-1 text corpus. The current front is the image/PDF
-track (PDF mode → image eval tier → OCR bake-off); after that the end-to-end evaluation
-decides whether layer 3 is needed at all — see [TODO.md](TODO.md) for the ordered list.
+1. **Core:** image/PDF track — PDF mode → image eval tier → OCR bake-off — then the end-to-end
+   evaluation that decides whether layer 3 is needed at all.
+2. **GUI:** finalize requirements with Sergei, then choose a flavor and spike a prototype over
+   the `pii.core` API (see [gui/TODO.md](gui/TODO.md)).
