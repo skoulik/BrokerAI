@@ -6,9 +6,9 @@ plan are in [ROADMAP.md](ROADMAP.md); completed tasks and their engineering reco
 Front-end tasks live with their component: [../cli/TODO.md](../cli/TODO.md),
 [../gui/TODO.md](../gui/TODO.md).
 
-Grouped by theme. Suggested order on the image/PDF track (2026-07-14, amended 2026-07-15):
-PDF mode → demo on the reference documents → pii_eval image tier → Tesseract stack review
-(docs + pytesseract source) → OCR bake-off.
+Grouped by theme. Suggested order on the image/PDF track (2026-07-14, amended 2026-07-16;
+image tier and Tesseract stack review done — see DONE.md): OCR-fidelity factor sweep
+(active) → PDF mode → demo on the reference documents → degradation tier → OCR bake-off.
 
 ## Next up — image/PDF path
 
@@ -25,29 +25,19 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
       encode the delivery address/customer ref — text-based detection can't see them, so
       detect and paint over barcode regions in the image pass (observed on several of the
       reference examples)
-- [ ] Tesseract docs/config review (time-boxed; prep for the preprocessing-knobs and
-      bake-off tasks). Scope decision 2026-07-15: harvest operational knowledge from the
-      official docs, NOT a source review — the ~150k-line C++ codebase is OCR internals we
-      consume, not code we write, so the source-review drill that paid off on
-      presidio-image-redactor/spaCy doesn't transfer. Targets: the ImproveQuality guide
-      (Tesseract binarizes internally with Otsu — establishes which external preprocessing
-      helps vs duplicates work, feeds the preprocessing-knobs task); PSM page-segmentation
-      modes for statement layouts (sparse text vs uniform block vs single column — feeds
-      the statement-tables task); OEM engine choice (LSTM vs legacy); semantics of the
-      word-level `conf` values in the TSV output (needed before ever thresholding on
-      them); useful config variables (`preserve_interword_spaces`, char whitelists,
-      `--dpi`). Output: DONE.md record; distilled defaults into `pii/core/ocr.py` comments and
-      ARCHITECTURE.md.
-- [ ] pytesseract source review — companion to the docs review above, same
-      harvest-not-adopt drill as the presidio-image-redactor and spaCy reviews. It fits
-      the profile that made those pay: a single-file Python wrapper (pytesseract.py,
-      521 lines at installed 0.3.13) that `pii/core/ocr.py` sits directly on. Targets: how
-      `image_to_data` parses the TSV into the parallel-lists dict (type coercion of
-      `conf` — int vs float across versions; field handling when recognized text
-      contains tab/newline characters); the subprocess round-trip (PIL image → temp file
-      — does DPI metadata survive, which formats are used); config-string
-      quoting/escaping of user-supplied options; error and timeout paths. Output:
-      DONE.md record; any warts become defensive handling at our seam in `pii/core/ocr.py`.
+- [ ] OCR-fidelity factor sweep (design agreed 2026-07-16; first factors of the OCR
+      degradation investigation, scoped to Tesseract — each bake-off backend reruns it):
+      new `pii_eval ocr-report` subcommand sweeping font face × glyph size over the three
+      seed corpora (s42/s7/s123), aligning OCR output against the exact rendered text
+      (line-level then char-level alignment) and bucketing errors — digit/letter
+      substitutions, case, word merges/splits, dropped lines — stratified by doc class
+      (fixed-column docs render mono fonts only, prose all 9). Analysis axis = measured
+      x-height px (tessdoc: <10 px poor, <8 px destroyed, ~30 px LSTM ceiling); grid
+      extends past 32 px em toward the realistic 300-dpi regime. PSM/OEM/DPI pinned at
+      pipeline defaults per the 2026-07-16 Tesseract review (DONE.md). Also records
+      per-word conf per error (is conf predictive?) and a measured confusion matrix to
+      replace the folklore `_CONFUSION` table in `pii_eval/score_image.py`. Later factors
+      (blur, JPEG, skew, noise/contrast) compose on the degradation-tier pipeline.
 - [ ] OCR engine choice — *decide later:* Tesseract (current) vs the two candidate
       evaluations below vs a local VLM (e.g. Qwen-VL class) doing OCR+PII detection in one
       pass. Decide on benchmark numbers from real bank statements/scans (needs the image

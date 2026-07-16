@@ -20,6 +20,14 @@ Tesseract specifics kept out of the neutral layer:
   padded with a border of the background color before OCR and the pad is
   subtracted from the returned boxes (tightly-cropped statement
   screenshots are a primary input).
+- DPI is irrelevant here (established 2026-07-16, ARCHITECTURE.md
+  "Tesseract operational profile"): the padded `Image.new` drops PIL
+  metadata and pytesseract's temp-file re-save writes none anyway — and
+  the DPI hint is a recognition no-op on the LSTM path. Glyph pixel size
+  (x-height) is the only size variable that matters.
+- `conf` is word-level, int-truncated by pytesseract's DICT parsing, and
+  its LSTM calibration is undocumented — do not threshold on it without
+  measured numbers (the ocr-report sweep records conf-vs-error data).
 """
 
 import shutil

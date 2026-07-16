@@ -433,6 +433,26 @@ The exception is a local VLM (Qwen-VL class) doing OCR+PII detection in one pass
 be expressed as an OCR adapter feeding the analyze step — if pursued, it becomes an
 *alternative pipeline* whose output joins at the merged-spans level. Bake-off task in TODO.md.
 
+### Tesseract operational profile (2026-07-16 stack review; full harvest in DONE.md)
+
+Pinned facts about the shipped OCR stack (Tesseract 5.4.0 UB Mannheim + pytesseract 0.3.13),
+from the docs review and empirical checks — findings are engine-specific and do NOT transfer
+to future bake-off backends:
+
+- **Engine is LSTM-only by install**: the winget `eng.traineddata` carries no legacy-engine
+  components (`--oem 0` fails to load), so OEM flags are moot. PSM ships at default 3
+  (full auto); PSM 4/6/11 are candidate follow-ups for statement layouts.
+- **Recognition quality is driven by x-height in pixels**, not DPI: <10 px poor, <8 px
+  destroyed, ~30 px LSTM ceiling (tessdoc). The `--dpi` hint provably does not change
+  recognition output, and DPI metadata never reaches Tesseract from our pipeline anyway
+  (the edge-pad rebuild and pytesseract's temp-file re-save both drop it) — so no code
+  stamps or passes DPI, ever; only rendered/scanned glyph size matters.
+- **`conf` is word-level and uncalibrated** (int-truncated by pytesseract); thresholding on
+  it is banned until the ocr-report sweep produces measured conf-vs-error data.
+- **Internal binarization is Otsu** (5.0+ optional Adaptive Otsu/Sauvola) — external
+  preprocessing only pays on uneven backgrounds; borders ~10 px+ needed (we pad 25),
+  skew degrades line segmentation first. These feed the degradation/preprocessing tasks.
+
 ### Layer-3 LLM audit (contingent — expectation set 2026-07-15)
 
 **Layer 3 is not a certainty.** The plan is to evaluate the tool end-to-end with layers 1+2

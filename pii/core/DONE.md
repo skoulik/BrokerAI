@@ -606,6 +606,59 @@ the move; new completed tasks append to the matching section with their records.
       (window split at the separator, offset mapping, fragment coalescing,
       distinct-names non-merge; model-free fakes).
 
+- [x] Tesseract docs/config review + pytesseract source review *(2026-07-16; the two prep
+      items done as one combined pass, harvest-not-adopt. Pinned stack: Tesseract
+      v5.4.0.20240606 (UB Mannheim winget) + leptonica 1.84.1; pytesseract 0.3.13;
+      installed `eng.traineddata` is LSTM-only — `--oem 0` fails ("legacy engine ...
+      components are not present"), so the engine is pinned to LSTM by the install itself.
+      PSM default 3 (full auto, no OSD).
+      Docs/empirical findings:
+      **(a) The quality driver is x-height in pixels**, not DPI: <10 px poor, <8 px
+      "noise removed", LSTM ceiling ~30 px (tessdoc FAQ). Measured our 9 corpus fonts
+      (PIL `getbbox('x')`): em 10 → x-height 4–5 px, em 16 → 7–9, em 20 → 9–11 (render.py's
+      20 px floor sits exactly on the documented cliff), em 32 → 14–18; a realistic 300-dpi
+      scan of 10 pt text is ~42 px em ≈ x-height ~20.
+      **(b) The DPI hint is a recognition no-op on the LSTM path** (verified: identical
+      output at `--dpi 70/150/300/auto` on 12/16/24 px samples) — and DPI metadata never
+      reaches Tesseract from our pipeline anyway: `ocr.py`'s edge-pad builds a fresh
+      `Image.new` (PIL info lost) and pytesseract's temp-file re-save writes no pHYs even
+      when info is present (verified). Decision: never stamp/pass DPI; glyph pixel size is
+      the only size variable.
+      **(c)** Reproduced the target error classes at small x-height: "TFN"→"TEN" (F→E flip)
+      at em 12–16 Times (x-height 6–7) plus a hallucinated leading glyph at em 12.
+      **(d)** Internal binarization is Otsu (5.0+ adds Adaptive Otsu / Sauvola via
+      `thresholding_method`); external binarization helps only on uneven backgrounds —
+      feeds the preprocessing-knobs task, irrelevant to clean renders.
+      **(e)** Borders/skew: needs ~10 px border (our 25 px edge pad already exceeds it);
+      dark scan borders get read as characters; skew "significantly" degrades *line
+      segmentation* — degradation-phase factors.
+      **(f)** PSM candidates for statement layouts: 4 (single column), 6 (uniform block),
+      11 (sparse); pipeline ships PSM 3 and the fidelity sweep keeps it pinned — a PSM axis
+      is a possible follow-up.
+      **(g)** `conf` is word-level only (−1 rows are structural — matches `ocr.py`'s
+      filter); LSTM conf calibration is undocumented, so never threshold on it without our
+      own numbers — the fidelity sweep records per-word conf against alignment errors to
+      measure predictiveness empirically.
+      pytesseract 0.3.13 seam findings: round-trip is PIL image → `prepare()` (alpha
+      flattened onto white; format defaults to PNG) → temp-file save *without metadata
+      kwargs* (the DPI drop above) → subprocess. `image_to_data` DICT coerces every
+      non-text cell `int(float(...))` — conf arrives int-truncated (96.06 → 96); the
+      last-row-empty-text missing-cell bug is patched upstream; rows shorter than the
+      header are skipped per-column, which would desync the parallel lists, but is
+      unreachable (Tesseract words never contain whitespace; TSV always emits 12 cells) and
+      would crash loudly in our assembly rather than misalign silently — no defensive code
+      added. Config strings go through `shlex.split(posix=False)` on Windows — quotes are
+      NOT stripped, so config values must stay unquoted (`-c key=value`). Errors: nonzero
+      exit → `TesseractError(status, stderr)`; timeout kills the process →
+      `RuntimeError('Tesseract process timeout')`. Output files are decoded as UTF-8
+      regardless of codepage — safe at our seam (but ad-hoc `subprocess` experiments must
+      decode UTF-8 themselves; the cp1251 Windows default bit us during this review).
+      Consequences pinned for the OCR-fidelity sweep: analysis axis = *measured x-height*
+      per (font, size), not em size; size grid extended past 32 px em toward the realistic
+      300-dpi regime (~40–48 px em); no `--dpi`; PSM/OEM at pipeline defaults (3 / LSTM);
+      per-word conf recorded per error. Distilled into ARCHITECTURE.md ("Tesseract
+      operational profile") and the `ocr.py` docstring.)*
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation
