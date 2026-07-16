@@ -39,7 +39,7 @@ from pathlib import Path
 
 from PIL import ImageFont
 
-from pii.core.ocr import OcrResult, OcrWord, ocr_image
+from pii.core.ocr import OcrResult, OcrWord, get_ocr
 from pii_eval.render import (
     MONO_FONTS,
     PROPORTIONAL_FONTS,
@@ -311,24 +311,35 @@ def score_page(truth_text: str, ocr: OcrResult) -> dict:
     }
 
 
+def default_out(backend: str) -> str:
+    """One report file per backend; the Tesseract name predates the
+    backend seam and stays unsuffixed. ':' (paddle tier separator) is
+    not filename-safe on Windows."""
+    suffix = "" if backend == "tesseract" else f"_{backend}".replace(":", "-")
+    return f"pii_eval/reports/ocr_fidelity{suffix}.jsonl"
+
+
 def run(
     seeds=None,
-    out: str = "pii_eval/reports/ocr_fidelity.jsonl",
+    out: str | None = None,
     fonts=None,
     sizes=None,
     keep_images: bool = False,
+    ocr_backend: str = "tesseract",
 ) -> Path:
     seeds = seeds or [42, 7, 123]
     fonts = fonts or ALL_FONTS
     sizes = sizes or SIZES
-    out_path = Path(out)
+    ocr = get_ocr(ocr_backend)
+    out_path = Path(out or default_out(ocr_backend))
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     done = set()
     if out_path.exists():
         for line in out_path.read_text("utf-8").splitlines():
             r = json.loads(line)
-            done.add((r["seed"], r["doc"], r["font"], r["size"]))
+            done.add((r.get("backend", "tesseract"), r["seed"], r["doc"],
+                      r["font"], r["size"]))
         if done:
             print(f"resuming: {len(done)} cells already in {out_path}",
                   file=sys.stderr)
@@ -351,13 +362,15 @@ def run(
                 ]
                 for font_name in doc_fonts:
                     for size in sizes:
-                        key = (seed, doc["file"], font_name, size)
+                        key = (ocr_backend, seed, doc["file"], font_name,
+                               size)
                         if key in done:
                             continue
                         t0 = time.time()
                         page = render_page(text, font_name, size)
-                        stats = score_page(text, ocr_image(page))
+                        stats = score_page(text, ocr(page))
                         row = {
+                            "backend": ocr_backend,
                             "seed": seed,
                             "doc": doc["file"],
                             "doc_class": "fixed" if fixed else "prose",
@@ -387,14 +400,24 @@ def run(
 
 
 def summarize(path) -> None:
-    """Compact matrices from the JSONL; deeper cuts are ad-hoc analysis."""
-    rows = [
+    """Compact matrices from the JSONL; deeper cuts are ad-hoc analysis.
+    A report file normally holds one backend (default_out); if several
+    are mixed via -o, each gets its own section."""
+    all_rows = [
         json.loads(line)
         for line in Path(path).read_text("utf-8").splitlines()
     ]
-    if not rows:
+    if not all_rows:
         print("no cells in report")
         return
+    for backend in sorted({r.get("backend", "tesseract") for r in all_rows}):
+        rows = [r for r in all_rows
+                if r.get("backend", "tesseract") == backend]
+        print(f"\n=== backend: {backend} ({len(rows)} cells) ===")
+        _summarize_backend(rows)
+
+
+def _summarize_backend(rows: list[dict]) -> None:
     sizes = sorted({r["size"] for r in rows})
 
     for doc_class in ("prose", "fixed"):

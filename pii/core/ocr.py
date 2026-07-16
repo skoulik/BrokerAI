@@ -40,6 +40,32 @@ from PIL import Image
 # Fallback when tesseract isn't on PATH (the winget install location).
 _TESSERACT_DEFAULT = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
+# The engine seam: every backend is an image -> OcrResult callable
+# normalizing into the interchange below (ARCHITECTURE.md). The paddle
+# entries select a model tier ("paddle" = the default tier).
+OCR_BACKENDS = ("tesseract", "paddle", "paddle:v5_server", "paddle:v6_medium")
+
+
+def get_ocr(backend: str = "tesseract"):
+    """Resolve a backend name to an `(image, lang=...) -> OcrResult`
+    callable. Imports are deferred so unused engines cost nothing."""
+    if backend == "tesseract":
+        return ocr_image
+    if backend.split(":", 1)[0] == "paddle":
+        from functools import partial
+
+        from pii.core.ocr_paddle import (
+            DEFAULT_TIER,
+            MODEL_TIERS,
+            ocr_image_paddle,
+        )
+
+        tier = backend.partition(":")[2] or DEFAULT_TIER
+        if tier not in MODEL_TIERS:
+            raise ValueError(f"unknown paddle model tier: {tier!r}")
+        return partial(ocr_image_paddle, tier=tier)
+    raise ValueError(f"unknown OCR backend: {backend!r}")
+
 
 class Box(NamedTuple):
     """Axis-aligned pixel rectangle in original-image coordinates."""

@@ -33,7 +33,7 @@ from PIL import Image
 
 from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
 from pii.core.image_mode import strip_image
-from pii.core.ocr import ocr_image
+from pii.core.ocr import get_ocr
 from pii_eval.score import _norm
 
 # Tesseract's classic confusion pairs, collapsed to one representative per
@@ -118,7 +118,9 @@ def _noise(findings, inv_entities):
 
 
 def score_image(corpus: str, threshold: float = 0.4,
-                invalid_identifiers: str = "likely") -> int:
+                invalid_identifiers: str = "likely",
+                ocr_backend: str = "tesseract") -> int:
+    ocr = get_ocr(ocr_backend)
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     source = (corpus_path / manifest["source"]).resolve()
@@ -134,8 +136,8 @@ def score_image(corpus: str, threshold: float = 0.4,
         entities = truth_by_file[doc["source"]]["entities"]
         image = Image.open(corpus_path / doc["file"])
         pmap = PseudonymMap()
-        result = strip_image(image, pipeline, pmap)
-        reread = ocr_image(result.image).text
+        result = strip_image(image, pipeline, pmap, ocr_backend=ocr_backend)
+        reread = ocr(result.image).text
         inv_ents = [e for e in entities if e["type"] in INVALID_ENTITY_TYPES]
         reg_ents = [e for e in entities if e["type"] not in INVALID_ENTITY_TYPES]
         _score_survival(reg_ents, reread)

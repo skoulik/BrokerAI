@@ -1,0 +1,294 @@
+"""PaddleOCR adapter: image -> OcrResult (the engine-neutral interchange).
+
+Second backend behind the `pii.core.ocr.get_ocr` seam (Tesseract is the
+first). PaddleOCR is line-oriented: detection finds text-line regions
+anywhere on the page (no page-layout model), recognition returns one
+string + one confidence per region. Normalization into per-word
+OcrResult follows the 2026-07-16 review findings (record in DONE.md):
+
+- `rec_texts` line strings are authoritative for the assembled text.
+  The `return_word_box` fragments have unreliable boundaries (merged
+  tokens like "TFN123", "013-999Acct"), so they are NEVER used as
+  tokens — only as geometry: each line word is mapped onto the
+  fragment char stream (whitespace squeezed out on both sides) and its
+  box is the union of overlapping fragment boxes. If the streams
+  disagree, the whole line falls back to proportional interpolation
+  over the line box. Recall-first: mapping ambiguity inflates boxes.
+- Confidence is per line (0-1); every word of a line carries the line
+  conf scaled to 0-100. Coarser than Tesseract's per-word conf — a
+  documented semantic difference.
+- Detected regions carry no reading order; they are banded into visual
+  rows by y-center (same geometry discipline as the eval harness) and
+  each row becomes one assembled line, left-to-right — so statement
+  rows reach the recognizers as single lines even when detection split
+  them into separate regions.
+- Windows DLL rules (verified 2026-07-16/17): with the CPU wheel,
+  torch must be imported BEFORE paddle or torch's shm.dll breaks —
+  handled here. With the GPU wheel (paddlepaddle-gpu, cu126, sm_75
+  verified on the 2080 Ti), torch and paddle are MUTUALLY EXCLUSIVE in
+  one process: both bundle cudnn_cnn64_9.dll from different CUDA
+  families and the second loader gets WinError 127, whichever the
+  order. So the GPU wheel serves torch-free paths (the ocr-report
+  fidelity sweep, OCR-only use) at full speed, while the full pii
+  pipeline (GLiNER2 runs on torch in-process) needs the CPU wheel or a
+  future paddle worker subprocess (TODO).
+- `enable_mkldnn=False` avoids the paddle 3.3.x oneDNN PIR-executor
+  crash on PP-OCRv5 server models (upstream bug; CPU path only, the
+  flag is inert on GPU).
+- Models: PP-OCRv5 server det+rec pinned (best tier — Sergei's call:
+  if the best tier disappoints, smaller tiers won't save it).
+  Downloads land under PADDLE_PDX_CACHE_HOME, defaulted here to the
+  repo-convention `models/paddlex` (same cwd-relative pattern as
+  GLiNER2's `models/hf-cache`).
+"""
+
+import os
+import re
+import sys
+from functools import lru_cache
+from pathlib import Path
+
+from PIL import Image
+
+from pii.core.ocr import Box, OcrResult, _union, assemble
+
+CACHE_DIR = "models/paddlex"
+# The two candidate tiers under comparison (Sergei, 2026-07-17): v5's
+# top tier is server; PP-OCRv6 ships no server tier, so its top is
+# medium. Selected via the backend string ("paddle:v6_medium").
+DEFAULT_TIER = "v5_server"
+MODEL_TIERS = {
+    "v5_server": ("PP-OCRv5_server_det", "PP-OCRv5_server_rec"),
+    "v6_medium": ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"),
+}
+
+
+def _gpu_wheel() -> bool:
+    """Which paddle wheel is installed, decided WITHOUT importing paddle
+    (importing is exactly what the DLL rules below gate on)."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        version("paddlepaddle-gpu")
+        return True
+    except PackageNotFoundError:
+        return False
+
+
+class _Anything:
+    """Inert attribute/call sink for the torch stub below."""
+
+    def __getattr__(self, name):
+        return _Anything()
+
+    def __call__(self, *args, **kwargs):
+        return _Anything()
+
+
+def _stub_torch() -> None:
+    """Install a fake `torch` so paddleocr can import in a GPU-wheel
+    process where the real torch must never load.
+
+    paddlex hard-imports `modelscope` (official_models.py), and
+    modelscope hard-imports torch at import time — which would load
+    torch's cudnn DLLs and break paddle-GPU (the mutual exclusion in
+    the module docstring). The stub satisfies modelscope's import-time
+    needs (verified empirically 2026-07-17: __spec__ probing, package
+    shape, torch.multiprocessing, torch.distributed.is_available/
+    is_initialized, annotation chains like torch.nn.Module) and
+    answers everything else with inert dummies. Anything that later
+    tries REAL torch work in this process (e.g. GLiNER2) gets the stub
+    and fails — by design: a GPU-paddle process is OCR-only.
+    """
+    import importlib.machinery
+    import types
+
+    if "torch" in sys.modules:
+        return
+
+    def _sub(name):
+        m = types.ModuleType(name)
+        m.__spec__ = importlib.machinery.ModuleSpec(name, None)
+        m.__getattr__ = lambda attr: _Anything()
+        sys.modules[name] = m
+        return m
+
+    stub = _sub("torch")
+    stub.__pii_stub__ = True
+    stub.__version__ = "2.0.0+pii.stub"
+    stub.__path__ = []
+    dist = _sub("torch.distributed")
+    dist.is_available = lambda: False
+    dist.is_initialized = lambda: False
+    stub.distributed = dist
+    mp = _sub("torch.multiprocessing")
+    mp.get_start_method = lambda allow_none=True: "spawn"
+    stub.multiprocessing = mp
+
+
+@lru_cache(maxsize=None)
+def _engine(tier: str = DEFAULT_TIER):
+    det_model, rec_model = MODEL_TIERS[tier]
+    os.environ.setdefault(
+        "PADDLE_PDX_CACHE_HOME", str(Path(CACHE_DIR).resolve())
+    )
+    if _gpu_wheel():
+        # Mutual exclusion (see docstring): fail with the story instead
+        # of the WinError 127 the cudnn clash would produce downstream.
+        if "torch" in sys.modules and not getattr(
+            sys.modules["torch"], "__pii_stub__", False
+        ):
+            raise RuntimeError(
+                "paddlepaddle-gpu and torch cannot share a process on "
+                "Windows (conflicting bundled cudnn DLLs). This process "
+                "already imported torch — use the Tesseract backend, the "
+                "CPU paddle wheel, or a torch-free process for paddle."
+            )
+        import paddle  # noqa: F401  (GPU DLLs must load first)
+
+        _stub_torch()
+        device = "gpu"
+    else:
+        import torch  # noqa: F401  (CPU wheel: torch first or it breaks)
+
+        device = "cpu"
+    from paddleocr import PaddleOCR
+
+    return PaddleOCR(
+        text_detection_model_name=det_model,
+        text_recognition_model_name=rec_model,
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        device=device,
+        enable_mkldnn=False,
+    )
+
+
+def ocr_image_paddle(
+    image: Image.Image, lang: str = "eng", tier: str = DEFAULT_TIER
+) -> OcrResult:
+    """OCR a PIL image with PaddleOCR into an OcrResult.
+
+    `lang` is accepted for call-site parity with the Tesseract adapter
+    and ignored: PaddleOCR selects languages via its model choice, and
+    the pinned models cover Latin text.
+    """
+    import numpy as np
+
+    bgr = np.asarray(image.convert("RGB"))[:, :, ::-1]
+    results = _engine(tier).predict(bgr, return_word_box=True)
+    return result_to_ocr(dict(results[0]))
+
+
+def result_to_ocr(result: dict) -> OcrResult:
+    """Pure conversion of one PaddleOCR page result into OcrResult."""
+    texts = result.get("rec_texts") or []
+    scores = result.get("rec_scores") or []
+    boxes = result.get("rec_boxes")
+    polys = result.get("rec_polys")
+    frag_texts = result.get("text_word") or []
+    frag_boxes = result.get("text_word_boxes") or []
+
+    regions = []
+    for i, text in enumerate(texts):
+        if not text.strip():
+            continue
+        line_box = _to_box(
+            boxes[i] if boxes is not None and len(boxes) > i else polys[i]
+        )
+        conf = float(scores[i]) * 100 if len(scores) > i else 0.0
+        frags = (
+            list(zip(frag_texts[i], frag_boxes[i]))
+            if len(frag_texts) > i and len(frag_boxes) > i
+            else None
+        )
+        words = _region_words(text, line_box, frags)
+        regions.append((line_box, [(w, b, conf) for w, b in words]))
+
+    return assemble(_rows(regions))
+
+
+def _to_box(quad) -> Box:
+    """Axis-aligned Box from either [x1, y1, x2, y2] or a 4-point poly."""
+    flat = [list(p) for p in quad] if hasattr(quad[0], "__len__") else None
+    if flat:
+        xs = [int(p[0]) for p in flat]
+        ys = [int(p[1]) for p in flat]
+    else:
+        xs = [int(quad[0]), int(quad[2])]
+        ys = [int(quad[1]), int(quad[3])]
+    left, top = min(xs), min(ys)
+    return Box(
+        left=left,
+        top=top,
+        width=max(max(xs) - left, 1),
+        height=max(max(ys) - top, 1),
+    )
+
+
+def _region_words(text, line_box, frags):
+    """(word, Box) list for one recognized line; see module docstring."""
+    words = []
+    pos = 0
+    for word in text.split():
+        words.append((word, pos, pos + len(word)))
+        pos += len(word)
+    if not words:
+        return []
+    if frags is not None:
+        spans = []
+        fpos = 0
+        for ftext, fbox in frags:
+            squeezed = "".join(str(ftext).split())
+            if not squeezed:
+                continue
+            spans.append((fpos, fpos + len(squeezed), _to_box(fbox)))
+            fpos += len(squeezed)
+        if spans and fpos == pos:
+            return [
+                (word, _union([b for fs, fe, b in spans
+                               if max(s, fs) < min(e, fe)]))
+                for word, s, e in words
+            ]
+    return _interpolate(text, line_box)
+
+
+def _interpolate(text: str, box: Box):
+    """Fallback word boxes: split the line box proportionally by char
+    position. Approximate for proportional fonts; the paint layer's
+    per-line box union and growth margin absorb the error."""
+    scale = box.width / max(len(text), 1)
+    out = []
+    for m in re.finditer(r"\S+", text):
+        left = box.left + round(m.start() * scale)
+        right = box.left + round(m.end() * scale)
+        out.append(
+            (m.group(),
+             Box(left, box.top, max(right - left, 1), box.height))
+        )
+    return out
+
+
+def _rows(regions):
+    """Band regions into visual rows by y-center; one assembled line per
+    row, words ordered left-to-right across the row's regions."""
+    regions = sorted(regions, key=lambda r: r[0].top + r[0].height / 2)
+    rows = []
+    centers: list[float] = []
+    heights: list[float] = []
+    for box, words in regions:
+        c = box.top + box.height / 2
+        if rows and abs(c - centers[-1]) < 0.5 * max(
+            box.height, heights[-1], 1
+        ):
+            rows[-1].extend(words)
+            centers[-1] += (c - centers[-1]) / 2
+            heights[-1] = max(heights[-1], float(box.height))
+        else:
+            rows.append(list(words))
+            centers.append(c)
+            heights.append(float(box.height))
+    for row in rows:
+        row.sort(key=lambda item: item[1].left)
+    return rows

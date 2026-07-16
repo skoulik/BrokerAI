@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
+from pii.core.ocr import OCR_BACKENDS
 
 
 def _read(source: str) -> str:
@@ -80,6 +81,13 @@ def main(argv=None) -> int:
         help="treat input as an image: OCR, detect on the recognized text, "
              "paint placeholders over the PII pixels (requires -o; output "
              "format follows the file extension)",
+    )
+    p_strip.add_argument(
+        "--ocr-backend", choices=list(OCR_BACKENDS), default="tesseract",
+        help="OCR engine for --image mode (default: tesseract; paddle "
+             "variants name a model tier, downloaded to models/paddlex "
+             "on first use — NOTE: paddle needs the CPU wheel here, the "
+             "GPU wheel cannot share a process with the NER model)",
     )
     p_strip.add_argument(
         "--columns",
@@ -161,7 +169,8 @@ def main(argv=None) -> int:
         from pii.core.image_mode import strip_image
 
         pmap = PseudonymMap(args.map)
-        result = strip_image(Image.open(args.input), pipeline, pmap)
+        result = strip_image(Image.open(args.input), pipeline, pmap,
+                             ocr_backend=args.ocr_backend)
         result.image.save(args.output)
         pmap.save()
         if args.report:

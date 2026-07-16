@@ -1,6 +1,8 @@
 import argparse
 import sys
 
+from pii.core.ocr import OCR_BACKENDS
+
 # Canonical home of every generated corpus (gitignored): one folder per
 # modality (text/, image/), one subfolder per seed.
 CORPUS_ROOT = "pii_eval/corpora"
@@ -46,9 +48,10 @@ def main() -> int:
     )
     rep.add_argument("--seed", type=int, action="append", dest="seeds",
                      help="corpus seed; repeatable (default: 42 7 123)")
-    rep.add_argument("-o", "--out",
-                     default="pii_eval/reports/ocr_fidelity.jsonl",
-                     help="report JSONL (appended; completed cells skipped)")
+    rep.add_argument("-o", "--out", default=None,
+                     help="report JSONL (appended; completed cells skipped; "
+                          "default: pii_eval/reports/ocr_fidelity[_<backend>]"
+                          ".jsonl)")
     rep.add_argument("--fonts", default=None,
                      help="comma-separated font files (default: all 9)")
     rep.add_argument("--sizes", default=None,
@@ -57,6 +60,10 @@ def main() -> int:
                      help="save rendered sweep pages next to the report")
     rep.add_argument("--summary-only", action="store_true",
                      help="re-print the summary of an existing report")
+    rep.add_argument("--ocr-backend", choices=list(OCR_BACKENDS),
+                     default="tesseract",
+                     help="OCR engine to sweep (default: tesseract); the "
+                          "default report file is suffixed per backend")
 
     sc = sub.add_parser("score", help="run the pii pipeline and score it")
     sc.add_argument("-c", "--corpus", default=None,
@@ -71,6 +78,10 @@ def main() -> int:
                     choices=["ignore", "all", "likely", "context"],
                     default="likely",
                     help="collection tier for checksum-invalid candidates")
+    sc.add_argument("--ocr-backend", choices=list(OCR_BACKENDS),
+                    default="tesseract",
+                    help="OCR engine for --modality image "
+                         "(default: tesseract)")
 
     args = parser.parse_args()
     if args.command == "generate":
@@ -87,24 +98,26 @@ def main() -> int:
                args.out or _default_corpus(args.seed, "image"))
         return 0
     if args.command == "ocr-report":
-        from pii_eval.ocr_report import run, summarize
+        from pii_eval.ocr_report import default_out, run, summarize
 
         if args.summary_only:
-            summarize(args.out)
+            summarize(args.out or default_out(args.ocr_backend))
             return 0
         run(seeds=args.seeds,
             out=args.out,
             fonts=args.fonts.split(",") if args.fonts else None,
             sizes=[int(s) for s in args.sizes.split(",")]
             if args.sizes else None,
-            keep_images=args.keep_images)
+            keep_images=args.keep_images,
+            ocr_backend=args.ocr_backend)
         return 0
     if args.modality == "image":
         from pii_eval.score_image import score_image
 
         return score_image(args.corpus or _default_corpus(args.seed, "image"),
                            threshold=args.threshold,
-                           invalid_identifiers=args.invalid_identifiers)
+                           invalid_identifiers=args.invalid_identifiers,
+                           ocr_backend=args.ocr_backend)
     from pii_eval.score import score
 
     return score(args.corpus or _default_corpus(args.seed),

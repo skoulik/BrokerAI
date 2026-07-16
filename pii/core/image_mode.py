@@ -23,7 +23,7 @@ from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
 
 from pii.core.mapping import PseudonymMap
-from pii.core.ocr import Box, OcrResult, _background_color, ocr_image
+from pii.core.ocr import Box, OcrResult, _background_color, get_ocr
 from pii.core.pipeline import InvalidFinding, PiiPipeline
 
 # Painted boxes are grown by this many pixels per side: word boxes are
@@ -46,9 +46,11 @@ def strip_image(
     pipeline: PiiPipeline,
     pmap: PseudonymMap,
     lang: str = "eng",
+    ocr_backend: str = "tesseract",
 ) -> ImageStripResult:
     """OCR the image and replace detected PII with painted placeholders."""
-    return strip_from_ocr(image, ocr_image(image, lang=lang), pipeline, pmap)
+    ocr = get_ocr(ocr_backend)(image, lang=lang)
+    return strip_from_ocr(image, ocr, pipeline, pmap)
 
 
 def strip_from_ocr(
