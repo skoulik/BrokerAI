@@ -3,7 +3,7 @@
 The image path reuses the WHOLE text pipeline (all detection layers,
 overlap merging, invalid-identifier collection) by running it on the
 OCR-assembled text, then mapping each merged span back to pixel boxes
-(pii.ocr.OcrResult.boxes_for_span) and painting on the ORIGINAL image —
+(pii.core.ocr.OcrResult.boxes_for_span) and painting on the ORIGINAL image —
 detection never sees pixels, painting never sees raw analyzer results.
 
 Painting is pseudonymization, not blank redaction: each box is filled

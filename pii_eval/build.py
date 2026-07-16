@@ -2,7 +2,7 @@
 
 Templates emit plain fragments and PII fragments; the builder tracks
 character offsets so every PII value gets an exact span annotation. The
-annotation types use the pii pipeline's entity names (pii/pipeline.py).
+annotation types use the pii pipeline's entity names (pii/core/pipeline.py).
 """
 
 from dataclasses import dataclass, asdict

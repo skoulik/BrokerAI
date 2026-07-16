@@ -8,8 +8,10 @@ than importing sideways. Design decisions live in pii/core/ARCHITECTURE.md.
 
 The names below are the top-level public API. ``csv_mode``, ``image_mode`` and
 ``ocr`` are also public, imported from their submodules — ``image_mode``/``ocr``
-pull in Pillow/pytesseract, so they are kept out of this eager import to keep
-``import pii.core`` free of the image stack.
+pull in Pillow/pytesseract, so they are kept out of this eager import. (That
+only keeps the engine's *own* image-stack imports out of ``import pii.core``;
+presidio_analyzer's import chain is heavy and pulls in PIL/transformers
+regardless.)
 """
 
 from pii.core.constants import RECORD_SEPARATOR

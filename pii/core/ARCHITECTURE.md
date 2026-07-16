@@ -264,7 +264,7 @@ Same-day siblings of the location floor, from the "short strings shouldn't quali
 - **AU_BANK_ACCOUNT: always-on digit floor** (`AU_BANK_ACCOUNT_MIN_DIGITS=5`, matching layer-1's
   `\d{5,10}`) — kills fragment guesses ('42') at zero recall cost. Digits, not characters:
   GLiNER2 emits space-grouped accounts ('0007 3111 4') as one span, and separators must not
-  push a real account under the floor (regression-tested in `tests/pii/test_gliner2_floors.py`).
+  push a real account under the floor (regression-tested in `tests/pii/core/test_gliner2_floors.py`).
   Layer-1's `AuAccountNumberRecognizer.validate_result` applies the same >=5-digit rule.
 - **PERSON and ORGANIZATION: no floor, deliberately** (confirmed with Sergei) — real 2-char
   surnames (Wu, Ng) make a PERSON floor a leak risk on a CRITICAL type; real 3-char orgs

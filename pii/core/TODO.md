@@ -202,7 +202,7 @@ PDF mode → demo on the reference documents → pii_eval image tier → Tessera
       quick safe subset is DONE: `AU_BANK_ACCOUNT_MIN_DIGITS=5` floor on GLiNER2's account
       guesses (kills the `'42'` fragment, zero recall cost — spaced accounts survive because
       the model emits them as one span and the floor counts digits, not chars;
-      tests/pii/test_gliner2_floors.py). The general per-class/validation policy for the
+      tests/pii/core/test_gliner2_floors.py). The general per-class/validation policy for the
       other numeric IDs (TFN junk like `'K3EN5L'`, etc.) remains open. Edge to decide
       there: masked last-4 disclosures ("card ending 1234") fall under the digit floors by
       design — consistent with layer-1 (`\d{5,10}` never matched them), but the policy

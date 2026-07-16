@@ -33,21 +33,27 @@ class _NoopGliner2(EntityRecognizer):
         return []
 
 
+# The deferred-import target in PiiPipeline.__init__ (pii/core/pipeline.py) —
+# the shim key below and that import must name the same module.
+_GLINER2_MODULE = "pii.core.gliner2_recognizer"
+
+
 @contextlib.contextmanager
 def _gliner2_stub():
-    """Shim pii.core.gliner2_recognizer with the noop stub while a PiiPipeline
-    is constructed (its Gliner2Recognizer import is deferred into __init__)."""
-    stub = types.ModuleType("pii.core.gliner2_recognizer")
+    """Shim the GLiNER2 recognizer module with the noop stub while a
+    PiiPipeline is constructed (its Gliner2Recognizer import is deferred
+    into __init__)."""
+    stub = types.ModuleType(_GLINER2_MODULE)
     stub.Gliner2Recognizer = _NoopGliner2
-    saved = sys.modules.get("pii.core.gliner2_recognizer")
-    sys.modules["pii.core.gliner2_recognizer"] = stub
+    saved = sys.modules.get(_GLINER2_MODULE)
+    sys.modules[_GLINER2_MODULE] = stub
     try:
         yield
     finally:
         if saved is None:
-            del sys.modules["pii.core.gliner2_recognizer"]
+            del sys.modules[_GLINER2_MODULE]
         else:
-            sys.modules["pii.core.gliner2_recognizer"] = saved
+            sys.modules[_GLINER2_MODULE] = saved
 
 
 @pytest.fixture

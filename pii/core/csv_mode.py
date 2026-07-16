@@ -11,7 +11,7 @@ matching across cells, AND (2026-07-15) its RECORD_SEPARATOR char is a hard
 NER window boundary — the GLiNER2 recognizer predicts each cell in its own
 window, because cross-cell context is pure noise (spans are clamped per
 cell anyway) and same-person mentions in different word orders interfere
-inside one attention window (records in pii/DONE.md). NER can still emit a
+inside one attention window (records in pii/core/DONE.md). NER can still emit a
 span crossing a cell boundary within a window, so detected spans are
 clamped to cell boundaries before replacement (the fragment in each cell
 is replaced independently — recall-first).

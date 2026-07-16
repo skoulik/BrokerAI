@@ -42,7 +42,7 @@ not imported from here — `cli` and `gui` never depend on each other.
   both reach `main()`. Kept identical so existing docs/usage don't break.
 - **The invalid-identifier log is near-PII.** A typo'd TFN is a real TFN minus a digit, so the
   collected candidates are printed to **stderr** and are a local-only artifact, like the map
-  file — never stdout, never the output document. `--mask-invalid-identifiers=all` warns because
-  it would eat most reference/receipt numbers.
+  file — never stdout, never the output document. `--mask-invalid-identifiers=yes` combined
+  with `--invalid-identifiers=all` warns because it would eat most reference/receipt numbers.
 - **Mode guards.** `--image` and `--csv` are mutually exclusive; `--image` requires `-o` (an
   output image path). These are enforced with `parser.error`.

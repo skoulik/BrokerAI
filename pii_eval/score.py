@@ -7,7 +7,7 @@ spans (catches partial leaks); CSV documents by per-cell value survival.
 Keep-types (ORGANIZATION) score the opposite direction: over-stripping.
 
 Injected checksum-invalid identifiers (types in
-pii.invalid_recognizers.INVALID_ENTITY_TYPES) are scored on their own
+pii.core.invalid_recognizers.INVALID_ENTITY_TYPES) are scored on their own
 axes: collection ("logged"/"missed" against the pipeline's invalid
 findings, broken down by the annotation's evidence tier), leak risk at
 mask=no ("stripped-anyway" — did another layer remove the mangled value?),

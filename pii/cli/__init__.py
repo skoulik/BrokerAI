@@ -194,7 +194,3 @@ def main(argv=None) -> int:
         _report_invalid(invalid)
     _write(args.output, stripped)
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

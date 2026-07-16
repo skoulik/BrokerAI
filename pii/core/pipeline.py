@@ -2,7 +2,7 @@
 
 Layer 1: Presidio pattern/checksum recognizers — built-in AU_TFN, AU_ABN,
          AU_ACN, AU_MEDICARE, credit cards, emails, URLs, IPs — plus the
-         custom recognizers in pii.recognizers (BSB, account, PayID,
+         custom recognizers in pii.core.recognizers (BSB, account, PayID,
          joint-account name forms) and an AU-region phone recognizer.
 Layer 2: zero-shot NER (names, addresses, DOB, person-vs-org, and bare
          place names as contextual identifiers) — GLiNER2. spaCy is
@@ -15,7 +15,7 @@ placeholders from a PseudonymMap.
 
 Checksum-invalid identifier candidates (a value shaped like a TFN whose
 mod-11 arithmetic fails — a typo, bad OCR, or forgery) are collected by
-the shadow recognizers in pii.invalid_recognizers, controlled by the
+the shadow recognizers in pii.core.invalid_recognizers, controlled by the
 `invalid_identifiers` tier, and returned by detect()/strip() as
 InvalidFinding records. They are only *masked* when mask_invalid=True
 adds the invalid classes to strip_entities. The findings are near-PII
@@ -145,8 +145,8 @@ class PiiPipeline:
         for recognizer in make_invalid_recognizers(invalid_identifiers):
             registry.add_recognizer(recognizer)
         # Layer 2: GLiNER2 zero-shot NER. The import is deferred so tests can
-        # shim pii.gliner2_recognizer in sys.modules and compose the registry
-        # without loading the model (fast, model-free default suite).
+        # shim pii.core.gliner2_recognizer in sys.modules and compose the
+        # registry without loading the model (fast, model-free default suite).
         from pii.core.gliner2_recognizer import Gliner2Recognizer
 
         registry.add_recognizer(Gliner2Recognizer())
