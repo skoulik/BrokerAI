@@ -679,10 +679,19 @@ the move; new completed tasks append to the matching section with their records.
       suburbs would false-leak at distance 1). Invalid-injection axes and the critical gate
       carry over. CLI: `render` subcommand + `score --modality image`; 11 tests in
       `tests/pii_eval/test_render.py`.
-      First side-by-side, seed 42 (text → image): both predicted deltas confirmed.
-      (1) **OCR-broken checksums**: AU_TFN 100% → 86% — one misread digit broke the mod-11
-      check, Presidio rejected the value, it survived readable; caught only by the fuzzy
-      matcher (gate FAIL, correctly). AU_DRIVERS_LICENCE 100% → 75%, same digit-run class.
+      First side-by-side, seed 42 (text → image): both predicted delta *classes* confirmed,
+      but the identifier leaks were root-caused post-run by OCR probes and the mechanism is
+      NOT digit misreads — the digits survived intact in all three; what OCR broke is the
+      **shape and layout that pattern recognizers key on**. (1) AU_TFN 100% → 86%:
+      Tesseract collapsed one space ('565 431 023' → '565 431023'), which matches neither
+      TFN pattern (`\d{3}\s\d{3}\s\d{3}` / `\b\d{9}\b`) — so the mod-11 checksum never even
+      ran — and the label misread 'TFN:' → 'TEN:' killed the context rescue too (gate FAIL,
+      correctly; flagged by the fuzzy matcher). AU_DRIVERS_LICENCE 100% → 75%, different
+      mechanism: Tesseract segmented the form's label/value columns into separate BLOCKS,
+      assembling '36629946' ~26 lines away from 'Driver licence:' — the bare digit run lost
+      its context boost and fell below threshold. The originally predicted
+      digit-misread/checksum-break class remains expected once the degradation tier lands;
+      the clean renders leaked via shape and layout instead.
       (2) **Cell isolation doesn't exist in pixels**: PERSON_REVERSED 94% → 31%,
       PERSON_COMMA 100% → 12% — the RECORD_SEPARATOR window boundaries that fixed
       reversed-name interference are a text-path structure; OCR text of the rendered names

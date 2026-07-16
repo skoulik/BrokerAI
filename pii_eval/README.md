@@ -140,8 +140,11 @@ OCR-tolerant and recall-first: confusion-squashed containment (0/O, 1/l,
 5/S...) and, for long values, a banded edit-distance scan — a value
 surviving with one misread glyph counts as leaked (the `~ocr` column
 counts fuzzy-only leaks); values squashing under 4 chars match exactly
-only. Same critical gate as the text tier. Expected known deltas:
-checksum-broken OCR digits (a whole leak class text never sees) and
+only. Same critical gate as the text tier. Known delta classes (first
+run's leaks root-caused in the pii/core/DONE.md record): OCR breaking
+the shape/context that pattern recognizers key on (collapsed spacing,
+misread labels, label/value columns segmented into distant blocks),
+digit misreads breaking checksums (expected under degradation), and
 reversed-name interference returning where cell isolation is lost.
 
 Known limitation (accepted for iteration 1): whole-value survival has no
