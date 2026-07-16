@@ -241,12 +241,19 @@ text tier's record is in [DONE.md](DONE.md).)
       product story — pseudonyms consistent across a submission bundle), run the scorer
       with a shared map, and add an axis asserting same canonical value ⇒ same
       placeholder across documents (the truth manifest already carries the values).
-- [ ] **Tier 1 — image/degradation tier**: extend the synthetic generator with rendered
-      documents and a degradation pipeline (DPI, skew, blur, JPEG artifacts) for OCR
-      benchmarking; bbox-level ground truth. Match painted boxes with pixel tolerance from
-      day one — exact-box assertions break across Tesseract versions (see the
-      presidio-image-redactor review, DONE.md item (i)). Output follows the corpus
-      convention (2026-07-15): `pii_eval/corpora/image/s<seed>`.
+- [ ] **Tier 1 — image/degradation tier**: iteration 1 SHIPPED 2026-07-16 (see DONE.md) —
+      `pii_eval render` prints the text corpus to page images (Pillow, seeded font
+      variety, monospace for fixed-column docs) and `score --modality image` scores the
+      real image pipeline by re-OCR value survival with OCR-tolerant matching; paired
+      text/image corpora share one truth.json, output at `pii_eval/corpora/image/s<seed>`.
+      Remaining: degradation pipeline (DPI, skew, blur, JPEG artifacts) composing on the
+      clean renders; realistic reportlab statement templates (mail barcodes) as a second
+      layout source; a `partial` axis for the image scorer (token-level survival needs
+      occurrence disambiguation — surname stems recur in kept business names, see the
+      known-limitation note in pii_eval/README.md); bbox-level ground truth if
+      box-placement assertions are ever needed —
+      match painted boxes with pixel tolerance from day one, exact-box assertions break
+      across Tesseract versions (see the presidio-image-redactor review, DONE.md item (i)).
 - [ ] **Tier 2 — PII-transplanted real documents**: Sergey manually replaces real PII with fake
       in 4–6 real documents (one per major bank layout, one bad scan, one transactions CSV),
       keeping layout intact. Real layouts + known ground truth + declassified. One-time effort,

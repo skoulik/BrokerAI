@@ -14,6 +14,8 @@ statements, but no value in a generated corpus comes from them.
 python -m pii_eval generate --seed 42 --docs 9   # -> pii_eval/corpora/text/s42
 python -m pii_eval score                         # scores corpora/text/s42; full pipeline (GLiNER2 on CUDA)
 python -m pii_eval score --seed 7                # another seed's corpus
+python -m pii_eval render --seed 42              # text/s42 -> image/s42 (paired image corpus)
+python -m pii_eval score --modality image        # image pipeline + re-OCR value survival
 ```
 
 `score` exits 1 if any critical-type entity (TFN, Medicare, BSB, account,
@@ -22,8 +24,8 @@ card, person name) leaked — the roadmap's zero-critical-miss gate.
 ## Corpus layout
 
 Every generated corpus lives under `pii_eval/corpora/` (gitignored,
-regenerable): one folder per modality — `text/` today, `image/` when that
-tier lands — with one subfolder per seed (`text/s42`, `text/s7`, ...).
+regenerable): one folder per modality — `text/` and `image/` — with one
+subfolder per seed (`text/s42`, `image/s42`, ...).
 Both CLIs default to `corpora/text/s<seed>`; `-o`/`-c` override for
 throwaway experiments, but durable corpora belong in the seed folders —
 not in session scratchpads (convention set 2026-07-15).
@@ -119,9 +121,41 @@ scorer tracks as over-stripping.
   surnames (Fee, Card — also statement vocabulary) are drawn as ordinary
   critical `PERSON` joint forms, so a guard regression trips the gate.
 
+## Image tier (iteration 1, 2026-07-16)
+
+`render` prints an existing text corpus onto page images
+(`pii_eval/render.py`, Pillow + Windows system TTFs) — a **paired
+corpus**: same content, same `truth.json`, two modalities, so any score
+delta is attributable to OCR errors or to structure the text path
+exploits (CSV cell isolation, `RECORD_SEPARATOR` windows). Fonts are
+drawn per doc from a seeded RNG (recorded in `manifest.json`);
+fixed-column docs (legacy statements, CSVs rendered as aligned tables)
+stay monospace — their layout is the whitespace — while loan docs mix in
+proportional fonts.
+
+`score --modality image` runs each page through the real image pipeline
+(OCR → detect → paint), **re-OCRs the painted output**, and scores every
+truth entity by value survival in the redacted image. Matching is
+OCR-tolerant and recall-first: confusion-squashed containment (0/O, 1/l,
+5/S...) and, for long values, a banded edit-distance scan — a value
+surviving with one misread glyph counts as leaked (the `~ocr` column
+counts fuzzy-only leaks); values squashing under 4 chars match exactly
+only. Same critical gate as the text tier. Expected known deltas:
+checksum-broken OCR digits (a whole leak class text never sees) and
+reversed-name interference returning where cell isolation is lost.
+
+Known limitation (accepted for iteration 1): whole-value survival has no
+`partial` axis — a value with any word painted out no longer matches, so
+a partially painted multi-word value scores `stripped` even if a fragment
+stays readable (the text tier's `partial` counts as a leak). Token-level
+survival would need occurrence disambiguation first: personas share
+surname stems with kept business names ("DECKER SERVICES PTY LTD"), so a
+naive token match would report false partials against kept text.
+
 ## Not here yet
 
-PDF/image tier: reportlab statement templates mimicking the reference
-layouts (mail barcodes included), pdftoppm rendering, degradation pipeline
-(DPI/skew/blur/JPEG), bbox ground truth. See the image-tier task in
-[pii/TODO.md](../pii/TODO.md).
+Realistic-layout rendering: reportlab statement templates mimicking the
+reference layouts (mail barcodes included), pdftoppm rendering, the
+degradation pipeline (DPI/skew/blur/JPEG — composes on top of `render`'s
+clean pages), bbox ground truth. See the image-tier task in
+[pii/core/TODO.md](../pii/core/TODO.md).

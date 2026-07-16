@@ -608,8 +608,8 @@ the move; new completed tasks append to the matching section with their records.
 
 ## Evaluation
 
-- [x] **Tier 1 — synthetic corpus, text tier** (the image/degradation tier is still open —
-      see [TODO.md](TODO.md)): local generator with Faker + custom AU providers (TFN and
+- [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation
+      still open — see [TODO.md](TODO.md)): local generator with Faker + custom AU providers (TFN and
       Medicare with valid check digits, BSB/account, ABN/ACN, PayID), fake statement templates
       and transaction CSVs. Ground truth known by construction → automatic precision/recall;
       the fast iteration loop, fully shareable. Sergey will supply a few
@@ -657,3 +657,43 @@ the move; new completed tasks append to the matching section with their records.
       (generator), `test_kept_org_does_not_shield_nested_address` (the wart, model-free),
       the 'Kew' floor case in `test_gliner2_floors`, and the `model`-marked
       `test_real_ner_short_suburb_rescued_by_address_pass`.)*
+
+- [x] **Tier 1 — image tier, iteration 1: paired rendered corpus + re-OCR survival scorer**
+      *(2026-07-16: Sergei's proposal — instead of waiting for the reportlab templates,
+      print the existing text corpus onto images. That makes the first image corpus nearly
+      free AND creates a **paired corpus**: same content, same `truth.json`, two modalities,
+      so any score delta is attributable to exactly two causes — OCR errors, or structure
+      the text path exploits that pixels don't carry. `pii_eval/render.py`: Pillow + Windows
+      system TTFs, content-sized white pages, per-doc font+size (20–26 px) from an RNG
+      seeded by the corpus seed (recorded in `manifest.json`, which also points back at the
+      source text corpus — no truth duplication). Font variety per Sergei; fixed-column docs
+      (legacy statements, CSVs rendered as column-aligned tables) draw from a monospace pool
+      since their layout IS the whitespace, loan docs mix in proportional fonts.
+      `pii_eval/score_image.py`: each page through the real image pipeline (OCR → detect →
+      paint), then the painted output is **OCR'd again** and every truth entity scored by
+      value survival in the redacted image — value-based, not span-based (offsets are
+      meaningless through pixels). Matching is OCR-tolerant and recall-first: exact
+      normalized containment, else confusion-squashed containment (0/O, 1/l/I, 5/S, 8/B...),
+      else banded edit-distance for values ≥8 squashed chars — fuzzy survivors count as
+      LEAKED (`~ocr` column); values squashing under 4 chars match exactly only (3-letter
+      suburbs would false-leak at distance 1). Invalid-injection axes and the critical gate
+      carry over. CLI: `render` subcommand + `score --modality image`; 11 tests in
+      `tests/pii_eval/test_render.py`.
+      First side-by-side, seed 42 (text → image): both predicted deltas confirmed.
+      (1) **OCR-broken checksums**: AU_TFN 100% → 86% — one misread digit broke the mod-11
+      check, Presidio rejected the value, it survived readable; caught only by the fuzzy
+      matcher (gate FAIL, correctly). AU_DRIVERS_LICENCE 100% → 75%, same digit-run class.
+      (2) **Cell isolation doesn't exist in pixels**: PERSON_REVERSED 94% → 31%,
+      PERSON_COMMA 100% → 12% — the RECORD_SEPARATOR window boundaries that fixed
+      reversed-name interference are a text-path structure; OCR text of the rendered names
+      doc has none, so pre-fix interference returns. One canonical PERSON also leaked there
+      (ISLA FERGUSON, exact). Bonus artifact class: OCR merged adjacent statement columns
+      into digit runs that tripped the invalid-identifier detectors (2 noise findings on
+      legacy_00.png) — unproducible in the text tier. ORGANIZATION over-strip 7 → 12
+      (column structure lost). Accepted limitation (README note + TODO item): whole-value
+      survival has no `partial` axis — a value with any word painted out scores `stripped`
+      even if a fragment stays readable, which is why ADDRESS_BARE (57% → "100%") and
+      CONTEXTUAL_ID (0% → "100%") apparently improved; a token-level axis needs occurrence
+      disambiguation first (surname stems recur inside kept business names). Remaining
+      image-tier work (degradation pipeline, reportlab layout source, bbox truth) stays in
+      [TODO.md](TODO.md).)*
