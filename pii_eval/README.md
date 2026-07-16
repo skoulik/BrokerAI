@@ -16,6 +16,8 @@ python -m pii_eval score                         # scores corpora/text/s42; full
 python -m pii_eval score --seed 7                # another seed's corpus
 python -m pii_eval render --seed 42              # text/s42 -> image/s42 (paired image corpus)
 python -m pii_eval score --modality image        # image pipeline + re-OCR value survival
+python -m pii_eval ocr-report                    # OCR-fidelity sweep: font x glyph size (resumable)
+python -m pii_eval ocr-report --summary-only     # re-print matrices from the existing report
 ```
 
 `score` exits 1 if any critical-type entity (TFN, Medicare, BSB, account,
@@ -154,6 +156,22 @@ stays readable (the text tier's `partial` counts as a leak). Token-level
 survival would need occurrence disambiguation first: personas share
 surname stems with kept business names ("DECKER SERVICES PTY LTD"), so a
 naive token match would report false partials against kept text.
+
+## OCR-fidelity sweep (`ocr-report`, 2026-07-16)
+
+Measures OCR fidelity directly (not PII leaks): renders every corpus doc
+at each font x em-size grid cell, OCRs it through the `pii.core.ocr`
+seam, aligns the output against the exact drawn text, and buckets each
+divergence — substitution classes (digit/letter/case), word merges and
+splits, lost/spurious lines — plus a measured glyph confusion matrix and
+per-word conf-vs-correctness data. The analysis axis is the *measured
+x-height in px* per cell (equal em sizes land on very different x-heights
+across faces). Findings are Tesseract-scoped; the harness is
+engine-neutral and reruns per bake-off backend. Fixed-column docs sweep
+the 3 mono fonts only (font comparisons are valid within a doc class).
+Output: `pii_eval/reports/ocr_fidelity.jsonl` (gitignored, appended
+per-cell — an interrupted sweep resumes). Full design + findings in
+`pii/core/TODO.md` / `pii/core/DONE.md`.
 
 ## Not here yet
 

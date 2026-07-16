@@ -11,6 +11,9 @@ models/hf-cache/
 # Generated synthetic eval corpora (regenerable: python -m pii_eval generate)
 pii_eval/corpora/
 
+# OCR-fidelity sweep outputs (regenerable: python -m pii_eval ocr-report)
+pii_eval/reports/
+
 # Python bytecode cache (analyze_statement imports verify_examples)
 __pycache__/
 

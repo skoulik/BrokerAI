@@ -39,6 +39,25 @@ def main() -> int:
     ren.add_argument("--seed", type=int, default=42,
                      help="which seed's corpus to render when -c is not given")
 
+    rep = sub.add_parser(
+        "ocr-report",
+        help="OCR-fidelity sweep: font × glyph size vs rendered truth "
+             "(Tesseract-scoped; resumable)",
+    )
+    rep.add_argument("--seed", type=int, action="append", dest="seeds",
+                     help="corpus seed; repeatable (default: 42 7 123)")
+    rep.add_argument("-o", "--out",
+                     default="pii_eval/reports/ocr_fidelity.jsonl",
+                     help="report JSONL (appended; completed cells skipped)")
+    rep.add_argument("--fonts", default=None,
+                     help="comma-separated font files (default: all 9)")
+    rep.add_argument("--sizes", default=None,
+                     help="comma-separated em sizes (default: full grid)")
+    rep.add_argument("--keep-images", action="store_true",
+                     help="save rendered sweep pages next to the report")
+    rep.add_argument("--summary-only", action="store_true",
+                     help="re-print the summary of an existing report")
+
     sc = sub.add_parser("score", help="run the pii pipeline and score it")
     sc.add_argument("-c", "--corpus", default=None,
                     help=f"corpus folder (default: {CORPUS_ROOT}/<modality>/s<seed>)")
@@ -66,6 +85,19 @@ def main() -> int:
 
         render(args.corpus or _default_corpus(args.seed),
                args.out or _default_corpus(args.seed, "image"))
+        return 0
+    if args.command == "ocr-report":
+        from pii_eval.ocr_report import run, summarize
+
+        if args.summary_only:
+            summarize(args.out)
+            return 0
+        run(seeds=args.seeds,
+            out=args.out,
+            fonts=args.fonts.split(",") if args.fonts else None,
+            sizes=[int(s) for s in args.sizes.split(",")]
+            if args.sizes else None,
+            keep_images=args.keep_images)
         return 0
     if args.modality == "image":
         from pii_eval.score_image import score_image
