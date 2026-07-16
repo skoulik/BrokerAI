@@ -18,6 +18,7 @@ python -m pii_eval render --seed 42              # text/s42 -> image/s42 (paired
 python -m pii_eval score --modality image        # image pipeline + re-OCR value survival
 python -m pii_eval ocr-report                    # OCR-fidelity sweep: font x glyph size (resumable)
 python -m pii_eval ocr-report --summary-only     # re-print matrices from the existing report
+python -m pii_eval ocr-report --ocr-backend paddle:v5_server   # same sweep, another engine
 ```
 
 `score` exits 1 if any critical-type entity (TFN, Medicare, BSB, account,
@@ -166,12 +167,15 @@ divergence — substitution classes (digit/letter/case), word merges and
 splits, lost/spurious lines — plus a measured glyph confusion matrix and
 per-word conf-vs-correctness data. The analysis axis is the *measured
 x-height in px* per cell (equal em sizes land on very different x-heights
-across faces). Findings are Tesseract-scoped; the harness is
-engine-neutral and reruns per bake-off backend. Fixed-column docs sweep
-the 3 mono fonts only (font comparisons are valid within a doc class).
-Output: `pii_eval/reports/ocr_fidelity.jsonl` (gitignored, appended
-per-cell — an interrupted sweep resumes). Full design + findings in
-`pii/core/TODO.md` / `pii/core/DONE.md`.
+across faces). Findings are engine-scoped; the harness is engine-neutral —
+`--ocr-backend` selects the engine through the `pii.core.ocr.get_ocr`
+seam (`tesseract` default; `paddle:v5_server` / `paddle:v6_medium` for
+the PaddleOCR bake-off tiers), and each backend writes its own report
+file. Fixed-column docs sweep the 3 mono fonts only (font comparisons
+are valid within a doc class). Output:
+`pii_eval/reports/ocr_fidelity[_<backend>].jsonl` (gitignored, appended
+per-cell — an interrupted sweep resumes). Findings records in
+`pii/core/DONE.md`.
 
 ## Not here yet
 

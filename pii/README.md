@@ -45,17 +45,20 @@ checksum-invalid identifier controls below.
 
 ## Images
 
-`strip --image` OCRs the input (Tesseract, word-level bounding boxes),
-runs the full text pipeline on the recognized text, and paints each
-detected span's placeholder over its pixels — background-filled boxes
-with the placeholder drawn in, so the output image stays pseudonymized
-and rehydratable, not blacked out. Detection never sees pixels; painting
-happens on the original image (`pii/core/ocr.py` for the engine adapter and
+`strip --image` OCRs the input (word-level bounding boxes), runs the
+full text pipeline on the recognized text, and paints each detected
+span's placeholder over its pixels — background-filled boxes with the
+placeholder drawn in, so the output image stays pseudonymized and
+rehydratable, not blacked out. Detection never sees pixels; painting
+happens on the original image (`pii/core/ocr.py` for the engine seam and
 span→box mapping, `pii/core/image_mode.py` for the painting).
 
-Requires the Tesseract binary (`winget install UB-Mannheim.TesseractOCR`)
-and `pytesseract`. PDFs-as-images and OCR-engine alternatives are on the
-roadmap.
+`--ocr-backend` selects the engine: `tesseract` (default; needs the
+Tesseract binary, `winget install UB-Mannheim.TesseractOCR`, and
+`pytesseract`) or `paddle[:v5_server|:v6_medium]` (PaddleOCR; models
+auto-download to `models/paddlex`; with the GPU paddle wheel the engine
+cannot share a process with the NER model — pipeline use needs the CPU
+wheel, see `pii/core/ocr_paddle.py`). PDFs-as-images are on the roadmap.
 
 ## Checksum-invalid identifiers
 

@@ -25,29 +25,34 @@ image tier and Tesseract stack review done — see DONE.md): OCR-fidelity factor
       encode the delivery address/customer ref — text-based detection can't see them, so
       detect and paint over barcode regions in the image pass (observed on several of the
       reference examples)
-- [ ] OCR-fidelity factor sweep (design agreed 2026-07-16; first factors of the OCR
-      degradation investigation, scoped to Tesseract — each bake-off backend reruns it):
-      new `pii_eval ocr-report` subcommand sweeping font face × glyph size over the three
-      seed corpora (s42/s7/s123), aligning OCR output against the exact rendered text
-      (line-level then char-level alignment) and bucketing errors — digit/letter
-      substitutions, case, word merges/splits, dropped lines — stratified by doc class
-      (fixed-column docs render mono fonts only, prose all 9). Analysis axis = measured
-      x-height px (tessdoc: <10 px poor, <8 px destroyed, ~30 px LSTM ceiling); grid
-      extends past 32 px em toward the realistic 300-dpi regime. PSM/OEM/DPI pinned at
-      pipeline defaults per the 2026-07-16 Tesseract review (DONE.md). Also records
-      per-word conf per error (is conf predictive?) and a measured confusion matrix to
-      replace the folklore `_CONFUSION` table in `pii_eval/score_image.py`. Later factors
-      (blur, JPEG, skew, noise/contrast) compose on the degradation-tier pipeline.
+- [ ] PaddleOCR worker-process isolation: the GPU paddle wheel and torch cannot share a
+      Windows process (bundled-cudnn mutual exclusion, see the 2026-07-17 DONE record), so
+      the full pipeline (GLiNER2 on torch) can only use paddle via the CPU wheel today.
+      If paddle graduates from bake-off candidate to production backend, wrap it in a
+      persistent worker subprocess behind `pii/core/ocr.py::get_ocr` (PNG in, serialized
+      OcrResult out, engine loaded once); the torch-stub trick inside the worker keeps
+      paddleocr's modelscope import happy. Until then `score --modality image
+      --ocr-backend paddle*` requires the CPU wheel.
+- [ ] Refresh the `_CONFUSION` table in `pii_eval/score_image.py` from the measured
+      confusion matrix (ocr-report sweep, 2026-07-17 DONE record): folklore pairs missed
+      `0->@` (the top pair, Consolas slashed zero), `J->3`, `1->2`, `4->8`, `W->H`; decide
+      per-pair whether to widen the squash classes (over-merging is recall-safe — it can
+      only over-report leaks). Re-run the image-tier gate after.
 - [ ] OCR engine choice — *decide later:* Tesseract (current) vs the two candidate
       evaluations below vs a local VLM (e.g. Qwen-VL class) doing OCR+PII detection in one
       pass. Decide on benchmark numbers from real bank statements/scans (needs the image
       eval tier for ground truth). The engine seam is the parallel-lists word-box dict in
       `pii/core/ocr.py` (each backend is an adapter normalizing into it); the VLM is the
       exception that doesn't fit the OCR-then-analyze frame — see ARCHITECTURE.md.
-- [ ] Evaluate PaddleOCR: write its `pii/core/ocr.py` adapter (detection polygons → axis-aligned
-      word boxes) and benchmark against the Tesseract baseline on the same corpus —
-      word-level accuracy on clean + degraded scans, table/statement layouts (row/column
-      integrity), runtime, and install weight (pulls the paddlepaddle runtime).
+- [ ] Evaluate PaddleOCR — **adapter + review DONE 2026-07-17** (`pii/core/ocr_paddle.py`
+      behind `get_ocr`; stack review, DLL rules, and first numbers in the DONE record;
+      clean-render fidelity sweeps v5_server vs v6_medium ran 2026-07-17). Remaining:
+      analyze the sweep matrices vs Tesseract; leak-gate comparison (`score --modality
+      image --ocr-backend paddle*`, CPU wheel or the worker task above); knobs tuning
+      round (det thresholds `text_det_thresh`/`text_det_box_thresh`/`text_det_unclip_ratio`,
+      `text_det_limit_side_len`, `text_rec_score_thresh`, textline-orientation for skewed
+      scans) against the fidelity metric once the degradation tier exists; degraded-scan
+      benchmark before any engine decision.
 - [ ] Evaluate Surya and docTR (same adapter shape, one bake-off pass): benchmark against
       the Tesseract baseline as above; both are GPU-first, which fits our setup. Check
       license fit before adopting (docTR is Apache-2.0; Surya's model weights carry a

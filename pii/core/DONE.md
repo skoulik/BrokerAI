@@ -659,6 +659,89 @@ the move; new completed tasks append to the matching section with their records.
       per-word conf recorded per error. Distilled into ARCHITECTURE.md ("Tesseract
       operational profile") and the `ocr.py` docstring.)*
 
+- [x] OCR-fidelity factor sweep — glyph size × font face, Tesseract findings
+      *(2026-07-17; design agreed 2026-07-16, spec preserved in git history of TODO.md.
+      Instrument: `pii_eval ocr-report` (pii_eval/ocr_report.py) — renders every corpus
+      doc of seeds 42/7/123 at each font × em-size cell, OCRs through the `get_ocr` seam,
+      aligns output against the exact drawn text (line-DP with SequenceMatcher costs, then
+      char/word Levenshtein with backtrace), buckets every divergence, and appends JSONL
+      cells resumably (`pii_eval/reports/`, gitignored). OCR words are re-bucketed into
+      geometric visual lines first, so Tesseract's block fragmentation reads as
+      `resegmented_lines`, not mass line loss. 1,980 cells; 21 model-free tests.
+      Tesseract 5.4.0/LSTM findings:
+      **(a) The x-height cliff is measured**: x-height 4–5 px (em 10) is catastrophic and
+      font-dependent (CER 4.3% Verdana … 96.5% Courier); 6–7 px is the edge (0.7–7.6%);
+      ≥10 px is a flat plateau (prose 0.2–0.6%) with no LSTM ceiling visible up to
+      x-height 26. render.py's 20 px floor sits just on the safe side; 300-dpi scans
+      (x-height ~20) are comfortably safe; <~150-dpi equivalents are in the cliff.
+      **(b) Font face matters only at the cliff**, via x-height ratio per em (Verdana most
+      tolerant) and stroke weight (thin Courier collapses first); above x-height 10 all
+      nine faces converge.
+      **(c) Structure dominates the error mass**: lost_chars 74k is the top bucket
+      (cliff-zone line loss); splits 11.5k > merges 7.2k; fixed-column docs run 2–3×
+      prose CER at every size. Courier fixed-doc anomaly root-caused: a split explosion
+      at em 32–40 (wide monospace letter gaps crossing the word-gap threshold; 527–631
+      splits) plus one catastrophic column-loss cell (s42 names_09 @40: 965 alpha
+      deletions inside paired lines); recovers at em 48. Reinforces the s42 image-tier
+      conclusion — identifiers die of shape/layout damage, not digit misreads.
+      **(d) Measured confusion matrix** (top: `0->@` 1674 — Consolas slashed zero,
+      `0->O` 1517, `F->E` 964, `5->S`, `J->I`, `1->2`, `0->8`, `J->3`, `4->8`, `W->H`)
+      — feeds the `_CONFUSION` refresh task; folklore missed several of the top pairs.
+      **(e) conf is a weak error filter at scale** (n=44,354 erroneous words): means 64.3
+      erroneous vs 91.8 correct, but 41% of erroneous words carry conf ≥ 80 — the
+      no-naive-thresholding ban is now data-backed.)*
+
+- [x] PaddleOCR backend: stack review + adapter *(2026-07-17; Sergei's call to bring the
+      second bake-off engine up while the Tesseract sweep ran. Adapter:
+      `pii/core/ocr_paddle.py` behind the new `pii/core/ocr.py::get_ocr(backend)` seam
+      (backends: tesseract, paddle[:v5_server|:v6_medium]), threaded through
+      `strip_image(ocr_backend=)`, `pii strip --ocr-backend`, `pii_eval ocr-report/score
+      --ocr-backend`; 14 model-free tests (fake result dicts against `result_to_ocr`).
+      Stack: paddleocr 3.7.0 / paddlex 3.7.2 / paddlepaddle-gpu 3.3.1 cu126; models under
+      `models/paddlex` via `PADDLE_PDX_CACHE_HOME` (repo convention, set by the adapter);
+      tiers pinned PP-OCRv5_server (v5 top) vs PP-OCRv6_medium (v6 ships no server tier).
+      Review findings:
+      **(a) Line-oriented output**: detection finds arbitrary line regions (no page-layout
+      model — the opposite failure profile from Tesseract's block segmentation);
+      recognition returns one string + one conf per region. `rec_texts` is authoritative
+      for assembled text; `return_word_box` fragments have unreliable boundaries (merged
+      tokens like "TFN123") and are used as GEOMETRY only — line words map onto the
+      squeezed fragment char stream, boxes union over overlaps, proportional
+      interpolation as fallback. Regions band into visual rows by y-center before
+      assembly so statement rows reach recognizers as single lines.
+      **(b) Windows DLL rules (all verified)**: CPU wheel — torch must import before
+      paddle (else torch's shm.dll breaks). GPU wheel — torch and paddle are MUTUALLY
+      EXCLUSIVE per process (both bundle cudnn_cnn64_9.dll, different CUDA families;
+      second loader gets WinError 127 in either order). Worse, paddleocr's own chain
+      hard-imports torch (paddlex official_models → modelscope → torch), so a GPU-wheel
+      process installs a permissive torch STUB (package-shaped, __spec__,
+      torch.distributed/multiprocessing probes, catch-all __getattr__) after loading
+      paddle and before paddleocr — modelscope is satisfied, real torch never loads.
+      Consequence: GPU paddle serves torch-free/OCR-only processes (the fidelity sweep);
+      the full pipeline (GLiNER2 on torch) pairs with the CPU wheel until the worker-
+      isolation task lands. CUDA-version alignment (torch cu126 + paddle cu126) was
+      considered and rejected: torch here is cu130, paddle has no cu128 channel, and the
+      pairing would pin both stacks forever.
+      **(c) pii package inits went lazy (PEP 562)** — load-bearing, not cosmetic:
+      `import pii.core.ocr` used to pull pipeline → presidio → spaCy → thinc → torch,
+      which would have made every process torch-tainted and GPU paddle unusable.
+      **(d) Upstream bugs**: paddle 3.3.x oneDNN PIR executor crashes on PP-OCRv5 server
+      (`ConvertPirAttribute2RuntimeAttribute … ArrayAttribute<DoubleAttribute>`) —
+      avoided with `enable_mkldnn=False` (CPU path; inert on GPU). The cuDNN 9.9-built /
+      9.5-machine warning is demonstrably benign: GPU CER identical to CPU CER on every
+      overlapping smoke cell.
+      **(e) First numbers** (Consolas em 12/28, s42, vs Tesseract same cells): CER 2–5×
+      lower (legacy @12: 2.0% vs 5.9%; tx @12: 0.7% vs 3.2%), biggest wins at small
+      glyphs. Speed: CPU 30–95 s/page (server tier, no mkldnn); GPU (2080 Ti sm_75,
+      cu126 wheel verified) 0.6–3.5 s/cell on real pages, ~25×. VRAM sits near the 11 GB
+      ceiling on the largest renders (Sergei observed 10.5 GB + WDDM spill to shared
+      system RAM): paddle's auto_growth allocator caches its high-water mark and returns
+      nothing until process exit; detection memory scales with image area (em-48 table
+      renders reach ~2600×5000 px). Harmless to correctness, slows only the giant cells
+      (~13 s worst); don't run GLiNER2 CUDA jobs concurrently with a paddle sweep; first
+      OOM lever is `text_det_limit_side_len` (already on the knobs list). Full three-seed
+      sweeps for both tiers + leak-gate comparison tracked in the PaddleOCR TODO item.)*
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

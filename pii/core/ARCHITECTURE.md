@@ -433,6 +433,23 @@ The exception is a local VLM (Qwen-VL class) doing OCR+PII detection in one pass
 be expressed as an OCR adapter feeding the analyze step — if pursued, it becomes an
 *alternative pipeline* whose output joins at the merged-spans level. Bake-off task in TODO.md.
 
+**Realized 2026-07-17** as `ocr.py::get_ocr(backend) -> (image, lang=...) -> OcrResult`
+(`OCR_BACKENDS`; paddle entries select a model tier, e.g. `paddle:v6_medium`). The PaddleOCR
+adapter (`ocr_paddle.py`) established two structural rules the seam now carries:
+
+- **Process rules are part of a backend's contract.** On Windows, paddlepaddle-gpu and torch
+  cannot share a process (bundled-cudnn mutual exclusion; full story in the adapter docstring
+  and the 2026-07-17 DONE record). GPU paddle therefore serves torch-free OCR-only processes
+  (the pii_eval fidelity sweep); the full pipeline pairs paddle with the CPU wheel until the
+  worker-subprocess task lands. The adapter installs a torch *stub* to satisfy paddleocr's
+  modelscope import chain in GPU processes.
+- **Package inits stay lazy (PEP 562) — load-bearing.** `pii/__init__` and
+  `pii/core/__init__` resolve their public names lazily so `import pii.core.ocr` never drags
+  in presidio → spaCy → thinc → torch. OCR-only processes depend on this to stay torch-free;
+  don't re-add eager imports to those `__init__`s.
+- Backend model caches follow the repo convention: `models/paddlex` (PADDLE_PDX_CACHE_HOME,
+  set by the adapter), alongside GLiNER2's `models/hf-cache`.
+
 ### Tesseract operational profile (2026-07-16 stack review; full harvest in DONE.md)
 
 Pinned facts about the shipped OCR stack (Tesseract 5.4.0 UB Mannheim + pytesseract 0.3.13),
