@@ -44,7 +44,7 @@ def main() -> int:
     rep = sub.add_parser(
         "ocr-report",
         help="OCR-fidelity sweep: font × glyph size vs rendered truth "
-             "(Tesseract-scoped; resumable)",
+             "(resumable)",
     )
     rep.add_argument("--seed", type=int, action="append", dest="seeds",
                      help="corpus seed; repeatable (default: 42 7 123)")
@@ -61,8 +61,8 @@ def main() -> int:
     rep.add_argument("--summary-only", action="store_true",
                      help="re-print the summary of an existing report")
     rep.add_argument("--ocr-backend", choices=list(OCR_BACKENDS),
-                     default="tesseract",
-                     help="OCR engine to sweep (default: tesseract); the "
+                     default="paddle",
+                     help="OCR engine to sweep (default: paddle); the "
                           "default report file is suffixed per backend")
 
     sc = sub.add_parser("score", help="run the pii pipeline and score it")
@@ -79,9 +79,9 @@ def main() -> int:
                     default="likely",
                     help="collection tier for checksum-invalid candidates")
     sc.add_argument("--ocr-backend", choices=list(OCR_BACKENDS),
-                    default="tesseract",
+                    default="paddle",
                     help="OCR engine for --modality image "
-                         "(default: tesseract)")
+                         "(default: paddle)")
 
     args = parser.parse_args()
     if args.command == "generate":

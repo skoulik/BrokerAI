@@ -1,9 +1,10 @@
 """OCR-fidelity sweep — glyph size × font face, the first factors of the
 OCR degradation investigation (design agreed 2026-07-16; task record in
-pii/core/TODO.md). Findings are Tesseract-scoped; the harness is
-engine-neutral: pages render through pii_eval.render and OCR runs through
-the pii.core.ocr seam, so every future bake-off backend reruns this sweep
-unchanged.
+pii/core/TODO.md). The harness is engine-neutral: pages render through
+pii_eval.render and OCR runs through the pii.core.ocr seam, so every
+bake-off backend reruns this sweep unchanged (findings are engine-scoped
+per report file — round 1's Tesseract vs PaddleOCR verdict is in
+pii/core/reports/).
 
 This measures OCR fidelity directly, not PII leaks: the drawn text of
 every page is known exactly, so OCR output is aligned against it and each
@@ -15,12 +16,13 @@ tessdoc: <10 px poor, <8 px destroyed, ~30 px LSTM ceiling — because equal
 em sizes land on very different x-heights across faces.
 
 OCR words are re-bucketed into *visual* lines by box geometry before
-alignment: Tesseract fragments wide-gutter tables into separate blocks,
-reordering the assembled text (the stranded-label failure class), which
-would read as mass line loss to an order-preserving aligner. Re-lining by
-geometry keeps the recognition-fidelity measurement clean, while
-`resegmented_lines` counts visual lines built from >1 Tesseract line —
-the structural damage, reported separately.
+alignment: an OCR engine can fragment wide-gutter tables into separate
+blocks, reordering the assembled text (the stranded-label failure class
+Tesseract exhibited), which would read as mass line loss to an
+order-preserving aligner. Re-lining by geometry keeps the
+recognition-fidelity measurement clean, while `resegmented_lines` counts
+visual lines built from >1 engine line — the structural damage, reported
+separately.
 
 Per-word confidences are recorded against word correctness (histograms
 for correct vs erroneous words): the measured data that the "never
@@ -325,7 +327,7 @@ def run(
     fonts=None,
     sizes=None,
     keep_images: bool = False,
-    ocr_backend: str = "tesseract",
+    ocr_backend: str = "paddle",
 ) -> Path:
     seeds = seeds or [42, 7, 123]
     fonts = fonts or ALL_FONTS

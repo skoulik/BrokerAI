@@ -4,7 +4,7 @@ line->word normalization without paddle installed or imported."""
 
 import pytest
 
-from pii.core.ocr import get_ocr, ocr_image
+from pii.core.ocr import get_ocr
 from pii.core.ocr_paddle import result_to_ocr
 
 
@@ -17,9 +17,12 @@ def _result(texts, boxes, scores, words=None, word_boxes=None):
 
 
 class TestGetOcr:
-    def test_tesseract_is_default_adapter(self):
-        assert get_ocr("tesseract") is ocr_image
-        assert get_ocr() is ocr_image
+    def test_paddle_is_default(self):
+        # Tesseract retired 2026-07-17: paddle is the only engine, the
+        # default backend, and the old name is now an unknown backend.
+        assert callable(get_ocr())
+        with pytest.raises(ValueError):
+            get_ocr("tesseract")
 
     def test_paddle_resolves_without_importing_paddle(self):
         fn = get_ocr("paddle")

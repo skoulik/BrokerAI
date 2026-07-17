@@ -53,12 +53,15 @@ rehydratable, not blacked out. Detection never sees pixels; painting
 happens on the original image (`pii/core/ocr.py` for the engine seam and
 span→box mapping, `pii/core/image_mode.py` for the painting).
 
-`--ocr-backend` selects the engine: `tesseract` (default; needs the
-Tesseract binary, `winget install UB-Mannheim.TesseractOCR`, and
-`pytesseract`) or `paddle[:v5_server|:v6_medium]` (PaddleOCR; models
-auto-download to `models/paddlex`; with the GPU paddle wheel the engine
-cannot share a process with the NER model — pipeline use needs the CPU
-wheel, see `pii/core/ocr_paddle.py`). PDFs-as-images are on the roadmap.
+The OCR engine is **PaddleOCR** (Tesseract was retired 2026-07-17 after a
+fidelity bake-off — ~25× lower character error, records in
+`pii/core/DONE.md`). `--ocr-backend` selects the model tier: `paddle`
+(default = `paddle:v6_medium`), `paddle:v5_server`, `paddle:v6_medium`;
+models auto-download to `models/paddlex` on first use. With the GPU paddle
+wheel the engine and the NER model cannot share a Windows process, so the
+pipeline drives OCR through a persistent worker subprocess
+(`pii/core/ocr_worker.py`); the CPU wheel runs it in-process. PDFs-as-images
+are on the roadmap.
 
 ## Checksum-invalid identifiers
 

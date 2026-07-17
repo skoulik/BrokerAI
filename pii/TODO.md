@@ -15,7 +15,7 @@ Open tasks live with their component. This file holds only **cross-cutting** ite
       When the GUI lands it will add its own stack (a GUI toolkit or web framework); decide
       then whether to split requirements per component or move to the repo-wide `pyproject.toml`
       + uv (a Phase 2 item in the root [ROADMAP.md](../ROADMAP.md)). The image stack
-      (Pillow/pytesseract) is already an optional-feature dependency of `core`.
+      (Pillow/PaddleOCR) is already an optional-feature dependency of `core`.
 - [ ] Keep the `gui ⊥ cli` boundary honest as both grow: when the GUI needs behaviour the CLI
       already implements, push it down into `pii.core` rather than importing across front-ends
       (see [ARCHITECTURE.md](ARCHITECTURE.md)).

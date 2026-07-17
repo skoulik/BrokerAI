@@ -46,7 +46,7 @@ def strip_image(
     pipeline: PiiPipeline,
     pmap: PseudonymMap,
     lang: str = "eng",
-    ocr_backend: str = "tesseract",
+    ocr_backend: str = "paddle",
 ) -> ImageStripResult:
     """OCR the image and replace detected PII with painted placeholders."""
     ocr = get_ocr(ocr_backend)(image, lang=lang)

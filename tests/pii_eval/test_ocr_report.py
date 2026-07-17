@@ -1,6 +1,6 @@
 """OCR-fidelity sweep internals (pii_eval/ocr_report.py) — model-free:
 alignment, error taxonomy, and geometric re-lining are exercised on
-hand-built OcrResults; no Tesseract run."""
+hand-built OcrResults; no OCR engine run."""
 
 from pii.core.ocr import Box, assemble
 from pii_eval.ocr_report import (
@@ -88,7 +88,7 @@ class TestAlignLines:
 
 class TestVisualLines:
     def test_block_split_columns_rejoin_one_visual_line(self):
-        # Tesseract fragmenting a wide-gutter row into two blocks =
+        # an OCR engine fragmenting a wide-gutter row into two blocks =
         # two assembled lines at the same y; geometry re-joins them.
         result = assemble([
             [_word("DATE", 0, 0), _word("PARTICULARS", 50, 0)],

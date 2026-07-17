@@ -1,8 +1,7 @@
 """Image-tier renderer + value-survival matcher.
 
 Rendering tests are model-free (Pillow only); the OCR round-trip test
-needs the system Tesseract binary and self-skips (same pattern as
-tests/pii/core/test_image_mode.py).
+drives the real PaddleOCR engine and carries the gpu marker.
 """
 
 import json
@@ -17,8 +16,6 @@ from pii_eval.render import (
     render,
     render_page,
 )
-
-_TESSERACT = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
 
 def _mini_corpus(root: Path, seed: int = 5) -> Path:
@@ -105,7 +102,7 @@ class TestFindValue:
         assert self._find("088 356 153", "no digits here") is None
 
     def test_ocr_confusion_is_fuzzy(self):
-        # 0->O, 1->l: classic Tesseract confusions still count as a leak.
+        # 0->O, 1->l: classic OCR confusions still count as a leak.
         assert self._find("088 356 153", "TFN O88 356 l53") == "fuzzy"
 
     def test_one_glyph_error_in_long_value_is_fuzzy(self):
@@ -117,14 +114,15 @@ class TestFindValue:
         assert self._find("Kew", "moved to Kew in May") == "exact"
 
 
-@pytest.mark.skipif(not _TESSERACT.exists(), reason="needs system Tesseract")
+@pytest.mark.gpu
+@pytest.mark.slow
 @pytest.mark.parametrize("font", ["consola.ttf", "times.ttf"])
 def test_rendered_page_is_ocr_readable(font):
-    from pii.core.ocr import ocr_image
+    from pii.core.ocr import get_ocr
 
     page = render_page(
         "ACCOUNT STATEMENT\nTFN: 123 456 782", font, 24
     )
-    text = ocr_image(page).text
+    text = get_ocr("paddle:v6_medium")(page).text
     assert "STATEMENT" in text
     assert "456" in text

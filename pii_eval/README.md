@@ -169,9 +169,9 @@ per-word conf-vs-correctness data. The analysis axis is the *measured
 x-height in px* per cell (equal em sizes land on very different x-heights
 across faces). Findings are engine-scoped; the harness is engine-neutral —
 `--ocr-backend` selects the engine through the `pii.core.ocr.get_ocr`
-seam (`tesseract` default; `paddle:v5_server` / `paddle:v6_medium` for
-the PaddleOCR bake-off tiers), and each backend writes its own report
-file. Fixed-column docs sweep the 3 mono fonts only (font comparisons
+seam (`paddle` default = `paddle:v6_medium`; `paddle:v5_server` is the
+other tier — Tesseract was retired 2026-07-17 after round 1), and each
+backend writes its own report file. Fixed-column docs sweep the 3 mono fonts only (font comparisons
 are valid within a doc class). Output:
 `pii_eval/reports/ocr_fidelity[_<backend>].jsonl` (gitignored, appended
 per-cell — an interrupted sweep resumes). Findings records in

@@ -36,9 +36,9 @@ from pii.core.image_mode import strip_image
 from pii.core.ocr import get_ocr
 from pii_eval.score import _norm
 
-# Tesseract's classic confusion pairs, collapsed to one representative per
-# class. 6/9/g all map together — over-merging digits can only over-report
-# leaks, the safe direction.
+# Classic OCR confusion pairs, collapsed to one representative per class.
+# 6/9/g all map together — over-merging digits can only over-report leaks,
+# the safe direction.
 _CONFUSION = str.maketrans({
     "0": "o", "q": "o",
     "1": "i", "l": "i", "|": "i", "!": "i", "j": "i",
@@ -119,7 +119,7 @@ def _noise(findings, inv_entities):
 
 def score_image(corpus: str, threshold: float = 0.4,
                 invalid_identifiers: str = "likely",
-                ocr_backend: str = "tesseract") -> int:
+                ocr_backend: str = "paddle") -> int:
     ocr = get_ocr(ocr_backend)
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))

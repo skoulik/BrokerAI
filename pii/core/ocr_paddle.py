@@ -1,7 +1,7 @@
 """PaddleOCR adapter: image -> OcrResult (the engine-neutral interchange).
 
-Second backend behind the `pii.core.ocr.get_ocr` seam (Tesseract is the
-first). PaddleOCR is line-oriented: detection finds text-line regions
+The OCR engine behind the `pii.core.ocr.get_ocr` seam (Tesseract was the
+first backend, retired 2026-07-17). PaddleOCR is line-oriented: detection finds text-line regions
 anywhere on the page (no page-layout model), recognition returns one
 string + one confidence per region. Normalization into per-word
 OcrResult follows the 2026-07-16 review findings (record in DONE.md):
@@ -35,11 +35,15 @@ OcrResult follows the 2026-07-16 review findings (record in DONE.md):
 - `enable_mkldnn=False` avoids the paddle 3.3.x oneDNN PIR-executor
   crash on PP-OCRv5 server models (upstream bug; CPU path only, the
   flag is inert on GPU).
-- Models: PP-OCRv5 server det+rec pinned (best tier — Sergei's call:
-  if the best tier disappoints, smaller tiers won't save it).
+- Models: two tiers registered (PP-OCRv5_server, PP-OCRv6_medium);
+  default is v6_medium after the round-1 bake-off (DEFAULT_TIER below).
   Downloads land under PADDLE_PDX_CACHE_HOME, defaulted here to the
   repo-convention `models/paddlex` (same cwd-relative pattern as
   GLiNER2's `models/hf-cache`).
+- On the GPU wheel, torch and paddle cannot share a Windows process, so
+  the full pipeline drives paddle through a persistent worker subprocess
+  (pii/core/ocr_worker.py); `make_paddle_ocr` picks worker vs in-process
+  by wheel. See that module and the get_ocr seam.
 """
 
 import os
@@ -53,10 +57,13 @@ from PIL import Image
 from pii.core.ocr import Box, OcrResult, _union, assemble
 
 CACHE_DIR = "models/paddlex"
-# The two candidate tiers under comparison (Sergei, 2026-07-17): v5's
-# top tier is server; PP-OCRv6 ships no server tier, so its top is
-# medium. Selected via the backend string ("paddle:v6_medium").
-DEFAULT_TIER = "v5_server"
+# Two tiers from the bake-off (Sergei, 2026-07-17): v5's top tier is
+# server; PP-OCRv6 ships no server tier, so its top is medium. Selected
+# via the backend string ("paddle:v5_server"). Default is v6_medium — the
+# round-1 fidelity verdict (reports/2026-07-17-ocr-fidelity-*.md): ~25×
+# lower CER than Tesseract, ~6× lower than v5_server, no x-height cliff,
+# and none of v5's word-merge pathology.
+DEFAULT_TIER = "v6_medium"
 MODEL_TIERS = {
     "v5_server": ("PP-OCRv5_server_det", "PP-OCRv5_server_rec"),
     "v6_medium": ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"),
@@ -141,8 +148,10 @@ def _engine(tier: str = DEFAULT_TIER):
             raise RuntimeError(
                 "paddlepaddle-gpu and torch cannot share a process on "
                 "Windows (conflicting bundled cudnn DLLs). This process "
-                "already imported torch — use the Tesseract backend, the "
-                "CPU paddle wheel, or a torch-free process for paddle."
+                "already imported torch — run paddle through the worker "
+                "subprocess (pii/core/ocr_worker.py, which get_ocr uses on "
+                "the GPU wheel), install the CPU paddle wheel, or use a "
+                "torch-free process."
             )
         import paddle  # noqa: F401  (GPU DLLs must load first)
 
@@ -165,12 +174,32 @@ def _engine(tier: str = DEFAULT_TIER):
     )
 
 
+def make_paddle_ocr(tier: str = DEFAULT_TIER):
+    """Resolve a tier to an `(image, lang=...) -> OcrResult` callable.
+
+    On the GPU wheel, torch and paddle cannot share a process (module
+    docstring), so OCR is routed through a persistent worker subprocess —
+    the pipeline runs GLiNER2 on torch in-process, and this keeps paddle
+    out of it. On the CPU wheel, paddle coexists with torch (torch just
+    has to import first, which the pipeline already does), so OCR runs
+    in-process — no IPC, and the torch-free fidelity sweep stays fast.
+    The choice is by wheel, not by whether torch happens to be loaded yet,
+    so it never depends on call ordering."""
+    if _gpu_wheel():
+        from pii.core.ocr_worker import worker_ocr
+
+        return lambda image, lang="eng": worker_ocr(tier, image)
+    from functools import partial
+
+    return partial(ocr_image_paddle, tier=tier)
+
+
 def ocr_image_paddle(
     image: Image.Image, lang: str = "eng", tier: str = DEFAULT_TIER
 ) -> OcrResult:
     """OCR a PIL image with PaddleOCR into an OcrResult.
 
-    `lang` is accepted for call-site parity with the Tesseract adapter
+    `lang` is accepted for call-site parity with the OCR seam signature
     and ignored: PaddleOCR selects languages via its model choice, and
     the pinned models cover Latin text.
     """

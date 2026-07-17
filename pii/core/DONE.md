@@ -763,6 +763,77 @@ the move; new completed tasks append to the matching section with their records.
       PP-OCRv6 server tier, 0↔O post-processing heuristic idea recorded; Surya + local
       VLM in a future session.)*
 
+- [x] **Retire the Tesseract backend** *(2026-07-17; Sergei's decision on the round-1
+      report — Tesseract clearly inferior on every measured axis. Executed the ordered plan
+      from TODO.md, each step gated on the previous.*
+      **Step 1 — v6_medium default.** `ocr_paddle.DEFAULT_TIER` v5_server → v6_medium (the
+      report verdict). One line + docstrings.
+      **Step 2 — paddle worker-process isolation (the core of the task).** The GPU paddle
+      wheel and torch cannot share a Windows process (bundled-cudnn mutual exclusion, the
+      PaddleOCR DONE record above); with Tesseract gone, the image pipeline must run both
+      (GLiNER2 on torch + paddle for OCR), so paddle moved into a **persistent worker
+      subprocess**: `pii/core/ocr_worker.py`, spawned lazily per model tier and kept alive
+      for the run, engine loaded once. Protocol: framed PNG-in / pickled-`OcrResult`-out
+      over the child's stdio. Design decisions (full rationale in ARCHITECTURE.md "Paddle
+      worker-process isolation"): (a) **routing by wheel, not torch-load timing** —
+      `ocr_paddle.make_paddle_ocr(tier)` returns the worker callable on the GPU wheel, the
+      in-process partial on the CPU wheel; the image pipeline OCRs *before* it runs NER, so a
+      "is torch imported yet" check would wrongly pick in-process, so the decision is by
+      wheel and order-independent (CPU-wheel + torch-free fidelity sweep keep the fast direct
+      path); (b) **fd 1 claimed for the protocol, Python+C stdout redirected to stderr and
+      both fds forced binary before paddle imports** so paddle's logging can't corrupt the
+      stream; (c) **crash surfacing** — a dead child closes the pipe → short read raises →
+      client raises `RuntimeError` with the exit code (never hangs); a `READY` startup
+      handshake turns engine-load failure into a spawn-time error; a per-image exception is
+      an error frame and the worker keeps serving (one bad page ≠ dead engine); (d) **client
+      side stays torch-safe** — `ocr_worker.py` module level is stdlib-only, the paddle
+      import lives in `main()` reached only as `python -m pii.core.ocr_worker <tier>`
+      (regression-tested). The existing torch-stub trick (`ocr_paddle._stub_torch`) runs
+      inside the worker via `_engine`, keeping paddleocr's modelscope import happy.
+      **Step 3 — leak-gate parity.** `score --modality image --ocr-backend paddle:v6_medium`
+      through the worker on seeds 42 + 123 (rendered image corpora). Result: **both PASS
+      (zero critical misses)**. Baseline for comparison: Tesseract **s42 FAILED** (2 critical
+      leaks: `AU_TFN` 565 431 023 fuzzy, `PERSON` ISLA FERGUSON) and **s123 PASSED**. Paddle
+      is parity-or-better on both — strictly better on s42. The report's thesis reproduced at
+      the pipeline level: paddle's clean OCR fixed the *structure-damage* leaks, not just
+      glyphs — s42 PERSON_COMMA 12% → 100%, PERSON_REVERSED 31% → 100%, PERSON_PARTICLE 90% →
+      100%, AU_DRIVERS_LICENCE 75% → 100%. Residual non-gated per-form misses (s123
+      PERSON_COMMA 88%, PERSON_REVERSED 89%, LOCATION_SHORT, ADDRESS_BARE) are the
+      pre-existing detection-layer gaps in TODO.md, unchanged — not OCR-caused, not
+      regressions.
+      **Step 4 — degradation-tier check: WAIVED** (Sergei, 2026-07-17). The degradation
+      instrument (noise/skew/JPEG) does not exist yet and Sergei directly instructed to
+      retire Tesseract from the codebase now; the waiver is deliberate. Engine ranking under
+      degradation is deferred to bake-off round 2 (Surya/VLM), which will re-benchmark on the
+      degradation tier when it lands.
+      **Step 5 — removal.** Deleted the Tesseract adapter path from `pii/core/ocr.py`
+      (`ocr_image`, `_lines_from_tesseract`, `_ensure_tesseract`, `_TESSERACT_DEFAULT`, the
+      `shutil` import, the edge-pad workaround); `OcrResult`/`assemble`/`get_ocr` kept — they
+      were always the seam, never Tesseract-specific. `pytesseract` removed from
+      `pii/requirements.txt` (`paddleocr` added; the `paddlepaddle` wheel stays unpinned,
+      chosen per machine); it is NOT uninstalled from the env. `tesseract` removed from
+      `OCR_BACKENDS`; `get_ocr`, `strip_image`, and every `--ocr-backend` default (CLI,
+      `pii_eval score`/`ocr-report`, `score_image`) flipped to `paddle`. Docs updated:
+      `pii/README.md`, `pii/core/ARCHITECTURE.md` (new worker-isolation + retirement
+      decisions; the "Tesseract operational profile" section kept and marked HISTORICAL),
+      umbrella/cli/root doc pointers, `pii_eval/README.md`. Historical Tesseract records in
+      DONE.md and `reports/` are untouched.
+      **Env/wheel state:** unchanged from the bake-off — `paddlepaddle-gpu 3.3.1` (cu126
+      class), `paddleocr 3.7.0`, `paddlex 3.7.2`, `torch 2.13.0+cu130`, `pytesseract 0.3.13`
+      still installed but now unused by the code. No wheels installed/swapped for this task.
+      **Tests:** removed the Tesseract-specific tests (`_lines_from_tesseract`, the
+      `ocr_image` / `strip_image` Tesseract e2e); rewrote `TestGetOcr` (paddle is default,
+      `tesseract` now an unknown backend); converted the render OCR-readable test to paddle
+      (gpu-marked). New `tests/pii/core/test_ocr_worker.py`: 10 model-free tests (framing
+      round-trip, `_serve` happy/bad-image/exception-non-fatal via fake streams, client
+      happy/per-image-error/startup-failure/dead-worker via inline `python -c` children, and
+      a torch-free-import check) + one gpu+slow real-paddle-worker e2e. Dual-coverage rule
+      honored: the worker crash/isolation behaviour has both pytest coverage and the leak-gate
+      probe above. Fast suite 138 passed / 7 deselected; the gpu worker e2e passed (17 s).
+      **Open watch item:** both models hold VRAM during pipeline runs (worker paddle + parent
+      GLiNER2 on one 11 GB GPU) — fine for page renders, first OOM lever is
+      `text_det_limit_side_len`; carried into the knobs TODO.)*
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

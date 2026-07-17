@@ -26,7 +26,7 @@ or the web app; the only planned shared infrastructure is the local llama-server
 | `presidio-analyzer` ≥ 2.2.363 | The orchestrator and layer 1: recognizer registry, pattern/checksum recognizers (including the built-in AU ones), scoring, and the lemma-based context enhancer. **Not** `presidio-image-redactor` — see the orthogonality decision below. |
 | spaCy (`en_core_web_sm`) | Presidio's mandatory **NLP engine** — tokenization and lemmas that feed the context enhancer. Not a detector: `SpacyRecognizer` was retired 2026-07-15 (decision below); spaCy stays loaded solely for the NLP engine. |
 | GLiNER2 (`fastino/gliner2-privacy-filter-PII-multi`, ~1.2 GB) | Layer-2 zero-shot NER — names, addresses, DOB, person-vs-organization. Wrapped as an ordinary Presidio recognizer. |
-| Tesseract 5.x + `pytesseract` | The OCR engine behind the image path — first of the planned interchangeable backends. |
+| PaddleOCR (`paddleocr` + a `paddlepaddle` wheel) | The OCR engine behind the image path (Tesseract was the first backend, retired 2026-07-17 — decision below). GPU wheel runs in a worker subprocess (torch coexistence). |
 | Pillow | Pixel painting for image output. |
 
 ### Our modules
@@ -44,7 +44,9 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `gliner2_recognizer.py` | GLiNER2 as a Presidio recognizer; **all layer-2 tuning lives in its docstring** — read it before touching NER behaviour |
 | `mapping.py` | `PseudonymMap` — placeholder allocation, JSON persistence, rehydration |
 | `csv_mode.py` | Per-cell transaction-CSV processing |
-| `ocr.py` | OCR-engine adapter: word boxes → assembled text with char intervals recorded at assembly time |
+| `ocr.py` | OCR-engine seam + neutral interchange: word boxes → assembled text with char intervals recorded at assembly time (`get_ocr`, `OcrResult`, `assemble`) |
+| `ocr_paddle.py` | PaddleOCR adapter: line-oriented det/rec → per-word `OcrResult`; picks worker vs in-process by wheel |
+| `ocr_worker.py` | Persistent PaddleOCR worker subprocess (GPU paddle can't share a process with torch) — framed PNG-in / `OcrResult`-out |
 | `image_mode.py` | Image front/back-end: OCR text through the unchanged text pipeline, placeholders painted onto the original pixels |
 
 ### The whole picture
@@ -57,7 +59,7 @@ flowchart TB
     PDF["PDF (planned)"]
 
     PDF -. "render pages (planned)" .-> IMG
-    IMG --> OCRPY["ocr.py — Tesseract adapter<br>word boxes + char intervals<br>recorded at assembly"]
+    IMG --> OCRPY["ocr.py seam → ocr_paddle.py (PaddleOCR)<br>GPU: ocr_worker.py subprocess<br>word boxes + char intervals<br>recorded at assembly"]
     CSV --> CSVM["csv_mode.py<br>per-cell, sentinel-joined batches"]
 
     TXT --> AE
@@ -440,9 +442,9 @@ adapter (`ocr_paddle.py`) established two structural rules the seam now carries:
 - **Process rules are part of a backend's contract.** On Windows, paddlepaddle-gpu and torch
   cannot share a process (bundled-cudnn mutual exclusion; full story in the adapter docstring
   and the 2026-07-17 DONE record). GPU paddle therefore serves torch-free OCR-only processes
-  (the pii_eval fidelity sweep); the full pipeline pairs paddle with the CPU wheel until the
-  worker-subprocess task lands. The adapter installs a torch *stub* to satisfy paddleocr's
-  modelscope import chain in GPU processes.
+  (the pii_eval fidelity sweep) directly; the full pipeline (GLiNER2 on torch) reaches it
+  through the worker subprocess below. The adapter installs a torch *stub* to satisfy
+  paddleocr's modelscope import chain in GPU processes.
 - **Package inits stay lazy (PEP 562) — load-bearing.** `pii/__init__` and
   `pii/core/__init__` resolve their public names lazily so `import pii.core.ocr` never drags
   in presidio → spaCy → thinc → torch. OCR-only processes depend on this to stay torch-free;
@@ -450,7 +452,57 @@ adapter (`ocr_paddle.py`) established two structural rules the seam now carries:
 - Backend model caches follow the repo convention: `models/paddlex` (PADDLE_PDX_CACHE_HOME,
   set by the adapter), alongside GLiNER2's `models/hf-cache`.
 
-### Tesseract operational profile (2026-07-16 stack review; full harvest in DONE.md)
+### Paddle worker-process isolation (2026-07-17)
+
+The GPU paddle wheel and torch cannot share a Windows process (the cudnn mutual exclusion
+above). With Tesseract retired, the image pipeline has to run both — GLiNER2 on torch for
+detection, paddle for OCR — so paddle moves into its own interpreter: a **persistent worker
+subprocess** (`ocr_worker.py`), spawned lazily and kept alive for the run. The engine loads
+once per worker; PNG bytes go in and a pickled `OcrResult` comes back over a framed
+stdio protocol. Design decisions and their rationale:
+
+- **Routing is by wheel, not by torch-load timing.** `ocr_paddle.make_paddle_ocr(tier)`
+  returns the worker-backed callable on the GPU wheel and the in-process partial on the CPU
+  wheel. Choosing by wheel (not "is torch imported yet") makes the decision independent of
+  call ordering — the image pipeline OCRs *before* it runs NER, so a torch-presence check
+  would wrongly pick in-process and then break when GLiNER2 loads. The CPU wheel coexists
+  with torch (torch just has to import first, which the pipeline already does) and stays
+  in-process, so the torch-free fidelity sweep keeps its fast direct path.
+- **fd 1 is the protocol; paddle noise is redirected.** The worker dups stdout to a private
+  fd and points fd 1 (Python and C) at stderr *before* importing paddle, and forces both
+  protocol fds to binary on Windows — paddle's chatty logging can never corrupt the stream.
+- **Crash surfacing over hanging.** A dead child closes the pipe, so a short read raises
+  `EOFError` → the client raises a `RuntimeError` carrying the exit code. A startup handshake
+  (the child sends `READY` once its engine loads) turns an engine-load failure into an error
+  at spawn time. A per-image exception is returned as an error frame and the worker keeps
+  serving — one bad page must not kill the engine; only a real crash (segfault/OOM) ends it,
+  and that surfaces on the next call. Known limitation: a *wedged* child — alive but never
+  answering — blocks the caller indefinitely; there is deliberately no read timeout, because
+  paddle's legitimate stalls (first-call D3D12 fallback ~13 s, cold model load) make any
+  static deadline false-kill-prone. Revisit with a watchdog only if a real hang is observed.
+- **The client side stays torch-safe.** `ocr_worker.py`'s module level imports only stdlib +
+  the neutral `OcrResult`; the paddle import lives inside `main()`, reached only as
+  `python -m pii.core.ocr_worker <tier>`. So the torch-holding parent can `import
+  pii.core.ocr_worker` without tainting itself (regression-tested).
+- **Cost accepted.** Both models hold VRAM at once during pipeline runs (worker paddle +
+  parent GLiNER2 on one GPU); on the 11 GB 2080 Ti this is fine for page-sized renders but is
+  the first place to watch for OOM on very large images (`text_det_limit_side_len` is the
+  lever). Per-call IPC is a PNG encode + pipe transfer + pickle — negligible next to GPU
+  inference. `worker_ocr` replaces a worker that died between documents (fresh attempt) while
+  a mid-call death still raises.
+
+### Tesseract retired (2026-07-17)
+
+Tesseract was the first OCR backend; the round-1 fidelity bake-off retired it (Sergei's
+decision on the report — ~25× higher CER than PP-OCRv6_medium, an x-height cliff paddle does
+not have, and structure damage that was the actual identifier-leak driver). The adapter
+(`ocr_image`/`_lines_from_tesseract`), the `pytesseract` dependency, the edge-pad workaround,
+and the `tesseract` backend name are removed; `get_ocr`/`--ocr-backend` default to paddle
+(`v6_medium`). The neutral interchange (`OcrResult`/`assemble`/`get_ocr`) is unchanged — it
+was always the seam, not Tesseract-specific. Leak-gate parity confirmed before removal
+(records in DONE.md). The operational-profile section below is kept as **history**.
+
+### Tesseract operational profile (2026-07-16 stack review; full harvest in DONE.md — HISTORICAL, backend retired 2026-07-17)
 
 Pinned facts about the shipped OCR stack (Tesseract 5.4.0 UB Mannheim + pytesseract 0.3.13),
 from the docs review and empirical checks — findings are engine-specific and do NOT transfer
@@ -532,4 +584,5 @@ filter — useful framing when we define our merge algebra.
   CUDA the NER share of an eval run is ~0.7 s.
 - GLiNER2 weights download once into `models/hf-cache/` (gitignored).
 - spaCy model: `python -m spacy download en_core_web_sm`.
-- Tesseract 5.4.0 installed system-wide (winget, UB Mannheim build) + `pytesseract`.
+- OCR: `paddleocr` + a `paddlepaddle` wheel (GPU `paddlepaddle-gpu` here; the image pipeline
+  drives it via the worker subprocess). Tesseract + `pytesseract` retired 2026-07-17.

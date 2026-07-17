@@ -7,9 +7,8 @@ Front-end tasks live with their component: [../cli/TODO.md](../cli/TODO.md),
 [../gui/TODO.md](../gui/TODO.md).
 
 Grouped by theme. Suggested order on the image/PDF track (2026-07-14, amended 2026-07-17;
-fidelity sweep + bake-off round 1 done — see DONE.md and reports/): Tesseract-retirement
-steps 1–3 (v6_medium default, paddle worker isolation, leak-gate parity) → PDF mode →
-demo on the reference documents → degradation tier (retirement step 4) → bake-off round 2
+fidelity sweep + bake-off round 1 + Tesseract retirement done — see DONE.md and reports/):
+PDF mode → demo on the reference documents → degradation tier → bake-off round 2
 (Surya, maybe a local VLM — future session).
 
 ## Next up — image/PDF path
@@ -27,28 +26,6 @@ demo on the reference documents → degradation tier (retirement step 4) → bak
       encode the delivery address/customer ref — text-based detection can't see them, so
       detect and paint over barcode regions in the image pass (observed on several of the
       reference examples)
-- [ ] **Retire the Tesseract backend** (Sergei's decision 2026-07-17, on the bake-off
-      round-1 report — clearly inferior on every measured axis, not worth supporting).
-      Ordered plan, each step gated on the one before:
-      1. flip the paddle `DEFAULT_TIER` to `v6_medium` (report verdict; one line + docs);
-      2. paddle worker-process isolation — the retirement blocker: the GPU paddle wheel
-         and torch cannot share a Windows process (bundled-cudnn mutual exclusion,
-         2026-07-17 DONE record), and without Tesseract the pipeline needs paddle
-         in-process. Persistent worker subprocess behind `get_ocr` (PNG in, serialized
-         OcrResult out, engine loaded once; the torch-stub trick keeps paddleocr's
-         modelscope import happy inside the worker). Until it lands, `score --modality
-         image --ocr-backend paddle*` requires the CPU wheel;
-      3. leak-gate parity: `score --modality image --ocr-backend paddle:v6_medium` on all
-         seeds — confirm 0.2% CER translates to a passing (or better) critical gate;
-      4. degradation-tier check once that instrument exists — engines can rank
-         differently under noise/skew/JPEG; retirement executes only if paddle holds up;
-      5. removal: tesseract adapter path in `pii/core/ocr.py` (keep `OcrResult`/
-         `assemble` — they ARE the seam), pytesseract dep, edge-pad Tesseract notes,
-         `--ocr-backend` default switch, docs/ARCHITECTURE updates. Keep the Tesseract
-         operational-profile DONE/ARCHITECTURE records as history.
-      Watch item while the plan runs: **a PP-OCRv6 server tier** (none in paddlex 3.7.2 —
-      tiny/small/medium only); if released, benchmark it with the same sweep before
-      step 5 — v6_medium already dominates, a v6_server should only strengthen the case.
 - [ ] 0↔O post-processing heuristic (idea, Sergei 2026-07-17): nearly all of
       PP-OCRv6_medium's residual digit risk is the single 0↔O/o confusion class (909 of
       its top confusions; digit→digit subs at 0.01/10k chars). A context-aware
@@ -62,22 +39,25 @@ demo on the reference documents → degradation tier (retirement step 4) → bak
       `0->@` (the top pair, Consolas slashed zero), `J->3`, `1->2`, `4->8`, `W->H`; decide
       per-pair whether to widen the squash classes (over-merging is recall-safe — it can
       only over-report leaks). Re-run the image-tier gate after.
-- [ ] OCR engine choice — *decide later:* Tesseract (current) vs the two candidate
-      evaluations below vs a local VLM (e.g. Qwen-VL class) doing OCR+PII detection in one
-      pass. Decide on benchmark numbers from real bank statements/scans (needs the image
+- [ ] OCR engine choice — *decide later:* PaddleOCR (current, v6_medium default) vs the
+      candidate evaluations below vs a local VLM (e.g. Qwen-VL class) doing OCR+PII detection
+      in one pass. Decide on benchmark numbers from real bank statements/scans (needs the image
       eval tier for ground truth). The engine seam is the parallel-lists word-box dict in
       `pii/core/ocr.py` (each backend is an adapter normalizing into it); the VLM is the
       exception that doesn't fit the OCR-then-analyze frame — see ARCHITECTURE.md.
-- [ ] Evaluate PaddleOCR — **adapter, review, and clean-render bake-off DONE 2026-07-17**
+- [ ] Watch for **a PP-OCRv6 server tier** (none in paddlex 3.7.2 — tiny/small/medium only);
+      if released, benchmark it with the ocr-report sweep against v6_medium — v6_medium
+      already dominates, a v6_server should only strengthen it. Add it to `MODEL_TIERS`.
+- [ ] Evaluate PaddleOCR knobs — **adapter, review, and clean-render bake-off DONE 2026-07-17**
       (DONE records + reports/2026-07-17-ocr-fidelity-tesseract-vs-paddleocr.md; verdict:
-      v6_medium dominates, Tesseract retirement planned above). Remaining here: knobs
+      v6_medium dominates, Tesseract retired). Remaining here: knobs
       tuning round (det thresholds `text_det_thresh`/`text_det_box_thresh`/
       `text_det_unclip_ratio` — the v5 merge lever, moot if v6 stays default;
       `text_det_limit_side_len` — also the VRAM cap; `text_rec_score_thresh`;
       `use_textline_orientation` for skewed scans) against the fidelity metric once the
       degradation tier exists.
 - [ ] Evaluate Surya and docTR (same adapter shape, one bake-off pass): benchmark against
-      the Tesseract baseline as above; both are GPU-first, which fits our setup. Check
+      the paddle baseline as above; both are GPU-first, which fits our setup. Check
       license fit before adopting (docTR is Apache-2.0; Surya's model weights carry a
       revenue-conditional commercial-use clause — verify current terms).
 - [ ] OCR preprocessing knobs: opt-in preprocessing chain for low-quality scans (bilateral

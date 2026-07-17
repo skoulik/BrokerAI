@@ -67,5 +67,5 @@ Fully documented in its own directory (moved out of this file 2026-07-14):
 ## Dependency/runtime notes
 
 - The `pii/` tool keeps its own `requirements.txt`; repo-wide `pyproject.toml` + uv is a
-  Phase 2 item. PII-specific runtime notes (CUDA torch, model caches, Tesseract) live in
+  Phase 2 item. PII-specific runtime notes (CUDA torch, model caches, PaddleOCR) live in
   [pii/ARCHITECTURE.md](pii/ARCHITECTURE.md).

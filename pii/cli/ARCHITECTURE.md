@@ -29,7 +29,7 @@ The CLI is thin glue over the core public API:
   already takes a `strip_entities` set; the CLI only assembles it.
 - Dispatches by mode to the core entry points: `pipeline.strip` / `pipeline.analyze` for text,
   `pii.core.csv_mode.strip_csv` for `--csv`, `pii.core.image_mode.strip_image` for `--image`
-  (imported lazily so the image stack — Pillow/pytesseract — loads only when needed).
+  (imported lazily so the image stack — Pillow/PaddleOCR — loads only when needed).
 - `PseudonymMap` is loaded from `--map`, extended, and saved by the CLI; `rehydrate` is a pure
   map operation with no pipeline.
 

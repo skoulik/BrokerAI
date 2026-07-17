@@ -1,22 +1,15 @@
-"""Image stripping: painting, placeholder consistency, OCR round-trip.
+"""Image stripping: painting and placeholder consistency.
 
-Painting tests run on constructed OcrResults (no Tesseract); the
-end-to-end test needs the system binary + arial.ttf and self-skips.
-"""
+Painting tests run on constructed OcrResults (no OCR engine); real-engine
+OCR round-trips live in the paddle worker tests (test_ocr_worker.py)."""
 
-from pathlib import Path
-
-import pytest
 from PIL import Image, ImageDraw
 
-from pii.core.image_mode import _grow, strip_from_ocr, strip_image
+from pii.core.image_mode import _grow, strip_from_ocr
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box, assemble
 
 RED = (255, 0, 0)
-
-_ARIAL = Path(r"C:\Windows\Fonts\arial.ttf")
-_TESSERACT = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
 
 def _colors(image, box):
@@ -79,29 +72,3 @@ def test_grow_clamps_to_image_bounds():
     assert grown == Box(left=0, top=0, width=12, height=12)
     grown = _grow(Box(95, 45, 5, 5), 2, img)
     assert grown == Box(left=93, top=43, width=7, height=7)
-
-
-@pytest.mark.skipif(
-    not (_TESSERACT.exists() and _ARIAL.exists()),
-    reason="needs system Tesseract and arial.ttf",
-)
-def test_strip_image_end_to_end_tfn_unreadable(pipeline):
-    from PIL import ImageFont
-
-    from pii.core.ocr import ocr_image
-
-    font = ImageFont.truetype(str(_ARIAL), 32)
-    img = Image.new("RGB", (700, 120), "white")
-    ImageDraw.Draw(img).text(
-        (40, 40), "TFN: 123 456 782", font=font, fill="black"
-    )
-
-    pmap = PseudonymMap()
-    result = strip_image(img, pipeline, pmap)
-
-    assert [r.entity_type for r in result.spans] == ["AU_TFN"]
-    assert "123 456 782" in result.ocr.text
-    # The redacted image no longer OCRs to the TFN digits.
-    reread = ocr_image(result.image).text
-    assert "456" not in reread
-    assert "782" not in reread

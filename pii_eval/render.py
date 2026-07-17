@@ -10,7 +10,7 @@ renders later; the reportlab statement templates are a separate, second
 *layout* source feeding the same machinery.
 
 Font variety (2026-07-16): fonts are drawn per document from a seeded RNG
-so Tesseract sees more than one glyph profile. Fixed-column documents
+so the OCR engine sees more than one glyph profile. Fixed-column documents
 (legacy statements, rendered CSV tables) only stay faithful in monospace —
 their layout IS the whitespace — so they draw from the monospace pool;
 prose-shaped loan documents draw from the full pool (a proportional font
@@ -39,7 +39,7 @@ PROPORTIONAL_FONTS = [
     "arial.ttf", "calibri.ttf", "times.ttf",
     "verdana.ttf", "segoeui.ttf", "georgia.ttf",
 ]
-FONT_SIZES = [20, 22, 24, 26]  # px; Tesseract degrades below ~20 px
+FONT_SIZES = [20, 22, 24, 26]  # px; a readable range for the image tier
 
 _PAD = 48  # page margin, px
 _LINE_SPACING = 0.35  # extra leading as a fraction of the font's line height

@@ -83,11 +83,12 @@ def main(argv=None) -> int:
              "format follows the file extension)",
     )
     p_strip.add_argument(
-        "--ocr-backend", choices=list(OCR_BACKENDS), default="tesseract",
-        help="OCR engine for --image mode (default: tesseract; paddle "
-             "variants name a model tier, downloaded to models/paddlex "
-             "on first use — NOTE: paddle needs the CPU wheel here, the "
-             "GPU wheel cannot share a process with the NER model)",
+        "--ocr-backend", choices=list(OCR_BACKENDS), default="paddle",
+        help="OCR engine for --image mode (PaddleOCR; default paddle = the "
+             "v6_medium tier). Variants name a model tier, downloaded to "
+             "models/paddlex on first use. On the GPU paddle wheel the "
+             "engine runs in a worker subprocess (it cannot share a process "
+             "with the NER model); the CPU wheel runs it in-process.",
     )
     p_strip.add_argument(
         "--columns",
