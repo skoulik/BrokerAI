@@ -18,6 +18,7 @@ backend and was retired 2026-07-17 after the fidelity bake-off (records in
 DONE.md); its operational profile survives there as history.
 """
 
+import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -26,8 +27,9 @@ from PIL import Image
 
 # The engine seam: every backend is an image -> OcrResult callable
 # normalizing into the interchange below (ARCHITECTURE.md). The paddle
-# entries select a model tier ("paddle" = the default tier).
-OCR_BACKENDS = ("paddle", "paddle:v5_server", "paddle:v6_medium")
+# entries select a model tier ("paddle" = the default tier); "surya" is
+# the bake-off round-2 candidate (line detection + per-line VLM OCR).
+OCR_BACKENDS = ("paddle", "paddle:v5_server", "paddle:v6_medium", "surya")
 
 
 def get_ocr(backend: str = "paddle"):
@@ -40,6 +42,10 @@ def get_ocr(backend: str = "paddle"):
         if tier not in MODEL_TIERS:
             raise ValueError(f"unknown paddle model tier: {tier!r}")
         return make_paddle_ocr(tier)
+    if backend == "surya":
+        from pii.core.ocr_surya import ocr_image_surya
+
+        return ocr_image_surya
     raise ValueError(f"unknown OCR backend: {backend!r}")
 
 
@@ -129,6 +135,69 @@ def _union(boxes: list[Box]) -> Box:
         width=max(b.right for b in boxes) - left,
         height=max(b.bottom for b in boxes) - top,
     )
+
+
+# --- Engine-neutral normalization helpers (moved here from ocr_paddle.py
+# 2026-07-17 when the Surya adapter arrived: every line-oriented engine
+# needs the same line->word machinery). ---
+
+
+def _to_box(quad) -> Box:
+    """Axis-aligned Box from either [x1, y1, x2, y2] or a 4-point poly."""
+    flat = [list(p) for p in quad] if hasattr(quad[0], "__len__") else None
+    if flat:
+        xs = [int(p[0]) for p in flat]
+        ys = [int(p[1]) for p in flat]
+    else:
+        xs = [int(quad[0]), int(quad[2])]
+        ys = [int(quad[1]), int(quad[3])]
+    left, top = min(xs), min(ys)
+    return Box(
+        left=left,
+        top=top,
+        width=max(max(xs) - left, 1),
+        height=max(max(ys) - top, 1),
+    )
+
+
+def _interpolate(text: str, box: Box):
+    """Fallback word boxes: split the line box proportionally by char
+    position. Approximate for proportional fonts; the paint layer's
+    per-line box union and growth margin absorb the error."""
+    scale = box.width / max(len(text), 1)
+    out = []
+    for m in re.finditer(r"\S+", text):
+        left = box.left + round(m.start() * scale)
+        right = box.left + round(m.end() * scale)
+        out.append(
+            (m.group(),
+             Box(left, box.top, max(right - left, 1), box.height))
+        )
+    return out
+
+
+def _rows(regions):
+    """Band regions into visual rows by y-center; one assembled line per
+    row, words ordered left-to-right across the row's regions."""
+    regions = sorted(regions, key=lambda r: r[0].top + r[0].height / 2)
+    rows = []
+    centers: list[float] = []
+    heights: list[float] = []
+    for box, words in regions:
+        c = box.top + box.height / 2
+        if rows and abs(c - centers[-1]) < 0.5 * max(
+            box.height, heights[-1], 1
+        ):
+            rows[-1].extend(words)
+            centers[-1] += (c - centers[-1]) / 2
+            heights[-1] = max(heights[-1], float(box.height))
+        else:
+            rows.append(list(words))
+            centers.append(c)
+            heights.append(float(box.height))
+    for row in rows:
+        row.sort(key=lambda item: item[1].left)
+    return rows
 
 
 def _background_color(image: Image.Image):

@@ -763,6 +763,30 @@ the move; new completed tasks append to the matching section with their records.
       PP-OCRv6 server tier, 0↔O post-processing heuristic idea recorded; Surya + local
       VLM in a future session.)*
 
+- [x] **OCR bake-off round 2: Surya 2 — evaluated and retired the same day**
+      *(2026-07-17; full findings in
+      [reports/2026-07-17-ocr-bakeoff-round2-surya.md](reports/2026-07-17-ocr-bakeoff-round2-surya.md);
+      Sergei's decision on the numbers: not worth keeping except as history — the adapter
+      was committed working, then removed in the immediately following commit, so a
+      revert restores it whole. Sequence: deep source/docs/license review of surya-ocr
+      0.21.2 → env phase (transformers 5.6.2→5.14.1 with GLiNER2 re-gate green, pillow
+      12.3→10.4 with corpus re-render + paddle-baseline re-take: s42+s123 PASS) → adapter
+      (`ocr_surya.py`: detection lines → whitespace-gap segment splitting → per-segment
+      VLM OCR via llama-server → HTML flatten with pipe-strip + Unicode-digit folding →
+      interpolation; the line→word helpers `_to_box`/`_interpolate`/`_rows` moved from
+      ocr_paddle.py to ocr.py as neutral seam machinery and STAY there) → s42 leak gate.
+      Verdict drivers: 6→3→5 critical leaks across three temp-0 runs (llama.cpp parallel
+      batching makes greedy decode non-reproducible — disqualifying for a gate by
+      itself), fabrication/loops from vision-token starvation (fixed by
+      `--image-min-tokens 1024` at ~10× prefill cost → >10 min/corpus vs paddle's ~2),
+      cross-script digit homoglyphs (U+06F5 for '5' on a clean render), residual digit
+      shattering/omission in dense rows. Levers untried and revisit conditions are in the
+      report. Also retired the docTR candidate without evaluation (Sergei: no expected
+      gains; Apache-2.0 fallback if licensing ever matters). The one-pass-VLM TODO item
+      inherits the operational lessons (vision-token floor = correctness knob,
+      homoglyph folding, determinism requirements, llama-server attach/cleanup
+      patterns).)*
+
 - [x] **Retire the Tesseract backend** *(2026-07-17; Sergei's decision on the round-1
       report — Tesseract clearly inferior on every measured axis. Executed the ordered plan
       from TODO.md, each step gated on the previous.*

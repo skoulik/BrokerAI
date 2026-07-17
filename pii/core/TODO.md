@@ -7,9 +7,10 @@ Front-end tasks live with their component: [../cli/TODO.md](../cli/TODO.md),
 [../gui/TODO.md](../gui/TODO.md).
 
 Grouped by theme. Suggested order on the image/PDF track (2026-07-14, amended 2026-07-17;
-fidelity sweep + bake-off round 1 + Tesseract retirement done — see DONE.md and reports/):
-PDF mode → demo on the reference documents → degradation tier → bake-off round 2
-(Surya, maybe a local VLM — future session).
+fidelity sweep + bake-off rounds 1 AND 2 + Tesseract retirement done — see DONE.md and
+reports/; round 2 evaluated and retired Surya 2 same-day, docTR dropped unevaluated):
+PDF mode → demo on the reference documents → degradation tier → one-pass VLM
+experiment (future session; owns the next engine-shaped decision).
 
 ## Next up — image/PDF path
 
@@ -39,11 +40,11 @@ PDF mode → demo on the reference documents → degradation tier → bake-off r
       `0->@` (the top pair, Consolas slashed zero), `J->3`, `1->2`, `4->8`, `W->H`; decide
       per-pair whether to widen the squash classes (over-merging is recall-safe — it can
       only over-report leaks). Re-run the image-tier gate after.
-- [ ] OCR engine choice — *decide later:* PaddleOCR (current, v6_medium default) vs the
-      candidate evaluations below vs the one-pass VLM pipeline below. Decide on benchmark
-      numbers from real bank statements/scans (needs the image eval tier for ground truth).
-      The engine seam is the parallel-lists word-box dict in `pii/core/ocr.py` (each
-      backend is an adapter normalizing into it).
+- [ ] OCR engine choice — *decide later:* PaddleOCR (current, v6_medium default; the
+      last classic-OCR candidate standing after rounds 1–2) vs the one-pass VLM pipeline
+      below. Decide on benchmark numbers from real bank statements/scans (needs the image
+      eval tier for ground truth). The engine seam is the parallel-lists word-box dict in
+      `pii/core/ocr.py` (each backend is an adapter normalizing into it).
 - [ ] **One-pass VLM pipeline** (reframed 2026-07-17, Sergei): prompt a general
       grounding-capable VLM (Qwen-VL class; they emit absolute bboxes) to detect sensitive
       identifiers directly from the page image — VLM→inpaint replacing OCR→GLiNER→inpaint.
@@ -70,30 +71,6 @@ PDF mode → demo on the reference documents → degradation tier → bake-off r
       `text_det_limit_side_len` — also the VRAM cap; `text_rec_score_thresh`;
       `use_textline_orientation` for skewed scans) against the fidelity metric once the
       degradation tier exists.
-- [ ] **Evaluate Surya 2** (bake-off round 2; deep review done 2026-07-17, plan agreed with
-      Sergei — implementation next). Surya v2 (0.20+) is a 650M VLM served out-of-process
-      via llama-server (F16 GGUF, no quantization loss) or vllm; v1's native word boxes are
-      gone, so the adapter composes: in-process torch line-*detection* model → per-line
-      block-mode VLM recognition (their intended "merge with text-line detection" path) →
-      HTML→text flatten → the paddle-style proportional line→word interpolation →
-      `assemble`. Key facts: license accepted for now (weights OpenRAIL-M, <$5M caps +
-      non-compete; code Apache-2.0); needs transformers ≥5.12 (GLiNER2 re-gate required)
-      and downgrades pillow to 10.4 (re-render corpora + re-take the paddle baseline
-      after — Sergei chose consistency over --no-deps); backend must be forced `llamacpp`
-      on Windows (autodetect picks vllm on any NVIDIA box; vllm has no Windows support and
-      its bf16 default won't run on Turing anyway); caches per repo convention
-      (`HF_HUB_CACHE`→models/hf-cache for GGUFs — already downloaded, `MODEL_CACHE_DIR`→
-      models/surya for detection; surya reads env at import time, set before import).
-      Smoke-tested 2026-07-17: llama-server b9968 Vulkan, single-line crops → clean
-      `<p>text</p>`, all PII digits exact; 2080 Ti ~0.5 s/line warm (260 tok/s decode) vs
-      RX 9070 XT pathologically slow (12 tok/s, RDNA4 Vulkan immaturity) → NVIDIA
-      placement, per Sergei's speed rule; Mac M1 Max llama-server over LAN is the third
-      option (attach via `SURYA_INFERENCE_URL`). Watch items: per-line VLM cost at page
-      scale (~3–4 s/page projected at 8 slots — measure), VLM silent-rewrite risk
-      (fidelity sweep measures it), the stripped nested `data-bbox` in full-page mode as
-      a later finer-geometry experiment. docTR dropped from the bake-off (Sergei
-      2026-07-17: no expected gains; its trivially-adapted native word boxes and
-      Apache-2.0 weights remain the fallback if Surya's license ever bites).
 - [ ] OCR preprocessing knobs: opt-in preprocessing chain for low-quality scans (bilateral
       filter / contrast stretch / adaptive threshold / rescale — see the harvested
       presidio-image-redactor chain in DONE.md). Preprocessed image feeds OCR only; painting

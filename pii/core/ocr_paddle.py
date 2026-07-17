@@ -47,14 +47,21 @@ OcrResult follows the 2026-07-16 review findings (record in DONE.md):
 """
 
 import os
-import re
 import sys
 from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image
 
-from pii.core.ocr import Box, OcrResult, _union, assemble
+from pii.core.ocr import (
+    Box,
+    OcrResult,
+    _interpolate,
+    _rows,
+    _to_box,
+    _union,
+    assemble,
+)
 
 CACHE_DIR = "models/paddlex"
 # Two tiers from the bake-off (Sergei, 2026-07-17): v5's top tier is
@@ -238,24 +245,6 @@ def result_to_ocr(result: dict) -> OcrResult:
     return assemble(_rows(regions))
 
 
-def _to_box(quad) -> Box:
-    """Axis-aligned Box from either [x1, y1, x2, y2] or a 4-point poly."""
-    flat = [list(p) for p in quad] if hasattr(quad[0], "__len__") else None
-    if flat:
-        xs = [int(p[0]) for p in flat]
-        ys = [int(p[1]) for p in flat]
-    else:
-        xs = [int(quad[0]), int(quad[2])]
-        ys = [int(quad[1]), int(quad[3])]
-    left, top = min(xs), min(ys)
-    return Box(
-        left=left,
-        top=top,
-        width=max(max(xs) - left, 1),
-        height=max(max(ys) - top, 1),
-    )
-
-
 def _region_words(text, line_box, frags):
     """(word, Box) list for one recognized line; see module docstring."""
     words = []
@@ -281,43 +270,3 @@ def _region_words(text, line_box, frags):
                 for word, s, e in words
             ]
     return _interpolate(text, line_box)
-
-
-def _interpolate(text: str, box: Box):
-    """Fallback word boxes: split the line box proportionally by char
-    position. Approximate for proportional fonts; the paint layer's
-    per-line box union and growth margin absorb the error."""
-    scale = box.width / max(len(text), 1)
-    out = []
-    for m in re.finditer(r"\S+", text):
-        left = box.left + round(m.start() * scale)
-        right = box.left + round(m.end() * scale)
-        out.append(
-            (m.group(),
-             Box(left, box.top, max(right - left, 1), box.height))
-        )
-    return out
-
-
-def _rows(regions):
-    """Band regions into visual rows by y-center; one assembled line per
-    row, words ordered left-to-right across the row's regions."""
-    regions = sorted(regions, key=lambda r: r[0].top + r[0].height / 2)
-    rows = []
-    centers: list[float] = []
-    heights: list[float] = []
-    for box, words in regions:
-        c = box.top + box.height / 2
-        if rows and abs(c - centers[-1]) < 0.5 * max(
-            box.height, heights[-1], 1
-        ):
-            rows[-1].extend(words)
-            centers[-1] += (c - centers[-1]) / 2
-            heights[-1] = max(heights[-1], float(box.height))
-        else:
-            rows.append(list(words))
-            centers.append(c)
-            heights.append(float(box.height))
-    for row in rows:
-        row.sort(key=lambda item: item[1].left)
-    return rows
