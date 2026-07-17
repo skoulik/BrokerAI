@@ -742,6 +742,27 @@ the move; new completed tasks append to the matching section with their records.
       OOM lever is `text_det_limit_side_len` (already on the knobs list). Full three-seed
       sweeps for both tiers + leak-gate comparison tracked in the PaddleOCR TODO item.)*
 
+- [x] OCR bake-off round 1: Tesseract vs PaddleOCR (fidelity sweeps, clean renders)
+      *(2026-07-17; full report with all tables in
+      [reports/2026-07-17-ocr-fidelity-tesseract-vs-paddleocr.md](reports/2026-07-17-ocr-fidelity-tesseract-vs-paddleocr.md);
+      1,980 paired cells per backend, seeds 42/7/123. Distilled: **PP-OCRv6_medium wins
+      every axis** — CER 0.2% vs Tesseract 3.5–6.9% (~25×) and v5_server 1.2–1.4% (~6×);
+      the Tesseract x-height cliff does not exist for it (0.6% CER at x-height 4–5 px
+      where Tesseract loses 45–96%), so the "below ~150 dpi equivalent is unusable" rule
+      is Tesseract-specific; structure damage — the class that kills identifiers — nearly
+      vanishes (5 lost lines vs Tesseract's 1,649 + 21,960 block-fragmented). Notable:
+      v5_server has a word-MERGE pathology (68/10k chars, 2.6× Tesseract — its prose WER
+      is worse than Tesseract's despite 2.5× better CER); v6 is 20× cleaner (3.3/10k).
+      v6's residual digit risk is almost entirely the 0↔O/o confusion class. Paddle conf
+      is NO error filter (99–100% of erroneous words at conf ≥ 80, vs Tesseract's 41%) —
+      the never-threshold-on-conf ban now spans both engines (~70k errors of evidence).
+      Cost: paddle GPU ≈ Tesseract-CPU speed per page (2.1 vs 1.4 s/cell), hard GPU
+      dependency + torch process rules. Per-seed CER flat across corpora — not seed luck.
+      Caveats: clean renders, no degradation yet. Decisions (Sergei): retire Tesseract
+      (plan in TODO.md), v6_medium becomes the paddle default tier, watch for a future
+      PP-OCRv6 server tier, 0↔O post-processing heuristic idea recorded; Surya + local
+      VLM in a future session.)*
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation
