@@ -5,8 +5,8 @@ sensitive/
 pii_map.json
 *.pii-map.json
 
-# Downloaded model weights
-models/hf-cache/
+# Downloaded models weights
+models/
 
 # Generated synthetic eval corpora (regenerable: python -m pii_eval generate)
 pii_eval/corpora/
@@ -22,4 +22,3 @@ test-results/
 .pytest_cache/
 
 db/
-models/
