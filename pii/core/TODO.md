@@ -40,11 +40,25 @@ PDF mode → demo on the reference documents → degradation tier → bake-off r
       per-pair whether to widen the squash classes (over-merging is recall-safe — it can
       only over-report leaks). Re-run the image-tier gate after.
 - [ ] OCR engine choice — *decide later:* PaddleOCR (current, v6_medium default) vs the
-      candidate evaluations below vs a local VLM (e.g. Qwen-VL class) doing OCR+PII detection
-      in one pass. Decide on benchmark numbers from real bank statements/scans (needs the image
-      eval tier for ground truth). The engine seam is the parallel-lists word-box dict in
-      `pii/core/ocr.py` (each backend is an adapter normalizing into it); the VLM is the
-      exception that doesn't fit the OCR-then-analyze frame — see ARCHITECTURE.md.
+      candidate evaluations below vs the one-pass VLM pipeline below. Decide on benchmark
+      numbers from real bank statements/scans (needs the image eval tier for ground truth).
+      The engine seam is the parallel-lists word-box dict in `pii/core/ocr.py` (each
+      backend is an adapter normalizing into it).
+- [ ] **One-pass VLM pipeline** (reframed 2026-07-17, Sergei): prompt a general
+      grounding-capable VLM (Qwen-VL class; they emit absolute bboxes) to detect sensitive
+      identifiers directly from the page image — VLM→inpaint replacing OCR→GLiNER→inpaint.
+      Not an OCR adapter — an *alternative pipeline* joining at the merged-spans level
+      (ARCHITECTURE.md). **GLiNER2 retirement is a named possible outcome**, decided the
+      Tesseract way: score {layer1+VLM} vs {layer1+GLiNER2} vs their union on the leak
+      gate — the image scorer re-OCRs output pixels, so it gates this pipeline unchanged.
+      Expected intermediate: hybrid — VLM detects, layer-1 checksums cross-check its
+      transcriptions (silent omission is the VLM's characteristic failure; box imprecision
+      on small dense text = partial-exposure leaks; transcription errors fork pseudonym
+      identity — all three are the things to measure). Layer-1 checksum recognizers stay
+      regardless. Infra: reuses the llama-server serving/attach pattern from the Surya
+      adapter; model sizes 8B+ want the Mac M1 Max (64 GB unified, up to ~48 GB usable as
+      VRAM — Sergei 2026-07-17). Absorbs the layer-3 audit-pass question when picked up
+      (a one-pass detector and an audit pass are the same model wearing different prompts).
 - [ ] Watch for **a PP-OCRv6 server tier** (none in paddlex 3.7.2 — tiny/small/medium only);
       if released, benchmark it with the ocr-report sweep against v6_medium — v6_medium
       already dominates, a v6_server should only strengthen it. Add it to `MODEL_TIERS`.
@@ -56,10 +70,30 @@ PDF mode → demo on the reference documents → degradation tier → bake-off r
       `text_det_limit_side_len` — also the VRAM cap; `text_rec_score_thresh`;
       `use_textline_orientation` for skewed scans) against the fidelity metric once the
       degradation tier exists.
-- [ ] Evaluate Surya and docTR (same adapter shape, one bake-off pass): benchmark against
-      the paddle baseline as above; both are GPU-first, which fits our setup. Check
-      license fit before adopting (docTR is Apache-2.0; Surya's model weights carry a
-      revenue-conditional commercial-use clause — verify current terms).
+- [ ] **Evaluate Surya 2** (bake-off round 2; deep review done 2026-07-17, plan agreed with
+      Sergei — implementation next). Surya v2 (0.20+) is a 650M VLM served out-of-process
+      via llama-server (F16 GGUF, no quantization loss) or vllm; v1's native word boxes are
+      gone, so the adapter composes: in-process torch line-*detection* model → per-line
+      block-mode VLM recognition (their intended "merge with text-line detection" path) →
+      HTML→text flatten → the paddle-style proportional line→word interpolation →
+      `assemble`. Key facts: license accepted for now (weights OpenRAIL-M, <$5M caps +
+      non-compete; code Apache-2.0); needs transformers ≥5.12 (GLiNER2 re-gate required)
+      and downgrades pillow to 10.4 (re-render corpora + re-take the paddle baseline
+      after — Sergei chose consistency over --no-deps); backend must be forced `llamacpp`
+      on Windows (autodetect picks vllm on any NVIDIA box; vllm has no Windows support and
+      its bf16 default won't run on Turing anyway); caches per repo convention
+      (`HF_HUB_CACHE`→models/hf-cache for GGUFs — already downloaded, `MODEL_CACHE_DIR`→
+      models/surya for detection; surya reads env at import time, set before import).
+      Smoke-tested 2026-07-17: llama-server b9968 Vulkan, single-line crops → clean
+      `<p>text</p>`, all PII digits exact; 2080 Ti ~0.5 s/line warm (260 tok/s decode) vs
+      RX 9070 XT pathologically slow (12 tok/s, RDNA4 Vulkan immaturity) → NVIDIA
+      placement, per Sergei's speed rule; Mac M1 Max llama-server over LAN is the third
+      option (attach via `SURYA_INFERENCE_URL`). Watch items: per-line VLM cost at page
+      scale (~3–4 s/page projected at 8 slots — measure), VLM silent-rewrite risk
+      (fidelity sweep measures it), the stripped nested `data-bbox` in full-page mode as
+      a later finer-geometry experiment. docTR dropped from the bake-off (Sergei
+      2026-07-17: no expected gains; its trivially-adapted native word boxes and
+      Apache-2.0 weights remain the fallback if Surya's license ever bites).
 - [ ] OCR preprocessing knobs: opt-in preprocessing chain for low-quality scans (bilateral
       filter / contrast stretch / adaptive threshold / rescale — see the harvested
       presidio-image-redactor chain in DONE.md). Preprocessed image feeds OCR only; painting
