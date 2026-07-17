@@ -502,6 +502,22 @@ and the `tesseract` backend name are removed; `get_ocr`/`--ocr-backend` default 
 was always the seam, not Tesseract-specific. Leak-gate parity confirmed before removal
 (records in DONE.md). The operational-profile section below is kept as **history**.
 
+### Surya 2 evaluated and retired the same day (2026-07-17)
+
+Bake-off round 2 built a complete `surya` backend (detection lines → gap-split segments →
+per-segment VLM OCR through llama-server → digit-homoglyph-folding flatten →
+interpolation) and retired it on the s42 leak-gate numbers: 6/3/5 critical leaks across
+three temperature-0 runs (llama.cpp parallel batching makes greedy decode
+non-reproducible — disqualifying for a gate on its own), fabrication under vision-token
+starvation (`--image-min-tokens 1024` fixes it at ~10× prefill cost, >10 min/corpus vs
+paddle's ~2), cross-script digit homoglyphs, and residual digit damage in dense rows.
+The working adapter is one revert away in git history; full findings, untried levers, and
+revisit conditions in
+[reports/2026-07-17-ocr-bakeoff-round2-surya.md](reports/2026-07-17-ocr-bakeoff-round2-surya.md).
+Two things it left behind: the neutral line→word helpers (`_to_box`/`_interpolate`/`_rows`)
+now live in `ocr.py`, and the operational VLM lessons transfer to the one-pass-VLM TODO
+item. docTR was dropped from the bake-off unevaluated (Sergei: no expected gains).
+
 ### Tesseract operational profile (2026-07-16 stack review; full harvest in DONE.md — HISTORICAL, backend retired 2026-07-17)
 
 Pinned facts about the shipped OCR stack (Tesseract 5.4.0 UB Mannheim + pytesseract 0.3.13),

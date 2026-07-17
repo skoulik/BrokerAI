@@ -27,9 +27,10 @@ from PIL import Image
 
 # The engine seam: every backend is an image -> OcrResult callable
 # normalizing into the interchange below (ARCHITECTURE.md). The paddle
-# entries select a model tier ("paddle" = the default tier); "surya" is
-# the bake-off round-2 candidate (line detection + per-line VLM OCR).
-OCR_BACKENDS = ("paddle", "paddle:v5_server", "paddle:v6_medium", "surya")
+# entries select a model tier ("paddle" = the default tier). Retired
+# backends live in git history: tesseract (2026-07-17), surya
+# (2026-07-17, one revert away — see reports/ round-2 bake-off).
+OCR_BACKENDS = ("paddle", "paddle:v5_server", "paddle:v6_medium")
 
 
 def get_ocr(backend: str = "paddle"):
@@ -42,10 +43,6 @@ def get_ocr(backend: str = "paddle"):
         if tier not in MODEL_TIERS:
             raise ValueError(f"unknown paddle model tier: {tier!r}")
         return make_paddle_ocr(tier)
-    if backend == "surya":
-        from pii.core.ocr_surya import ocr_image_surya
-
-        return ocr_image_surya
     raise ValueError(f"unknown OCR backend: {backend!r}")
 
 
