@@ -5,7 +5,7 @@ OCR round-trips live in the paddle worker tests (test_ocr_worker.py)."""
 
 from PIL import Image, ImageDraw
 
-from pii.core.image_mode import _grow, strip_from_ocr
+from pii.core.image_mode import Segment, _grow, paint_segments, strip_from_ocr
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box, assemble
 
@@ -64,6 +64,34 @@ def test_strip_from_ocr_consistent_placeholder_across_lines(pipeline):
     assert len(pmap) == 1  # one placeholder, both occurrences
     for b in boxes:
         assert RED not in _colors(result.image, b)
+
+
+def test_paint_segments_paints_labels_without_detection():
+    boxes = [Box(20, 10, 100, 14), Box(20, 40, 100, 14)]
+    img = Image.new("RGB", (200, 70), "white")
+    for b in boxes:
+        ImageDraw.Draw(img).rectangle((b.left, b.top, b.right, b.bottom), fill=RED)
+    out = paint_segments(
+        img,
+        [Segment("PERSON_1", [boxes[0]]), Segment("ACCOUNT_1", [boxes[1]])],
+    )
+    for b in boxes:
+        colors = _colors(out, b)
+        assert RED not in colors  # covered
+        assert (0, 0, 0) in colors  # label ink drawn
+    assert RED in _colors(img, boxes[0])  # input not mutated
+
+
+def test_paint_segments_frame_style_keeps_content_readable():
+    box = Box(40, 30, 100, 14)
+    img = Image.new("RGB", (200, 70), "white")
+    ImageDraw.Draw(img).rectangle((box.left, box.top, box.right, box.bottom), fill=RED)
+    out = paint_segments(img, [Segment("PERSON_1", [box])], style="frame")
+    inner = Box(box.left + 6, box.top + 6, box.width - 12, box.height - 12)
+    assert RED in _colors(out, inner)  # content under the frame survives
+    from pii.core.image_mode import _FRAME_COLOR
+
+    assert _FRAME_COLOR in _colors(out, _grow(box, 2, out))  # outline drawn
 
 
 def test_grow_clamps_to_image_bounds():

@@ -65,6 +65,27 @@ def main() -> int:
                      help="OCR engine to sweep (default: paddle); the "
                           "default report file is suffixed per backend")
 
+    imp = sub.add_parser(
+        "import-real",
+        help="render a folder of real PDFs into an image corpus "
+             "(hand-authored truth.json)",
+    )
+    imp.add_argument("-s", "--src", required=True,
+                     help="folder of source PDFs (e.g. sensitive/statements/1)")
+    imp.add_argument("-o", "--out", default=None,
+                     help=f"output folder (default: {CORPUS_ROOT}/real/"
+                          "<src folder name>)")
+    imp.add_argument("--dpi", type=int, default=None,
+                     help="render resolution (default: 300)")
+
+    gtr = sub.add_parser(
+        "gt-render",
+        help="paint a real corpus' ground-truth markup through the "
+             "production painting seam (the perfect-pipeline reference)",
+    )
+    gtr.add_argument("-c", "--corpus", required=True,
+                     help=f"real corpus folder (e.g. {CORPUS_ROOT}/real/1)")
+
     sc = sub.add_parser("score", help="run the pii pipeline and score it")
     sc.add_argument("-c", "--corpus", default=None,
                     help=f"corpus folder (default: {CORPUS_ROOT}/<modality>/s<seed>)")
@@ -96,6 +117,21 @@ def main() -> int:
 
         render(args.corpus or _default_corpus(args.seed),
                args.out or _default_corpus(args.seed, "image"))
+        return 0
+    if args.command == "import-real":
+        from pathlib import Path
+
+        from pii.core.pdf_mode import DEFAULT_DPI
+        from pii_eval.realdocs import import_pdfs
+
+        import_pdfs(args.src,
+                    args.out or f"{CORPUS_ROOT}/real/{Path(args.src).name}",
+                    dpi=args.dpi or DEFAULT_DPI)
+        return 0
+    if args.command == "gt-render":
+        from pii_eval.realdocs import render_gt
+
+        render_gt(args.corpus)
         return 0
     if args.command == "ocr-report":
         from pii_eval.ocr_report import default_out, run, summarize

@@ -13,3 +13,8 @@ gliner2>=1.3.2
 #   - CPU (paddlepaddle) works in-process but is slow; see pii/core/ocr_paddle.py.
 paddleocr>=3.7
 Pillow>=10.1
+# PDF mode: page rendering (and later reassembly/text-layer/metadata access).
+# NOTE pymupdf is AGPL — fine for internal use; revisit the license (Artifex
+# commercial, or swap the pdf_mode seam to pypdfium2) before any commercial
+# distribution. Decision 2026-07-17, pii/core/ARCHITECTURE.md.
+pymupdf>=1.28

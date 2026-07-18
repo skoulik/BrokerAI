@@ -41,6 +41,47 @@ class ImageStripResult:
     invalid: list[InvalidFinding]
 
 
+@dataclass(frozen=True)
+class Segment:
+    """One painted placeholder: the label and the pixel boxes it covers
+    (one box per text line for a line-crossing span). The seam between
+    detection and painting — the pipeline produces segments from merged
+    spans, and the eval harness produces them straight from ground-truth
+    markup, so both paint through the identical code path."""
+
+    label: str
+    boxes: list[Box]
+
+
+def paint_segments(
+    image: Image.Image,
+    segments: list[Segment],
+    margin: int = _MARGIN,
+    style: str = "fill",
+) -> Image.Image:
+    """Paint every segment onto a copy of the image. The input image is
+    not mutated.
+
+    style="fill" (production): each box is filled with the page
+    background color and the label drawn into it — the content is gone.
+    style="frame" (review): each box gets an outline rectangle with the
+    label on a chip above it — the content stays readable underneath.
+    The ground-truth renderer uses this to make markup auditable."""
+    if style not in ("fill", "frame"):
+        raise ValueError(f"unknown paint style: {style!r}")
+    out = image.convert("RGB")
+    fill = _background_color(out)
+    ink = (0, 0, 0) if _luminance(fill) > 127 else (255, 255, 255)
+    for seg in segments:
+        for box in seg.boxes:
+            grown = _grow(box, margin, out)
+            if style == "fill":
+                _paint(out, grown, seg.label, fill, ink)
+            else:
+                _frame(out, grown, seg.label)
+    return out
+
+
 def strip_image(
     image: Image.Image,
     pipeline: PiiPipeline,
@@ -62,13 +103,14 @@ def strip_from_ocr(
     """Strip against an existing OCR result (separate seam so the OCR
     engine bake-off and the PDF page loop can reuse the painting path)."""
     spans, invalid = pipeline.detect(ocr.text)
-    out = image.convert("RGB")
-    fill = _background_color(out)
-    ink = (0, 0, 0) if _luminance(fill) > 127 else (255, 255, 255)
-    for r in spans:  # detect() returns document order == numbering order
-        placeholder = pmap.placeholder_for(r.entity_type, ocr.text[r.start : r.end])
-        for box in ocr.boxes_for_span(r.start, r.end):
-            _paint(out, _grow(box, _MARGIN, out), placeholder, fill, ink)
+    segments = [
+        Segment(
+            label=pmap.placeholder_for(r.entity_type, ocr.text[r.start : r.end]),
+            boxes=ocr.boxes_for_span(r.start, r.end),
+        )
+        for r in spans  # detect() returns document order == numbering order
+    ]
+    out = paint_segments(image, segments)
     return ImageStripResult(image=out, ocr=ocr, spans=spans, invalid=invalid)
 
 
@@ -96,6 +138,34 @@ def _paint(image, box: Box, label: str, fill, ink) -> None:
         font = _font(size)
     draw.text((1, box.height // 2), label, font=font, fill=ink, anchor="lm")
     image.paste(layer, (box.left, box.top))
+
+
+_FRAME_COLOR = (220, 30, 30)
+
+
+def _frame(image, box: Box, label: str) -> None:
+    """Outline the box and write the label on a chip above it (inside
+    the top edge when there is no room above)."""
+    draw = ImageDraw.Draw(image)
+    draw.rectangle(
+        (box.left, box.top, box.right - 1, box.bottom - 1),
+        outline=_FRAME_COLOR,
+        width=3,
+    )
+    size = min(max(int(box.height * 0.45), 14), 30)
+    font = _font(size)
+    chip_w = int(draw.textlength(label, font=font)) + 6
+    chip_h = size + 4
+    top = box.top - chip_h if box.top >= chip_h else box.top
+    left = max(min(box.left, image.width - chip_w), 0)
+    draw.rectangle((left, top, left + chip_w, top + chip_h), fill=_FRAME_COLOR)
+    draw.text(
+        (left + 3, top + chip_h // 2),
+        label,
+        font=font,
+        fill=(255, 255, 255),
+        anchor="lm",
+    )
 
 
 @lru_cache(maxsize=None)

@@ -19,6 +19,18 @@ experiment (future session; owns the next engine-shaped decision).
       pixels also eliminates the hidden-text-layer leak class entirely.
       *Decide later:* belt-and-braces variant that additionally scans any existing text layer
       to catch text the OCR misses (detection only — output still comes from pixels).
+- [ ] **Hidden-text detection & report** (idea, Sergei 2026-07-18; distant tier): the
+      real corpus holds a live specimen (d04.p2) — an account number in ordinary black
+      text with a white rectangle drawn over it, glyph fringes peeking past the
+      rectangle's edges (and a second, fully visible copy of the same number lower on
+      the page). Pixels-first output already destroys hidden source text by
+      construction, so the feature is *reporting*, not redaction: detect text in the
+      source PDF that does not survive to the render — covered by later-drawn shapes,
+      fill matching the background, invisible render mode, clipped or zero-size — and
+      report the findings (locations/classes) so the operator knows the source
+      carries concealed identifying content. Kin of the belt-and-braces text-layer
+      scan in the PDFs-as-images item above (same machinery: diff text-layer strings
+      against what OCR reads off the rendered pixels).
 - [ ] Statement tables via the image path (the remaining half of the transaction-list task —
       CSV mode shipped 2026-07-12): tabular statements arrive as scans/PDF pages, not CSVs;
       verify the OCR path handles table layouts (row/column integrity, amounts kept intact)
@@ -78,6 +90,56 @@ experiment (future session; owns the next engine-shaped decision).
 
 ## Detection pipeline
 
+- [ ] **User-editable keep-list ("do not strip") mechanism** (Sergei, 2026-07-18): a
+      user-editable configuration file of do-not-strip entries, grouped per entity
+      class plus a special class `any` (matches regardless of the detected class);
+      entries support regular expressions. Operator workflow is the point: run the
+      tool, spot an over-strip, add an entry, rerun — the list grows with use.
+      Plugs in as a post-detection filter at the merged-spans level: a span whose
+      text matches a keep entry for its class (or `any`) is dropped before painting.
+      Keep-listing only ever *reduces* stripping — it is a precision lever whose leak
+      risk is operator-owned; log every applied keep in the run output so reviews can
+      see what was skipped. Design questions when picked up: match semantics (full
+      span vs substring, case folding, whitespace normalization — OCR'd spans may not
+      match a cleanly typed entry; consider matching through the OCR-confusion squash
+      classes), file format/location, and the core/cli split (core takes a parsed
+      keep-list object; the front-ends own loading the file). Dual coverage rule
+      applies. Measured by the real-corpus over-strip axis.
+- [ ] **Default keep-list content — institutional identities** (real-corpus review,
+      Sergei 2026-07-18): the real corpus records bank/insurer identity blocks —
+      branded org names, their ABNs, 13/1300/1800 numbers, corporate GPO-box
+      addresses — as *keep* truth, and today's pipeline cannot discriminate them from
+      customer PII, so the first eval runs will report them all as over-strips (that
+      is the axis working, not a truth bug). Recovery = ship starter content for the
+      keep-list mechanism above: (1) inbound business numbers as regex entries —
+      13 xx xx / 13 xxxx / 1300 xxx xxx / 1800 xxx xxx are ACMA business-only
+      allocations, never personal lines, so keep-listing them is zero leak risk;
+      (2) major AU financial-institution identities as exact values (names + their
+      public ABNs — e.g. ANZ = 11 005 357 522) — keyed by specific values, so the
+      customer's own org name/ABN still strips. Mobile-shaped contact numbers inside
+      branded blocks (d02's +61 437 968 251) stay syntactically undiscriminable —
+      accepted over-strip unless the operator keep-lists the specific number.
+- [ ] **Entity-variant identity matching — all classes** (config-toggled; real-corpus
+      review, Sergei 2026-07-18, scope widened to all classes same day): the same
+      real-world entity appears under variant surface forms within one document set,
+      and `PseudonymMap` keys on the exact value, so each variant forks a distinct
+      pseudonym — a downstream reader sees several people/addresses where there is
+      one. Observed: PERSON — SERGEI KULIK / KULIK SERGEI / S KULIK (and plausibly
+      KULIK S); ADDRESS — part forms "24 Stacey Dr" + "Carrickalinga SA 5204" on
+      separate lines vs the joined "24 Stacey Dr, Carrickalinga SA 5204" on one line
+      (d02). Post-processor: canonicalize values before pseudonym lookup, with
+      per-class matching rules — names: case-insensitive token-set match, word-order
+      invariance, initial↔full expansion (S ↔ SERGEI); addresses: part/whole
+      containment; identifiers: formatting variants (spacing/hyphenation of the same
+      digits). Feature requirements deferred — sketch only for now. Idea to keep:
+      fuzzy matching should be *configurable and reviewable* — e.g. the tool proposes
+      detected matches and the operator can allow some and disallow others, rather
+      than silent all-or-nothing merging. Other recorded design questions: ambiguous
+      initials (S KULIK when both Sergei and Svetlana Kulik exist), transitive merge
+      chains, scope (per document vs per submission bundle — the same scope question
+      as pseudonym-consistency scoring in Evaluation below), OCR-damaged variants.
+      Ship with a configuration option to turn matching off entirely (privacy-side
+      effect: matching *increases* linkability inside the output by design).
 - [ ] **Reversed-caps person-name residual** ('REID THOMAS' / 'BROOKS ETHAN') — what
       remains after the 2026-07-15 fixes (full history in DONE.md: JointNameRecognizer
       → interference diagnosis → per-cell NER windows + PERSON coalescing + name-forms

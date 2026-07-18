@@ -372,13 +372,24 @@ byte-identical. Cells of a column are batched into one analyzer call, joined by 
 (`␞`) no recognizer can match across, with a hard alignment check afterwards. Side benefit
 observed: cell-level context avoids some of the over-stripping seen in whole-text mode.
 
-### PDFs will be processed as rendered images (decided 2026-07-05, not yet built)
+### PDFs will be processed as rendered images (decided 2026-07-05; render leg built 2026-07-17)
 
 Financial-sector PDFs often carry junk/broken text layers (confirmed: one reference statement
-has one), and rebuilding output from pixels eliminates the hidden-text-layer leak class
-entirely. Corollary requirement from the reference docs: mailing barcodes (Australia Post
-4-state) encode the delivery address and are invisible to text-based detection — the image
-pass must detect and mask barcode regions.
+has one, and d04 of the real corpus hides an account number under a white cover rectangle),
+and rebuilding output from pixels eliminates the hidden-text-layer leak class entirely.
+Corollary requirement from the reference docs: mailing barcodes (Australia Post 4-state)
+encode the delivery address and are invisible to text-based detection — the image pass must
+detect and mask barcode regions.
+
+- **Renderer: pymupdf** (2026-07-17, over poppler/pdftoppm and pypdfium2) — `pii/core/pdf_mode.py`.
+  Self-contained pip wheel, in-process rendering, and the same library later covers
+  reassembly, the belt-and-braces text-layer scan, and metadata scrubbing. **AGPL-licensed**:
+  fine for internal use, revisit (Artifex commercial license, or swap the seam to pypdfium2)
+  before any commercial distribution — the render seam keeps the swap contained.
+- **300 DPI default**: statements ship 7–9 pt body text; at the synthetic tier's 150 DPI those
+  glyphs fall below the sizes the OCR fidelity sweep validated. Pages stream as a generator —
+  a 300 DPI A4 page is ~26 MB of pixels, so callers process per-page instead of holding a
+  document.
 
 ### Image path is orthogonal to presidio-image-redactor (2026-07-14)
 
