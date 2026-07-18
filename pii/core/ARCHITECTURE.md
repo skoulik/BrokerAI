@@ -48,6 +48,7 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `ocr_paddle.py` | PaddleOCR adapter: line-oriented det/rec → per-word `OcrResult`; picks worker vs in-process by wheel |
 | `ocr_worker.py` | Persistent PaddleOCR worker subprocess (GPU paddle can't share a process with torch) — framed PNG-in / `OcrResult`-out |
 | `image_mode.py` | Image front/back-end: OCR text through the unchanged text pipeline, placeholders painted onto the original pixels |
+| `pdf_mode.py` | PDF render + reassembly legs: pages → pixels → image pipeline per page → fresh image-only PDF (`pdf_to_images`, `strip_pdf`) |
 
 ### The whole picture
 
@@ -56,9 +57,9 @@ flowchart TB
     TXT["text / stdin"]
     CSV["transaction CSV"]
     IMG["image scan"]
-    PDF["PDF (planned)"]
+    PDF["PDF"]
 
-    PDF -. "render pages (planned)" .-> IMG
+    PDF -- "pdf_mode.py: render pages<br>(300 DPI, streamed)" --> IMG
     IMG --> OCRPY["ocr.py seam → ocr_paddle.py (PaddleOCR)<br>GPU: ocr_worker.py subprocess<br>word boxes + char intervals<br>recorded at assembly"]
     CSV --> CSVM["csv_mode.py<br>per-cell, sentinel-joined batches"]
 
@@ -83,6 +84,7 @@ flowchart TB
     PM --> OUT1["stripped text / CSV"]
     MRG -- "spans → boxes<br>(interval intersection)" --> PAINT["image_mode.py — paint placeholders<br>on the ORIGINAL pixels"]
     PAINT --> OUT2["pseudonymized image"]
+    PAINT --> OUT3["pdf_mode.py: JPEG embed →<br>fresh image-only PDF"]
 ```
 
 ## Pipelines
@@ -114,10 +116,19 @@ recorded intervals; each span's placeholder is painted over its boxes on the **o
 image (background-filled box with the placeholder text drawn in — pseudonymization, not
 blackout), emitting the same rehydratable `map.json`.
 
-### PDF — planned
+### PDF — the image pipeline per page, reassembled from scratch
 
-Render pages → image pipeline per page → reassemble the PDF from the painted pixels
-(rationale in the "PDFs as rendered images" decision below).
+`strip_pdf` (`pdf_mode.py`, 2026-07-18) streams pages through the image pipeline — render at
+300 DPI (default) → OCR → text pipeline → paint — and embeds each painted page into a
+**fresh** pymupdf document at the source page's physical size in points. Nothing is copied
+from the source document object, so text layers, annotations, attachments and metadata are
+absent by construction (the metadata dict is explicitly emptied on top); the hidden-text-leak
+class cannot survive. One pipeline instance, one OCR engine and one shared `PseudonymMap`
+serve all pages: memory stays flat (a 300 DPI A4 page is ~26 MB of pixels) and placeholders
+are consistent across the document. Processing is lossless end-to-end; only the final embed
+is lossy — JPEG q90 (decision 2026-07-18; the eval scorer re-OCRs output pixels, so encoding
+damage is measured, not hidden; configurability is a recorded TODO). Rationale for
+pixels-first is in the "PDFs as rendered images" decision below.
 
 ## Detection stack
 
@@ -372,7 +383,7 @@ byte-identical. Cells of a column are batched into one analyzer call, joined by 
 (`␞`) no recognizer can match across, with a hard alignment check afterwards. Side benefit
 observed: cell-level context avoids some of the over-stripping seen in whole-text mode.
 
-### PDFs will be processed as rendered images (decided 2026-07-05; render leg built 2026-07-17)
+### PDFs are processed as rendered images (decided 2026-07-05; render leg 2026-07-17; reassembly leg 2026-07-18)
 
 Financial-sector PDFs often carry junk/broken text layers (confirmed: one reference statement
 has one, and d04 of the real corpus hides an account number under a white cover rectangle),
@@ -390,6 +401,12 @@ detect and mask barcode regions.
   glyphs fall below the sizes the OCR fidelity sweep validated. Pages stream as a generator —
   a 300 DPI A4 page is ~26 MB of pixels, so callers process per-page instead of holding a
   document.
+- **Reassembly from scratch, lossless until the final embed** (2026-07-18): the output
+  document is built fresh (see the PDF pipeline section above) — nothing structural from the
+  source can survive. Processing stays on raw RGB renders throughout; only the embed into the
+  output PDF is lossy (JPEG q90 — ~0.2 MB/page vs 1–4 MB lossless; the eval scorer re-OCRs
+  output pixels, so encoding damage is measured, not hidden). Encoding configurability is a
+  recorded TODO.
 
 ### Image path is orthogonal to presidio-image-redactor (2026-07-14)
 

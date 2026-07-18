@@ -1,12 +1,16 @@
 """CLI for the PII stripping tool.
 
-    python -m pii strip document.txt -o document.clean.txt --map map.json
+    python -m pii strip document.txt -o document.clean.txt
+    python -m pii strip statement.pdf --pdf -o statement.clean.pdf
     python -m pii analyze document.txt
-    python -m pii rehydrate cloud_answer.txt --map map.json
+    python -m pii rehydrate cloud_answer.txt --map statement.pii_map.json
 
-strip/analyze accept '-' to read stdin. The mapping file accumulates across
-runs, keeping placeholders consistent over a whole document set. It contains
-the original PII — treat it as sensitive and never share it.
+strip/analyze accept '-' to read stdin. The pseudonym map defaults to
+per-document — <input>.pii_map.json next to the input file — so each
+document gets independent placeholder numbering; pass --map explicitly to
+share one map across documents (and always for rehydrate/stdin, where
+there is no input document to derive it from). The map contains the
+original PII — treat it as sensitive and never share it.
 """
 
 import argparse
@@ -30,16 +34,24 @@ def _write(dest: str | None, text: str) -> None:
         Path(dest).write_text(text, encoding="utf-8")
 
 
-def _report(spans, text: str, file=sys.stderr) -> None:
-    print(f"{len(spans)} entities detected:", file=file)
+def _derive_map(input_path: str) -> str:
+    """Per-document map default: statement.pdf -> statement.pii_map.json,
+    next to the input document."""
+    return str(Path(input_path).with_suffix(".pii_map.json"))
+
+
+def _report(spans, text: str, file=None, prefix: str = "  ") -> None:
+    # sys.stderr resolved at call time, not bound at import (capsys).
+    file = file if file is not None else sys.stderr
     for r in spans:
         value = text[r.start : r.end].replace("\n", "\\n")
-        print(f"  {r.entity_type:<20} {r.score:.2f}  {value!r}", file=file)
+        print(f"{prefix}{r.entity_type:<20} {r.score:.2f}  {value!r}", file=file)
 
 
-def _report_invalid(findings, file=sys.stderr) -> None:
+def _report_invalid(findings, file=None) -> None:
     # Near-PII (a typo'd TFN is a real TFN minus a digit) — stderr only,
     # treat any capture of it as a local-only artifact like the map file.
+    file = file if file is not None else sys.stderr
     print(
         f"{len(findings)} checksum-invalid identifier candidate(s) "
         "(typo / OCR error / forgery?):",
@@ -60,8 +72,11 @@ def main(argv=None) -> int:
     p_strip.add_argument("input", help="input text file, or - for stdin")
     p_strip.add_argument("-o", "--output", help="output file (default stdout)")
     p_strip.add_argument(
-        "--map", default="pii_map.json",
-        help="pseudonym mapping store, created/extended (default pii_map.json)",
+        "--map", default=None,
+        help="pseudonym mapping store, created/extended (default: "
+             "per-document — <input>.pii_map.json next to the input file; "
+             "required for stdin input). Pass one path across runs to keep "
+             "placeholders consistent over a document set.",
     )
     p_strip.add_argument(
         "--strip-orgs", action="store_true",
@@ -83,10 +98,21 @@ def main(argv=None) -> int:
              "format follows the file extension)",
     )
     p_strip.add_argument(
+        "--pdf", action="store_true",
+        help="treat input as a PDF: render each page to pixels, run the "
+             "image path on it, and reassemble a fresh image-only PDF — "
+             "no text layer, annotations or metadata from the source "
+             "survive (requires -o)",
+    )
+    p_strip.add_argument(
+        "--dpi", type=int, default=None,
+        help="page render resolution for --pdf mode (default 300)",
+    )
+    p_strip.add_argument(
         "--ocr-backend", choices=list(OCR_BACKENDS), default="paddle",
-        help="OCR engine for --image mode (PaddleOCR; default paddle = the "
-             "v6_medium tier). Variants name a model tier, downloaded to "
-             "models/paddlex on first use. On the GPU paddle wheel the "
+        help="OCR engine for --image/--pdf modes (PaddleOCR; default paddle "
+             "= the v6_medium tier). Variants name a model tier, downloaded "
+             "to models/paddlex on first use. On the GPU paddle wheel the "
              "engine runs in a worker subprocess (it cannot share a process "
              "with the NER model); the CPU wheel runs it in-process.",
     )
@@ -130,7 +156,12 @@ def main(argv=None) -> int:
     )
     p_rehyd.add_argument("input", help="input text file, or - for stdin")
     p_rehyd.add_argument("-o", "--output", help="output file (default stdout)")
-    p_rehyd.add_argument("--map", default="pii_map.json")
+    p_rehyd.add_argument(
+        "--map", required=True,
+        help="the pseudonym map of the document the cloud answer is about "
+             "(maps are per-document by default, so there is no safe "
+             "default to guess here)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -140,6 +171,23 @@ def main(argv=None) -> int:
             print(f"warning: mapping {args.map} is empty or missing", file=sys.stderr)
         _write(args.output, pmap.rehydrate(_read(args.input)))
         return 0
+
+    # Validate mode combinations and resolve the map path before any
+    # heavy pipeline construction, so bad invocations fail instantly.
+    if args.command == "strip":
+        if sum([args.csv, args.image, args.pdf]) > 1:
+            parser.error("--csv, --image and --pdf are mutually exclusive")
+        if args.image and (not args.output or args.output == "-"):
+            parser.error("--image requires -o OUTPUT (an image file path)")
+        if args.pdf and (not args.output or args.output == "-"):
+            parser.error("--pdf requires -o OUTPUT (a PDF file path)")
+        if args.map is None:
+            if args.input == "-":
+                parser.error(
+                    "--map is required when reading stdin (no input "
+                    "filename to derive the per-document map from)"
+                )
+            args.map = _derive_map(args.input)
 
     mask_invalid = getattr(args, "mask_invalid_identifiers", "no") == "yes"
     if mask_invalid and args.invalid_identifiers == "all":
@@ -161,10 +209,6 @@ def main(argv=None) -> int:
         mask_invalid=mask_invalid,
     )
     if getattr(args, "image", False):
-        if args.csv:
-            parser.error("--image and --csv are mutually exclusive")
-        if not args.output or args.output == "-":
-            parser.error("--image requires -o OUTPUT (an image file path)")
         from PIL import Image
 
         from pii.core.image_mode import strip_image
@@ -175,15 +219,40 @@ def main(argv=None) -> int:
         result.image.save(args.output)
         pmap.save()
         if args.report:
+            print(f"{len(result.spans)} entities detected:", file=sys.stderr)
             _report(result.spans, result.ocr.text)
         if args.log_invalid_identifiers == "yes" and result.invalid:
             _report_invalid(result.invalid)
         return 0
 
+    if getattr(args, "pdf", False):
+        from pii.core.pdf_mode import DEFAULT_DPI, strip_pdf
+
+        def progress(number: int, count: int) -> None:
+            print(f"page {number}/{count} ...", file=sys.stderr)
+
+        pmap = PseudonymMap(args.map)
+        result = strip_pdf(args.input, pipeline, pmap, args.output,
+                           dpi=args.dpi or DEFAULT_DPI,
+                           ocr_backend=args.ocr_backend,
+                           progress=progress)
+        pmap.save()
+        if args.report:
+            total = sum(len(p.spans) for p in result.pages)
+            print(f"{total} entities detected:", file=sys.stderr)
+            for p in result.pages:
+                _report(p.spans, p.ocr.text, prefix=f"  p{p.number:<3} ")
+        invalid = [f for p in result.pages for f in p.invalid]
+        if args.log_invalid_identifiers == "yes" and invalid:
+            _report_invalid(invalid)
+        return 0
+
     text = _read(args.input)
 
     if args.command == "analyze":
-        _report(pipeline.analyze(text), text, file=sys.stdout)
+        spans = pipeline.analyze(text)
+        print(f"{len(spans)} entities detected:")
+        _report(spans, text, file=sys.stdout)
         return 0
 
     pmap = PseudonymMap(args.map)
@@ -199,6 +268,7 @@ def main(argv=None) -> int:
         stripped, spans, invalid = pipeline.strip(text, pmap)
         pmap.save()
         if args.report:
+            print(f"{len(spans)} entities detected:", file=sys.stderr)
             _report(spans, text)
     if args.log_invalid_identifiers == "yes" and invalid:
         _report_invalid(invalid)

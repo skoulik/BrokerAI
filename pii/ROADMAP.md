@@ -12,8 +12,8 @@ status board.
 
 | Component | Status | Roadmap |
 |---|---|---|
-| **Core** (`pii.core`) | Text, CSV and image paths shipped end-to-end; detection layers 1–2 eval-gated on the Tier-1 text corpus. Current front: the image/PDF track. Layer 3 (LLM audit) is contingent. | [core/ROADMAP.md](core/ROADMAP.md) |
-| **CLI** (`pii.cli`) | Shipped: `strip` / `analyze` / `rehydrate`, text/CSV/image modes, checksum-invalid-identifier controls. | [cli/ROADMAP.md](cli/ROADMAP.md) |
+| **Core** (`pii.core`) | Text, CSV, image and PDF paths shipped end-to-end; detection layers 1–2 eval-gated on the Tier-1 text and image corpora, full-PDF scoring wired to the real corpus. Current front: demo on the reference documents. Layer 3 (LLM audit) is contingent. | [core/ROADMAP.md](core/ROADMAP.md) |
+| **CLI** (`pii.cli`) | Shipped: `strip` / `analyze` / `rehydrate`, text/CSV/image/PDF modes, checksum-invalid-identifier controls, per-document map default (2026-07-18). | [cli/ROADMAP.md](cli/ROADMAP.md) |
 | **GUI** (`pii.gui`) | **New direction (2026-07-16).** Planning only — requirements not yet finalized; flavor (native vs local web) undecided. Stubs in place. | [gui/ROADMAP.md](gui/ROADMAP.md) |
 
 ## Evaluation
@@ -24,7 +24,8 @@ misses, not an F1 number). The tier plan lives in [core/ROADMAP.md](core/ROADMAP
 
 ## Near-term direction
 
-1. **Core:** image/PDF track — PDF mode → image eval tier → OCR bake-off — then the end-to-end
-   evaluation that decides whether layer 3 is needed at all.
+1. **Core:** image/PDF track — demo on the reference documents → degradation tier → one-pass
+   VLM experiment — then the end-to-end evaluation that decides whether layer 3 is needed
+   at all.
 2. **GUI:** finalize requirements with Sergei, then choose a flavor and spike a prototype over
    the `pii.core` API (see [gui/TODO.md](gui/TODO.md)).

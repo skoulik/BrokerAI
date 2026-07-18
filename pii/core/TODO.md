@@ -6,19 +6,30 @@ plan are in [ROADMAP.md](ROADMAP.md); completed tasks and their engineering reco
 Front-end tasks live with their component: [../cli/TODO.md](../cli/TODO.md),
 [../gui/TODO.md](../gui/TODO.md).
 
-Grouped by theme. Suggested order on the image/PDF track (2026-07-14, amended 2026-07-17;
-fidelity sweep + bake-off rounds 1 AND 2 + Tesseract retirement done — see DONE.md and
-reports/; round 2 evaluated and retired Surya 2 same-day, docTR dropped unevaluated):
-PDF mode → demo on the reference documents → degradation tier → one-pass VLM
+Grouped by theme. Suggested order on the image/PDF track (2026-07-14, amended 2026-07-18;
+fidelity sweep + bake-off rounds 1 AND 2 + Tesseract retirement + **PDF mode (2026-07-18)**
+done — see DONE.md and reports/; round 2 evaluated and retired Surya 2 same-day, docTR
+dropped unevaluated): demo on the reference documents → degradation tier → one-pass VLM
 experiment (future session; owns the next engine-shaped decision).
 
 ## Next up — image/PDF path
 
-- [ ] PDFs — **treat as images**: render pages → OCR → redact pixels → reassemble PDF.
-      Rationale: financial-sector PDFs often have junk/broken text layers, and rebuilding from
-      pixels also eliminates the hidden-text-layer leak class entirely.
-      *Decide later:* belt-and-braces variant that additionally scans any existing text layer
-      to catch text the OCR misses (detection only — output still comes from pixels).
+- [ ] Belt-and-braces text-layer scan (*decide later*, split out of the PDF mode task when it
+      shipped 2026-07-18): additionally scan any existing source text layer to catch text the
+      OCR misses (detection only — output still comes from pixels). Same machinery as the
+      hidden-text report below.
+- [ ] Output PDF encoding knobs (deferred from PDF mode, Sergei 2026-07-18): processing is
+      lossless end-to-end and only the final embed is lossy (JPEG q90, `pii/core/pdf_mode.py`).
+      Make the encoding configurable later — lossless/PNG option, quality, maybe target DPI
+      of the embed as distinct from the analysis render.
+- [ ] **Layered pseudonym maps** (Sergei, 2026-07-18): maps are per-document by default
+      (CLI derives `<input>.pii_map.json`; decision recorded in cli/ARCHITECTURE.md).
+      Extension: a per-document map *plus* a global map, and perhaps a per-group map —
+      what a "group" is gets defined if/when we get there (a submission bundle is the
+      motivating example). Solves cross-document placeholder consistency (today two
+      statements of the same person each say PERSON_1 independently); interacts with the
+      pseudonym-consistency scoring task in Evaluation below and with entity-variant
+      matching (a global map raises the variant-forking stakes).
 - [ ] **Hidden-text detection & report** (idea, Sergei 2026-07-18; distant tier): the
       real corpus holds a live specimen (d04.p2) — an account number in ordinary black
       text with a white rectangle drawn over it, glyph fringes peeking past the
@@ -304,14 +315,17 @@ experiment (future session; owns the next engine-shaped decision).
 (The tier plan and constraints are described in [ROADMAP.md](ROADMAP.md); the completed
 text tier's record is in [DONE.md](DONE.md).)
 
-- [ ] **Pseudonym-consistency scoring** (gap found 2026-07-15): the persona pool was
-      built so the same people/accounts recur across a corpus, but the scorer creates a
-      fresh `PseudonymMap` per document (`pii_eval/score.py`) and asserts nothing about
-      placeholder identity — cross-document consistency is prepared for, never checked.
-      Task: decide the intended semantics (one shared map per document *set* is the
-      product story — pseudonyms consistent across a submission bundle), run the scorer
-      with a shared map, and add an axis asserting same canonical value ⇒ same
-      placeholder across documents (the truth manifest already carries the values).
+- [ ] **Pseudonym-consistency scoring** (gap found 2026-07-15; semantics updated
+      2026-07-18): the persona pool was built so the same people/accounts recur across a
+      corpus, but the scorer creates a fresh `PseudonymMap` per document
+      (`pii_eval/score.py`) and asserts nothing about placeholder identity —
+      cross-document consistency is prepared for, never checked. *2026-07-18: the product
+      story changed — maps are per-document by default, and cross-document consistency
+      belongs to the future global/group map layers (see the layered-maps task above), so
+      the fresh-map-per-document scorer behaviour is now* correct *for the default. The
+      task becomes: when the layered maps land, score the shared-map regime too — same
+      canonical value ⇒ same placeholder across a bundle (the truth manifest already
+      carries the values).*
 - [ ] **Tier 1 — image/degradation tier**: iteration 1 SHIPPED 2026-07-16 (see DONE.md) —
       `pii_eval render` prints the text corpus to page images (Pillow, seeded font
       variety, monospace for fixed-column docs) and `score --modality image` scores the

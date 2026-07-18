@@ -29,15 +29,21 @@ first use.
 ## Usage
 
 ```
-python -m pii strip document.txt -o document.clean.txt --map map.json --report
-python -m pii strip scan.png --image -o scan.clean.png --map map.json
+python -m pii strip document.txt -o document.clean.txt --report
+python -m pii strip scan.png --image -o scan.clean.png
+python -m pii strip statement.pdf --pdf -o statement.clean.pdf
 python -m pii analyze document.txt            # show detections, change nothing
-python -m pii rehydrate cloud_answer.txt --map map.json
+python -m pii rehydrate cloud_answer.txt --map statement.pii_map.json
 ```
 
-`strip`/`analyze` accept `-` for stdin. The mapping file accumulates across
-runs so placeholders stay consistent over a document set. **It contains the
-original PII — it is gitignored and must never leave the machine.**
+`strip`/`analyze` accept `-` for stdin. The pseudonym map is
+**per-document by default** (2026-07-18): `--map` defaults to
+`<input>.pii_map.json` next to the input file, so placeholder numbering
+restarts with each document. Pass one `--map` path across runs to keep
+placeholders consistent over a document set instead; `rehydrate` and
+stdin input always need an explicit `--map` (there is no input document
+to derive it from). **The map contains the original PII — it is
+gitignored and must never leave the machine.**
 
 Flags: `--strip-orgs` (organization names are kept by default — merchant
 names carry analytical value), `--threshold` (default 0.4), and the
@@ -60,8 +66,21 @@ fidelity bake-off — ~25× lower character error, records in
 models auto-download to `models/paddlex` on first use. With the GPU paddle
 wheel the engine and the NER model cannot share a Windows process, so the
 pipeline drives OCR through a persistent worker subprocess
-(`pii/core/ocr_worker.py`); the CPU wheel runs it in-process. PDFs-as-images
-are on the roadmap.
+(`pii/core/ocr_worker.py`); the CPU wheel runs it in-process.
+
+## PDFs
+
+`strip --pdf` treats the PDF as images: every page is rendered to pixels
+(`--dpi`, default 300), run through the image path above, and embedded
+into a **fresh, image-only output PDF** at the source page's physical
+size. Nothing from the source document's internal structure survives —
+no text layer, annotations, attachments or metadata — which eliminates
+the hidden-text-layer leak class (financial PDFs have been observed
+hiding account numbers under white rectangles) by construction rather
+than by scrubbing. Placeholders are consistent across the document's
+pages; processing is lossless end-to-end with a JPEG embed only at the
+final step (~0.2 MB/page at 300 DPI). Progress is reported per page on
+stderr; `--report` prefixes detections with their page number.
 
 ## Checksum-invalid identifiers
 

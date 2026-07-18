@@ -117,6 +117,74 @@ def _noise(findings, inv_entities):
     ]
 
 
+def summarize(all_entities, all_invalid, noise,
+              invalid_identifiers: str = "likely") -> int:
+    """Print the survival tables and the acceptance gate; return the exit
+    code (1 on any critical leak). Shared by the image and PDF scorers.
+    Strip/keep tables split per entity by strip_expected, not per type —
+    real corpora have types on both sides (institutional vs customer
+    ORGANIZATION/PHONE_NUMBER)."""
+    by_type = defaultdict(lambda: defaultdict(int))
+    keep_by_type = defaultdict(lambda: defaultdict(int))
+    for e in all_entities:
+        table = by_type if e["strip_expected"] else keep_by_type
+        table[e["type"]][e["verdict"]] += 1
+        if e["verdict"] == "leaked" and e["match"] == "fuzzy":
+            table[e["type"]]["fuzzy"] += 1
+
+    print(f"\n{'entity type':<20}{'n':>5}{'stripped':>10}{'leaked':>8}"
+          f"{'~ocr':>6}{'recall':>8}")
+    for t in sorted(by_type):
+        c = by_type[t]
+        n = c["stripped"] + c["leaked"]
+        recall = c["stripped"] / n if n else 0.0
+        print(f"{t:<20}{n:>5}{c['stripped']:>10}{c['leaked']:>8}"
+              f"{c['fuzzy']:>6}{recall:>8.0%}")
+
+    if keep_by_type:
+        print(f"\n{'keep-type':<20}{'n':>5}{'kept':>10}{'over-stripped':>15}")
+        for t in sorted(keep_by_type):
+            c = keep_by_type[t]
+            print(f"{t:<20}{c['kept'] + c['over-stripped']:>5}{c['kept']:>10}"
+                  f"{c['over-stripped']:>15}")
+
+    if invalid_identifiers != "ignore" and (all_invalid or noise):
+        print(f"\nchecksum-invalid identifiers "
+              f"(collection tier: {invalid_identifiers})")
+        by_inv = defaultdict(lambda: defaultdict(int))
+        for e in all_invalid:
+            c = by_inv[e["type"]]
+            c["n"] += 1
+            c[e["verdict"]] += 1
+            c["sa"] += e["stripped_anyway"]
+        print(f"{'type':<24}{'n':>4}{'logged':>8}{'missed':>8}"
+              f"{'stripped-anyway':>17}")
+        for t in sorted(by_inv):
+            c = by_inv[t]
+            print(f"{t:<24}{c['n']:>4}{c['logged']:>8}{c['missed']:>8}"
+                  f"{c['sa']:>17}")
+        for e in all_invalid:
+            if e["verdict"] == "missed":
+                print(f"  missed: {e['file']}: {e['type']} "
+                      f"({e.get('evidence', '?')}): {e['value']!r}")
+        print(f"  noise findings (matching no injected entity): {len(noise)}")
+        for file, f in noise:
+            print(f"    {file}: {f.entity_type} {f.value!r}  [{f.rule}]")
+
+    failures = [
+        e for e in all_entities
+        if e["critical"] and e["verdict"] == "leaked"
+    ]
+    if failures:
+        print(f"\nCRITICAL LEAKS ({len(failures)}):")
+        for e in failures:
+            print(f"  {e['file']}: {e['type']} ({e['match']}): "
+                  f"{e['value']!r}")
+        return 1
+    print("\nAcceptance gate: PASS (zero critical misses)")
+    return 0
+
+
 def score_image(corpus: str, threshold: float = 0.4,
                 invalid_identifiers: str = "likely",
                 ocr_backend: str = "paddle") -> int:
@@ -150,64 +218,4 @@ def score_image(corpus: str, threshold: float = 0.4,
         print(f"  scored {doc['file']} [{doc['font']} {doc['size']}px]",
               file=sys.stderr)
 
-    by_type = defaultdict(lambda: defaultdict(int))
-    for e in all_entities:
-        by_type[e["type"]][e["verdict"]] += 1
-        if e["verdict"] == "leaked" and e["match"] == "fuzzy":
-            by_type[e["type"]]["fuzzy"] += 1
-
-    print(f"\n{'entity type':<20}{'n':>5}{'stripped':>10}{'leaked':>8}"
-          f"{'~ocr':>6}{'recall':>8}")
-    strip_types = sorted(
-        t for t, c in by_type.items() if c["kept"] + c["over-stripped"] == 0
-    )
-    for t in strip_types:
-        c = by_type[t]
-        n = c["stripped"] + c["leaked"]
-        recall = c["stripped"] / n if n else 0.0
-        print(f"{t:<20}{n:>5}{c['stripped']:>10}{c['leaked']:>8}"
-              f"{c['fuzzy']:>6}{recall:>8.0%}")
-
-    keep_types = sorted(set(by_type) - set(strip_types))
-    if keep_types:
-        print(f"\n{'keep-type':<20}{'n':>5}{'kept':>10}{'over-stripped':>15}")
-        for t in keep_types:
-            c = by_type[t]
-            print(f"{t:<20}{c['kept'] + c['over-stripped']:>5}{c['kept']:>10}"
-                  f"{c['over-stripped']:>15}")
-
-    if invalid_identifiers != "ignore" and (all_invalid or noise):
-        print(f"\nchecksum-invalid identifiers "
-              f"(collection tier: {invalid_identifiers})")
-        by_inv = defaultdict(lambda: defaultdict(int))
-        for e in all_invalid:
-            c = by_inv[e["type"]]
-            c["n"] += 1
-            c[e["verdict"]] += 1
-            c["sa"] += e["stripped_anyway"]
-        print(f"{'type':<24}{'n':>4}{'logged':>8}{'missed':>8}"
-              f"{'stripped-anyway':>17}")
-        for t in sorted(by_inv):
-            c = by_inv[t]
-            print(f"{t:<24}{c['n']:>4}{c['logged']:>8}{c['missed']:>8}"
-                  f"{c['sa']:>17}")
-        for e in all_invalid:
-            if e["verdict"] == "missed":
-                print(f"  missed: {e['file']}: {e['type']} "
-                      f"({e['evidence']}): {e['value']!r}")
-        print(f"  noise findings (matching no injected entity): {len(noise)}")
-        for file, f in noise:
-            print(f"    {file}: {f.entity_type} {f.value!r}  [{f.rule}]")
-
-    failures = [
-        e for e in all_entities
-        if e["critical"] and e["verdict"] == "leaked"
-    ]
-    if failures:
-        print(f"\nCRITICAL LEAKS ({len(failures)}):")
-        for e in failures:
-            print(f"  {e['file']}: {e['type']} ({e['match']}): "
-                  f"{e['value']!r}")
-        return 1
-    print("\nAcceptance gate: PASS (zero critical misses)")
-    return 0
+    return summarize(all_entities, all_invalid, noise, invalid_identifiers)

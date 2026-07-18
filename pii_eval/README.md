@@ -16,6 +16,7 @@ python -m pii_eval score                         # scores corpora/text/s42; full
 python -m pii_eval score --seed 7                # another seed's corpus
 python -m pii_eval render --seed 42              # text/s42 -> image/s42 (paired image corpus)
 python -m pii_eval score --modality image        # image pipeline + re-OCR value survival
+python -m pii_eval score --modality pdf -c pii_eval/corpora/real/1   # full strip_pdf on real source PDFs
 python -m pii_eval ocr-report                    # OCR-fidelity sweep: font x glyph size (resumable)
 python -m pii_eval ocr-report --summary-only     # re-print matrices from the existing report
 python -m pii_eval ocr-report --ocr-backend paddle:v5_server   # same sweep, another engine
@@ -26,9 +27,11 @@ card, person name) leaked — the roadmap's zero-critical-miss gate.
 
 ## Corpus layout
 
-Every generated corpus lives under `pii_eval/corpora/` (gitignored,
-regenerable): one folder per modality — `text/` and `image/` — with one
-subfolder per seed (`text/s42`, `image/s42`, ...).
+Every corpus lives under `pii_eval/corpora/` (gitignored): one folder
+per modality — `text/` and `image/` (regenerable, one subfolder per
+seed: `text/s42`, `image/s42`, ...) and `real/` (imported real
+documents, one subfolder per set: `real/1`, ... — sources sensitive,
+truth hand-authored, see `realdocs.py`).
 Both CLIs default to `corpora/text/s<seed>`; `-o`/`-c` override for
 throwaway experiments, but durable corpora belong in the seed folders —
 not in session scratchpads (convention set 2026-07-15).
@@ -157,6 +160,22 @@ stays readable (the text tier's `partial` counts as a leak). Token-level
 survival would need occurrence disambiguation first: personas share
 surname stems with kept business names ("DECKER SERVICES PTY LTD"), so a
 naive token match would report false partials against kept text.
+
+`score --modality pdf -c corpora/real/<set>` (2026-07-18) is the same
+re-OCR value-survival scoring over the **full PDF pipeline**: each real
+corpus source PDF goes through `pii.core.pdf_mode.strip_pdf`, the
+stripped output PDF's pages are rendered and re-OCR'd, and the
+hand-authored truth is matched with the image tier's matcher. Real-truth
+specifics: criticality derives from `build.CRITICAL` by type (authored
+truth carries no flags); valueless entities (barcodes) are skipped until
+barcode masking exists; one fresh `PseudonymMap` per document (the CLI's
+per-document default); stripped PDFs stay under `<corpus>/stripped/` for
+eyeballing. Expect the keep-side table to report institutional
+identities (bank names/ABNs/1300 numbers) as over-stripped until the
+keep-list mechanism lands — that is the axis working, not a truth bug.
+Summary tables (shared with the image tier) split strip/keep rows by
+each entity's `strip_expected`, so a type may appear in both tables —
+real corpora have ORGANIZATION/PHONE_NUMBER on both sides.
 
 ## OCR-fidelity sweep (`ocr-report`, 2026-07-16)
 

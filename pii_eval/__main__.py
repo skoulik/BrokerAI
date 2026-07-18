@@ -91,9 +91,13 @@ def main() -> int:
                     help=f"corpus folder (default: {CORPUS_ROOT}/<modality>/s<seed>)")
     sc.add_argument("--seed", type=int, default=42,
                     help="which seed's corpus to score when -c is not given")
-    sc.add_argument("--modality", choices=["text", "image"], default="text",
+    sc.add_argument("--modality", choices=["text", "image", "pdf"],
+                    default="text",
                     help="text: span/cell scoring; image: render pipeline + "
-                         "re-OCR value survival")
+                         "re-OCR value survival; pdf: full strip_pdf run on "
+                         "a real corpus' source PDFs + re-OCR value "
+                         "survival (-c required: real corpora have no seed "
+                         "scheme)")
     sc.add_argument("--threshold", type=float, default=0.4)
     sc.add_argument("--invalid-identifiers",
                     choices=["ignore", "all", "likely", "context"],
@@ -101,7 +105,7 @@ def main() -> int:
                     help="collection tier for checksum-invalid candidates")
     sc.add_argument("--ocr-backend", choices=list(OCR_BACKENDS),
                     default="paddle",
-                    help="OCR engine for --modality image "
+                    help="OCR engine for --modality image/pdf "
                          "(default: paddle)")
 
     args = parser.parse_args()
@@ -154,6 +158,16 @@ def main() -> int:
                            threshold=args.threshold,
                            invalid_identifiers=args.invalid_identifiers,
                            ocr_backend=args.ocr_backend)
+    if args.modality == "pdf":
+        if not args.corpus:
+            parser.error("--modality pdf requires -c (a real corpus folder, "
+                         f"e.g. {CORPUS_ROOT}/real/1)")
+        from pii_eval.score_pdf import score_pdf
+
+        return score_pdf(args.corpus,
+                         threshold=args.threshold,
+                         invalid_identifiers=args.invalid_identifiers,
+                         ocr_backend=args.ocr_backend)
     from pii_eval.score import score
 
     return score(args.corpus or _default_corpus(args.seed),

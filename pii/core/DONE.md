@@ -25,6 +25,37 @@ the move; new completed tasks append to the matching section with their records.
       all planted PII incl. checksum-valid TFN/Medicare through OCR, and survived OCR
       mangling ("0412 345678"). Still open on the image path: barcode masking, statement
       tables, OCR preprocessing knobs, engine bake-off, PDF reassembly.)*
+- [x] PDFs — **treat as images**: render pages → OCR → redact pixels → reassemble PDF.
+      Rationale: financial-sector PDFs often have junk/broken text layers, and rebuilding from
+      pixels also eliminates the hidden-text-layer leak class entirely.
+      *(2026-07-18: `strip_pdf` in `pii/core/pdf_mode.py` — the reassembly leg over the
+      2026-07-17 render leg. Per page: render (300 DPI default) → OCR → full text pipeline →
+      paint → embed into a fresh pymupdf document at the source page's physical size
+      (points). The output is built from scratch, so text layers, annotations, attachments
+      and source metadata are absent by construction (metadata dict explicitly emptied too)
+      — the PDF slice of the metadata-scrubbing task came free. Lossless end-to-end,
+      JPEG q90 at the final embed only (Sergei's call; ~0.2 MB/page vs 1-4 MB PNG;
+      configurability is a recorded TODO). Pages stream through one pipeline + one shared
+      map: memory flat, placeholders document-consistent. CLI: `strip --pdf -o out.pdf`
+      (+ `--dpi`), with per-page `--report` prefixes and a page-progress heartbeat on
+      stderr. Same session, per-document pseudonym-map default landed across all strip
+      modes: `--map` defaults to `<input>.pii_map.json`, stdin/rehydrate now require an
+      explicit `--map`; cross-document consistency deferred to the layered-map task
+      (per-document + global + group, TODO.md). Eval wiring: `pii_eval score --modality
+      pdf -c corpora/real/<set>` runs strip_pdf on the real corpus' source PDFs and
+      scores re-OCR value survival with the image tier's matcher (`score_pdf.py`;
+      criticality from build.CRITICAL — real truth carries no critical flags; valueless
+      barcode entities skipped until barcode masking; stripped PDFs kept under
+      <corpus>/stripped/ for review; summary tables now split strip/keep per entity's
+      strip_expected, not per type — real corpora have ORGANIZATION/PHONE_NUMBER on both
+      sides). Tests: reassembly contract model-free via a fake OCR at the
+      `pdf_mode.get_ocr` seam (page count/size, empty text layer, JPEG embed, clean
+      metadata, painted pixels, progress callback) + CLI map-derivation/mode-guard tests
+      (`tests/pii/cli/`). E2e smoke on a synthetic 2-page statement PDF: all planted PII
+      painted, keeps intact, map + placeholder consistency verified; known warts observed
+      unchanged (merchant-suburb over-strip, BSB→TFN_INVALID-style label competition —
+      both recorded pre-existing items). Belt-and-braces text-layer scan split out as its
+      own TODO.)*
 - [x] Bank transaction lists (CSV / statement tables) — column-aware handling.
       *(2026-07-12: CSV mode done — per-cell detection, `--columns` filter; statement tables
       from the image path still pending, see [TODO.md](TODO.md).)* Descriptions

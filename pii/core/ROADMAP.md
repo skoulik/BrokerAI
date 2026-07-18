@@ -20,7 +20,8 @@ locally and analytical utility is preserved.
 - [x] Plain text *(2026-07-12)*
 - [x] Bank transaction CSVs — per-cell, column-aware *(2026-07-12)*
 - [x] Images (scans, screenshots) — OCR, placeholders painted onto pixels *(2026-07-14)*
-- [ ] PDFs — treated as images: render → OCR → paint → reassemble *(next up)*
+- [x] PDFs — treated as images: render → OCR → paint → reassemble a fresh image-only PDF
+  *(2026-07-18)*
 - [ ] Statement tables via the image path
 
 ## Detection layers
@@ -49,9 +50,11 @@ synthetic/declassified data or aggregate metrics.
 Scoring is recall-first and severity-weighted: acceptance = zero critical misses (TFN,
 account numbers, names) on the Tier 3 review set, not a single F1 number.
 
-## Where things stand (2026-07-15)
+## Where things stand (2026-07-18)
 
-Text, CSV and image paths work end-to-end behind one CLI (`python -m pii`); detection
-layers 1–2 are eval-gated on the Tier-1 text corpus. The current front is the image/PDF
-track (PDF mode → image eval tier → OCR bake-off); after that the end-to-end evaluation
-decides whether layer 3 is needed at all — see [TODO.md](TODO.md) for the ordered list.
+Text, CSV, image and PDF paths work end-to-end behind one CLI (`python -m pii`); detection
+layers 1–2 are eval-gated on the Tier-1 text and image corpora, and `pii_eval score
+--modality pdf` runs the full PDF pipeline against the real-document corpus. The current
+front: demo on the reference documents → degradation tier → one-pass VLM experiment;
+after that the end-to-end evaluation decides whether layer 3 is needed at all — see
+[TODO.md](TODO.md) for the ordered list.
