@@ -71,6 +71,22 @@ def test_account_digit_floor_rejects_fragments(pipeline):
     assert "12 34" in out
 
 
+def test_transaction_amount_columns_not_account(pipeline):
+    # Issue #3: the 'account grouped' pattern matched the decimal-fraction of
+    # one amount + the integer start of the next across the column gap
+    # ('2,148.74 377,970.04DR' -> '74 377'), promoted past threshold by the
+    # nearby 'LOAN'/'PAYMENT' context word. Formatted-number fragments are
+    # now excluded, so the whole transaction line survives intact.
+    # Both lines carry an account context word (LOAN/PAYMENT) so the fragment
+    # WOULD be promoted past threshold without the guard.
+    for text in (
+        "03 APR LOAN PAYMENT 2,148.74 377,970.04DR",
+        "24 APR LOAN TRANSFER 2,206.74 375,705.30DR",
+    ):
+        out, _, _ = pipeline.strip(text, PseudonymMap())
+        assert out == text, text
+
+
 def test_strip_credit_card(pipeline):
     out, _, _ = pipeline.strip(f"Card for repayments: {VALID_CARD}", PseudonymMap())
     assert VALID_CARD not in out

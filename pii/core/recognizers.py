@@ -54,13 +54,18 @@ class AuAccountNumberRecognizer(PatternRecognizer):
     PATTERNS = [
         Pattern("account-number", r"\b\d{5,10}\b", 0.15),
         # Space/hyphen-grouped digit runs ("0007 3111 4", "000 731 114").
-        # Context-promoted like the bare run above; the lookahead spares
-        # year ranges ("2023 2024") — observed FP: "account statement
-        # period 2023 2024" promotes via the word 'account'.
+        # Context-promoted like the bare run above; the leading lookahead
+        # spares year ranges ("2023 2024") — observed FP: "account statement
+        # period 2023 2024" promotes via the word 'account'. The (?<![.,])
+        # / (?![.,]?\d) guards exclude a digit run that is part of a
+        # formatted decimal/thousands amount: transaction columns put the
+        # fraction of one amount beside the integer of the next
+        # ("2,148.74 377,970.04DR" -> "74 377"), promoted past threshold by
+        # the nearby 'LOAN'/'PAYMENT' context word (issue #3).
         Pattern(
             "account grouped",
-            r"\b(?!(?:19|20)\d{2}[ -](?:19|20)?\d{2}\b)"
-            r"\d{2,6}(?:[ -]\d{1,6}){1,3}\b",
+            r"\b(?<![.,])(?!(?:19|20)\d{2}[ -](?:19|20)?\d{2}\b)"
+            r"\d{2,6}(?:[ -]\d{1,6}){1,3}(?![.,]?\d)\b",
             0.15,
         ),
         # Hyphenated account styles seen on real statements — confident

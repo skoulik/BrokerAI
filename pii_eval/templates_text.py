@@ -146,7 +146,13 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
                 strip_expected=False, evidence="in-span")
     else:
         doc.pii(au.card_number(rng), "CREDIT_CARD")
-    doc.nl(2)
+    doc.nl()
+    # AMOUNT_COLUMN keep-probe (issue #3): adjacent formatted amounts in a
+    # loan/payment context — the decimal-fraction+next-integer boundary
+    # ('...74 377...') must NOT be mistaken for a grouped account number.
+    doc.raw("  Recent loan payment: ").pii(
+        "2,148.74 377,970.04", "AMOUNT_COLUMN", strip_expected=False
+    ).nl(2)
 
     occupation = rng.choice(["dentist", "electrician", "GP", "teacher"])
     town = rng.choice(["Wagga Wagga", "Ballarat", "Dubbo", "Cairns"])
