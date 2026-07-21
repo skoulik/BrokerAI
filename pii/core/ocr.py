@@ -231,26 +231,47 @@ def _interpolate(text: str, box: Box):
 
 def _rows(regions):
     """Band regions into visual rows by y-center; one assembled line per
-    row, words ordered left-to-right across the row's regions."""
+    row, words ordered left-to-right across the row's regions.
+
+    A region joins the current row only if it also does NOT horizontally
+    overlap a region already in it: two regions sharing an x-column are
+    vertically STACKED lines (a label/value block), not one row. Without this
+    a tall neighbour between two stacked lines — a logo — bridges them by
+    y-center and their words interleave (the BPAY block, issue #6). Side-by-
+    side columns (different x, same y) don't overlap, so multi-column
+    statement rows are unaffected."""
     regions = sorted(regions, key=lambda r: r[0].top + r[0].height / 2)
     rows = []
     centers: list[float] = []
     heights: list[float] = []
+    row_boxes: list[list[Box]] = []
     for box, words in regions:
         c = box.top + box.height / 2
-        if rows and abs(c - centers[-1]) < 0.5 * max(
-            box.height, heights[-1], 1
+        if (
+            rows
+            and abs(c - centers[-1]) < 0.5 * max(box.height, heights[-1], 1)
+            and not any(_x_overlap(box, rb) for rb in row_boxes[-1])
         ):
             rows[-1].extend(words)
             centers[-1] += (c - centers[-1]) / 2
             heights[-1] = max(heights[-1], float(box.height))
+            row_boxes[-1].append(box)
         else:
             rows.append(list(words))
             centers.append(c)
             heights.append(float(box.height))
+            row_boxes.append([box])
     for row in rows:
         row.sort(key=lambda item: item[1].left)
     return rows
+
+
+def _x_overlap(a: Box, b: Box) -> bool:
+    """True if two region boxes share enough horizontal extent to be
+    vertically stacked lines rather than side-by-side columns."""
+    return min(a.right, b.right) - max(a.left, b.left) > 0.3 * min(
+        a.width, b.width
+    )
 
 
 def _background_color(image: Image.Image):

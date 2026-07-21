@@ -72,6 +72,37 @@ class TestResultToOcr:
         ))
         assert ocr.text == "first\nsecond"
 
+    def test_tall_region_does_not_bridge_stacked_lines(self):
+        # The BPAY block (issue #6): a tall logo sits between two stacked
+        # label/value lines. y-center banding with max-height would let the
+        # logo bridge them into one interleaved row; the x-overlap guard keeps
+        # them separate — two regions sharing an x-column are stacked lines,
+        # not one row — so the card line survives intact and reads as a card.
+        ocr = result_to_ocr(_result(
+            texts=["Biller Code 22863", "BPAY", "Ref: 4564 9427 0001 0443"],
+            boxes=[
+                [358, 2715, 601, 2745],   # Biller Code, h30, y-center 2730
+                [117, 2722, 251, 2780],   # BPAY logo, h58, y-center 2751
+                [359, 2752, 703, 2779],   # Ref: card, h27, y-center 2766
+            ],
+            scores=[0.9, 0.9, 0.9],
+        ))
+        assert "Ref: 4564 9427 0001 0443" in ocr.text.split("\n")
+
+    def test_close_columns_same_row_still_merge(self):
+        # Regression guard for the x-overlap guard: side-by-side columns at the
+        # same y (non-overlapping x) must still assemble as one row.
+        ocr = result_to_ocr(_result(
+            texts=["01 APR PAYMENT", "2,148.74", "377,970.04"],
+            boxes=[
+                [20, 10, 300, 40],     # description
+                [360, 10, 520, 40],    # debit
+                [560, 10, 720, 40],    # balance
+            ],
+            scores=[0.9, 0.9, 0.9],
+        ))
+        assert ocr.text == "01 APR PAYMENT 2,148.74 377,970.04"
+
     def test_merged_fragments_map_word_boxes(self):
         # the verified quirk: fragments "TFN123" / " " / "456" against
         # line text "TFN 123 456" — boxes come from char-stream overlap,
