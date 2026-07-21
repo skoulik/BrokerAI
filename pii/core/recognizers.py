@@ -7,6 +7,8 @@ Recall-first: base pattern scores are low and rely on the context enhancer
 (+0.35) to cross the pipeline threshold, except unambiguous combined forms.
 """
 
+import regex
+
 from presidio_analyzer import Pattern, PatternRecognizer
 
 
@@ -143,7 +145,18 @@ class JointNameRecognizer(PatternRecognizer):
     in pii_eval): org names with no corporate marker anywhere ('P & O
     CRUISES', 'ANGUS AND ROBERTSON BOOKSHOP') get stripped, and statement
     phrases whose giveaway word sits only in the surname slot ('FIRE AND
-    THEFT COVER') get stripped."""
+    THEFT COVER') get stripped.
+
+    Case sensitivity matters. The name-word class is ``[A-Z]...`` and the real
+    ALL-CAPS/Title forms are covered by it plus the explicit
+    ``(?:and|AND|And)`` connector — but presidio compiles patterns with
+    IGNORECASE ON by default, which silently turns ``[A-Z]`` into "any letter"
+    and made lowercase prose ('simple and convenient online') match as a joint
+    name (issue #4, PROSE_AND keep-probe). So __init__ overrides
+    ``global_regex_flags`` to drop IGNORECASE; ``_NO_CORP_TAIL`` keeps its own
+    inline ``(?i:...)`` so the corporate-tail lookahead stays case-insensitive
+    regardless. ALL-CAPS prose still matches the shape and leans on the
+    vocabulary guard — a smaller residual left for a follow-up."""
 
     # A name word: capitalised, 2+ chars, allows O'Brien / Smith-Jones /
     # McDonald and their ALL-CAPS forms.
@@ -200,6 +213,9 @@ class JointNameRecognizer(PatternRecognizer):
             supported_entity="PERSON",
             patterns=self.PATTERNS,
             name="JointNameRecognizer",
+            # Drop presidio's default IGNORECASE so the [A-Z] name-word class
+            # is case-sensitive (see class docstring, issue #4).
+            global_regex_flags=regex.MULTILINE | regex.DOTALL,
             **kwargs,
         )
 

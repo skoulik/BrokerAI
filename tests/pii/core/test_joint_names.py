@@ -83,8 +83,12 @@ def test_surname_colliding_with_statement_word_still_strips(pipeline):
 
 
 def test_corporate_and_name_not_stripped(pipeline):
-    # 'X AND Y Z' organizations stay intact when a corporate marker is
-    # visible — in the surname slot or trailing the three-word match.
+    # The JointNameRecognizer's PERSON-path guard: 'X AND Y Z' org names with
+    # a corporate marker (surname slot or trailing tail) must NOT be mis-split
+    # into joint persons. NER is stubbed here, so no ORGANIZATION span exists
+    # and org_policy has nothing to act on -> out == text isolates the guard.
+    # (Under the full pipeline the PTY LTD ones ARE stripped as private
+    # ORGANIZATION entities by org_policy, issue #2 — a different path.)
     for text in (
         "EFTPOS ANGUS AND ROBERTSON PTY LTD 4821 AU",   # tail lookahead
         "PAYMENT TO TAYLOR AND SCOTT LAWYERS PTY LTD",  # tail lookahead
@@ -113,3 +117,17 @@ def test_lowercase_prose_untouched(pipeline):
         PseudonymMap(),
     )
     assert "loans and savings" in out
+
+
+def test_lowercase_nonvocab_prose_not_joint_name(pipeline):
+    # Issue #4: presidio's default IGNORECASE turned the [A-Z] name-word class
+    # into "any letter", so lowercase prose with NO statement-vocabulary word
+    # (the guard can't catch it) matched the joint pattern. The recognizer
+    # drops IGNORECASE, so these stay put.
+    for text in (
+        "a simple and convenient online option",
+        "quick and easy setup",
+        "date and the amount shown",
+    ):
+        out, _, _ = pipeline.strip(text, PseudonymMap())
+        assert out == text, text

@@ -70,8 +70,14 @@ class Doc:
         return self.raw(value)
 
     def org(self, value: str) -> "Doc":
-        # merchants/organizations are detected but kept by default
+        # merchant/institution organizations are detected but kept by default
         return self.pii(value, "ORGANIZATION", strip_expected=False)
+
+    def private_org(self, value: str) -> "Doc":
+        # account-holder private entity (PTY LTD / TRUST / ...) — stripped by
+        # org_policy, unlike merchant/institution orgs (.org). Own truth type
+        # so it scores on the recall/leak axis, not the over-strip axis.
+        return self.pii(value, "ORGANIZATION_PRIVATE", strip_expected=True)
 
     def pad_to(self, col: int) -> "Doc":
         """Pad with spaces to the given column of the current line —

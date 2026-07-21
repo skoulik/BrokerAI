@@ -108,6 +108,41 @@ def test_kept_org_does_not_shield_nested_address(pipeline, monkeypatch):
     assert out == "EFTPOS WOOLWORTHS ADDRESS_1 4821 AU"
 
 
+def test_private_org_stripped_institution_and_merchant_kept(pipeline, monkeypatch):
+    # ORGANIZATION is kept by default, EXCEPT account-holder private entities
+    # (legal-form marker, not a known institution) — org_policy. The strip
+    # keeps the ORG_n placeholder (issue #2/#5).
+    text = "ACCOUNT OF SK BUSINESS TRUST at ANZ paid WOOLWORTHS"
+    results = [
+        _rr("ORGANIZATION", 11, 28, 0.78),  # SK BUSINESS TRUST -> strip
+        _rr("ORGANIZATION", 32, 35, 0.97),  # ANZ (keep-listed) -> keep
+        _rr("ORGANIZATION", 41, 51, 0.95),  # WOOLWORTHS (no marker) -> keep
+    ]
+    monkeypatch.setattr(pipeline.analyzer, "analyze", lambda **kw: results)
+    out, _, _ = pipeline.strip(text, PseudonymMap())
+    assert "SK BUSINESS TRUST" not in out
+    assert "ORG_1" in out
+    assert "ANZ" in out and "WOOLWORTHS" in out
+
+
+def test_strip_orgs_forces_all_including_institutions(make_pipeline, monkeypatch):
+    # --strip-orgs (ORGANIZATION in strip_entities) overrides the private-
+    # entity policy: every org, institutions included, is stripped.
+    from pii.core import DEFAULT_STRIP_ENTITIES
+
+    pipeline = make_pipeline(
+        strip_entities=set(DEFAULT_STRIP_ENTITIES) | {"ORGANIZATION"}
+    )
+    text = "paid ANZ and WOOLWORTHS today"
+    results = [
+        _rr("ORGANIZATION", 5, 8, 0.97),    # ANZ
+        _rr("ORGANIZATION", 13, 23, 0.95),  # WOOLWORTHS
+    ]
+    monkeypatch.setattr(pipeline.analyzer, "analyze", lambda **kw: results)
+    out, _, _ = pipeline.strip(text, PseudonymMap())
+    assert "ANZ" not in out and "WOOLWORTHS" not in out
+
+
 def test_merge_overlaps_unions_extents_higher_score_wins_type():
     # A small high-score span must not evict the wider covering span —
     # extents union, label follows the higher score.

@@ -64,10 +64,10 @@ def test_invalid_docs_appended_without_disturbing_base(tmp_path):
 def test_known_hard_forms_present_and_not_gated(tmp_path):
     """The per-form probe types (corpus additions 2026-07-15) must keep
     appearing: bare-town locations, the 3-letter-suburb floor sacrifice,
-    bare street lines, suburb-suffixed merchants and trust names as
-    keep-orgs. The unfixed ones may not enter the critical gate;
-    PERSON_JOINT is gated since the layer-1 joint-name recognizer took
-    ownership (2026-07-15)."""
+    bare street lines, suburb-suffixed merchant keep-orgs and account-holder
+    private entities (ORGANIZATION_PRIVATE strip, 2026-07-21). The unfixed
+    ones may not enter the critical gate; PERSON_JOINT is gated since the
+    layer-1 joint-name recognizer took ownership (2026-07-15)."""
     generate(str(tmp_path), seed=42, docs=9)
     ents = [e for d in _load(tmp_path)["docs"] for e in d["entities"]]
     by_type = {}
@@ -76,7 +76,8 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
 
     for t in ("LOCATION", "LOCATION_SHORT", "ADDRESS_BARE",
               "PERSON_JOINT", "PERSON_REVERSED", "CONTEXTUAL_ID",
-              "PERSON_COMMA", "PERSON_PARTICLE", "PERSON_MULTIWORD"):
+              "PERSON_COMMA", "PERSON_PARTICLE", "PERSON_MULTIWORD",
+              "ORGANIZATION_PRIVATE"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(e["strip_expected"] for e in by_type[t]), t
         gated = t == "PERSON_JOINT"
@@ -90,7 +91,7 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     # Joint-name recognizer trade-off keep-probes (2026-07-15): 'AND'-orgs
     # with a corporate marker (must keep) and without one (the documented
     # sacrifice). Per-form keep rows, never gate members.
-    for t in ("ORGANIZATION_AND", "ORGANIZATION_AND_BARE"):
+    for t in ("ORGANIZATION_AND", "ORGANIZATION_AND_BARE", "PROSE_AND"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(not e["strip_expected"] and not e["critical"]
                    for e in by_type[t]), t
@@ -101,8 +102,15 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
         for e in by_type["PERSON"]
     ), "no colliding-surname joint draw in corpus"
 
+    # Account-holder private entities: a trust and a PTY LTD name must appear
+    # as strip-expected ORGANIZATION_PRIVATE (org_policy, 2026-07-21) — the
+    # reverse of the old keep-org stance.
+    private = [e["value"] for e in by_type["ORGANIZATION_PRIVATE"]]
+    assert any("TRUST" in v for v in private), "no trust name as private-org"
+    assert any("PTY LTD" in v for v in private), "no PTY LTD name as private-org"
+
+    # Merchants/institutions remain keep-orgs, including suburb-suffixed forms.
     orgs = [e["value"] for e in by_type["ORGANIZATION"]]
-    assert any("TRUST" in v for v in orgs), "no trust name as keep-org"
     towns = {t.upper() for t in TOWNS}
     assert any(v.split()[-1] in towns for v in orgs), \
         "no suburb-suffixed merchant keep-org"

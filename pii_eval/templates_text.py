@@ -51,10 +51,11 @@ def legacy_statement(pool: Pool) -> Doc:
     )
     doc.pad_to(46).raw(f"Statement Number :{rng.randrange(1, 60):>8}").nl(2)
 
-    # trust names are business entities — keep-ORGANIZATION like the PTY LTD
-    # names, even though the stem is a surname (over-strip axis watches them)
+    # the account holder's own business/trust entity — private-entity PII
+    # stripped by org_policy (a legal-form marker, not a known institution),
+    # so ground-truthed ORGANIZATION_PRIVATE on the recall axis (2026-07-21)
     account_of = biz.trust if biz.trust and rng.random() < 0.5 else biz.name
-    doc.raw("ACCOUNT OF: ").org(account_of).nl(2)
+    doc.raw("ACCOUNT OF: ").private_org(account_of).nl(2)
     doc.raw("Date    Particulars").pad_to(55).raw("Debit     Credit       Balance").nl()
 
     balance = round(rng.uniform(100, 90000), 2)
@@ -121,11 +122,11 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
         doc.nl()
 
     doc.raw("Self-employment\n")
-    doc.raw("  Entity:          ").org(biz.name).nl()
+    doc.raw("  Entity:          ").private_org(biz.name).nl()
     if biz.trust:
-        # keep-ORGANIZATION, same stance as the PTY LTD name (see the
-        # legacy template)
-        doc.raw("  Trustee for:     ").org(biz.trust).nl()
+        # account-holder private entity, stripped by org_policy (2026-07-21) —
+        # same stance as the PTY LTD name above
+        doc.raw("  Trustee for:     ").private_org(biz.trust).nl()
     doc.raw("  ABN:             ")
     if invalid:
         doc.pii(au.invalid_abn(rng), "AU_ABN_INVALID",
@@ -159,7 +160,12 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
         "; income verified from last two BAS lodgements. "
         "Genuine savings held with "
     )
-    doc.raw(f"{acct.bank}.").nl()
+    # PROSE_AND keep-probe (issue #4): lowercase 'X and Y Z' prose with no
+    # statement-vocabulary word must NOT be mis-detected as a joint name — the
+    # case the IGNORECASE bug hit and the vocabulary guard cannot catch.
+    doc.raw(f"{acct.bank}. Repayments are ")
+    doc.pii("simple and convenient online", "PROSE_AND",
+            strip_expected=False).raw(".").nl()
     # Bare-town mentions: LOCATION measures the GLiNER2 location pass on
     # standalone names (no address context); LOCATION_SHORT is the real
     # 3-letter-suburb class the LOCATION_MIN_CHARS=4 floor knowingly

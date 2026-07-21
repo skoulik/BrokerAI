@@ -46,6 +46,7 @@ from pii.core.invalid_recognizers import (
     make_invalid_recognizers,
 )
 from pii.core.mapping import PseudonymMap
+from pii.core.org_policy import is_private_entity
 from pii.core.recognizers import (
     AuAccountNumberRecognizer,
     AuBsbRecognizer,
@@ -54,8 +55,10 @@ from pii.core.recognizers import (
 )
 
 # Entities replaced by default. Detected-but-kept by default: ORGANIZATION
-# (merchant names carry analytical value in bank statements), DATE_TIME
-# (transaction dates; DATE_OF_BIRTH is stripped separately).
+# (merchant/institution names carry analytical value in bank statements) —
+# EXCEPT account-holder private entities (PTY LTD / TRUST / ... not on the
+# institution keep-list), stripped per org_policy (see detect()). DATE_TIME
+# (transaction dates; DATE_OF_BIRTH is stripped separately) is kept.
 DEFAULT_STRIP_ENTITIES = {
     "PERSON",
     "EMAIL_ADDRESS",
@@ -177,9 +180,26 @@ class PiiPipeline:
             text=text, language="en", score_threshold=self.threshold
         )
         plan = _merge_overlaps(
-            [r for r in results if r.entity_type in self.strip_entities]
+            [r for r in results if self._in_strip_plan(r, text)]
         )
         return plan, _collect_invalid(results, text)
+
+    def _in_strip_plan(self, r, text: str) -> bool:
+        """Whether a detected span is stripped.
+
+        Straight strip_entities membership, except ORGANIZATION: kept by
+        default (merchant/institution analytical value), but the account
+        holder's own private entities — a legal-form marker and not a known
+        institution (org_policy.is_private_entity) — are identifying PII and
+        stripped (keeping the ORG_n placeholder). --strip-orgs (ORGANIZATION
+        added to strip_entities) still forces all orgs.
+        """
+        if (
+            r.entity_type == "ORGANIZATION"
+            and "ORGANIZATION" not in self.strip_entities
+        ):
+            return is_private_entity(text[r.start : r.end])
+        return r.entity_type in self.strip_entities
 
     def plan(self, text: str) -> list:
         """The spans strip() would replace."""
