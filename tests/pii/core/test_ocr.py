@@ -71,3 +71,72 @@ def test_boxes_span_across_lines_one_box_per_line():
 def test_boxes_empty_span():
     result = _two_lines()
     assert result.boxes_for_span(5, 5) == []
+
+
+# --- painted_boxes_for_span: grow the run out to paddle's region box so no
+# glyph fringe survives (fragment word boxes are inset from the ink). ---
+
+
+def _inset_line():
+    # One line "OLGA KULIK": the fragment word boxes are inset from the
+    # region (line) box, which contains the glyph ink. region_box is the
+    # 4th tuple element.
+    region = _box(0, top=0, width=100, height=20)
+    return assemble(
+        [
+            [
+                ("OLGA", _box(15, top=2, width=30, height=16), 90.0, region),
+                ("KULIK", _box(55, top=2, width=30, height=16), 90.0, region),
+            ]
+        ]
+    )
+
+
+def test_painted_grows_run_to_region_box():
+    result = _inset_line()
+    start = result.text.index("OLGA")
+    end = start + len("OLGA KULIK")
+    # boxes_for_span stops at the inset word boxes...
+    assert result.boxes_for_span(start, end) == [_box(15, top=2, width=70, height=16)]
+    # ...painted grows out to the region box that contains the ink.
+    assert result.painted_boxes_for_span(start, end) == [
+        _box(0, top=0, width=100, height=20)
+    ]
+
+
+def _inset_mid():
+    # "FROM OLGA KULIK PAID" sharing one region box; only OLGA KULIK is PII.
+    region = _box(0, top=0, width=200, height=20)
+
+    def w(left, word, width):
+        return (word, _box(left, top=2, width=width, height=16), 90.0, region)
+
+    return assemble(
+        [[w(5, "FROM", 25), w(45, "OLGA", 30), w(85, "KULIK", 30), w(130, "PAID", 25)]]
+    )
+
+
+def test_painted_midline_clamps_to_neighbour_midpoint():
+    result = _inset_mid()
+    start = result.text.index("OLGA")
+    (box,) = result.painted_boxes_for_span(start, start + len("OLGA KULIK"))
+    # left grows into the gap toward FROM (right=30), stopping at the
+    # midpoint with the run's left edge (u_left=45); right toward PAID.
+    assert box.left == (30 + 45) // 2
+    assert box.right == (130 + 115) // 2
+    # never overpaints the kept neighbours' glyphs
+    assert box.left > 30 and box.right < 130
+
+
+def test_painted_without_region_matches_boxes_for_span():
+    # 3-tuple callers supply no region geometry (region_box defaults to the
+    # word box), so painting must not differ from boxes_for_span.
+    result = _two_lines()
+    start = result.text.index("123")
+    assert result.painted_boxes_for_span(start, start + 11) == result.boxes_for_span(
+        start, start + 11
+    )
+    start = result.text.index("782")
+    assert result.painted_boxes_for_span(
+        start, len(result.text)
+    ) == result.boxes_for_span(start, len(result.text))

@@ -71,6 +71,12 @@ class OcrWord:
     line: int  # index into the assembled text's lines
     char_start: int  # interval in OcrResult.text, recorded at assembly
     char_end: int
+    # Paddle's detection line/region box the word came from. It CONTAINS
+    # the glyph ink, whereas `box` (a per-word fragment box) is inset from
+    # the glyphs by several px at each outer edge — so painting grows the
+    # word box out to this (see painted_boxes_for_span). Defaults to `box`
+    # for callers that supply no region geometry (glyph-tight assumption).
+    region_box: Box | None = None
 
 
 @dataclass(frozen=True)
@@ -93,10 +99,57 @@ class OcrResult:
                 by_line.setdefault(w.line, []).append(w.box)
         return [_union(boxes) for _, boxes in sorted(by_line.items())]
 
+    def painted_boxes_for_span(self, start: int, end: int) -> list[Box]:
+        """Boxes for painting a span — like boxes_for_span, but each line's
+        run is grown out to paddle's line/region box so no glyph fringe
+        survives.
 
-def assemble(lines: list[list[tuple[str, Box, float]]]) -> OcrResult:
-    """Build the assembled text from per-line (text, box, conf) words,
-    recording each word's character interval as it is written."""
+        The word boxes returned by boxes_for_span come from paddle's
+        per-word fragment boxes, which are inset from the glyph ink by
+        several px at each outer edge (the line/region box, `region_box`,
+        contains the ink — measured 2026-07-21). A small fixed paint margin
+        can't cover that, so for each line the run touches we take the union
+        of the run words' region boxes and then pull the outer edges back to
+        the MIDPOINT of the gap toward any neighbouring word not in the span
+        — recovering the run's own inset without overpainting a kept
+        neighbour. Never narrower than boxes_for_span (both midpoint and
+        region edge lie outside the word-union edge). Falls back to the word
+        box where no region geometry was supplied (region_box is None)."""
+        by_line: dict[int, list[OcrWord]] = {}
+        for w in self.words:
+            if max(start, w.char_start) < min(end, w.char_end):
+                by_line.setdefault(w.line, []).append(w)
+        out = []
+        for line_idx, run in sorted(by_line.items()):
+            u_left = min(w.box.left for w in run)
+            u_right = max(w.box.right for w in run)
+            regions = [w.region_box or w.box for w in run]
+            left = min(r.left for r in regions)
+            right = max(r.right for r in regions)
+            top = min(r.top for r in regions)
+            bottom = max(r.bottom for r in regions)
+            # Clamp the region extension back toward any same-line word not
+            # part of the run, so we grow into whitespace, not a neighbour.
+            for w in self.words:
+                if w.line != line_idx or max(start, w.char_start) < min(
+                    end, w.char_end
+                ):
+                    continue
+                if w.box.right <= u_left:
+                    left = max(left, (w.box.right + u_left) // 2)
+                elif w.box.left >= u_right:
+                    right = min(right, (w.box.left + u_right) // 2)
+            out.append(Box(left=left, top=top, width=right - left, height=bottom - top))
+        return out
+
+
+def assemble(lines: list[list[tuple]]) -> OcrResult:
+    """Build the assembled text from per-line word tuples, recording each
+    word's character interval as it is written.
+
+    A word tuple is (text, box, conf) or (text, box, conf, region_box);
+    when the region box is omitted it defaults to the word box (glyph-tight
+    assumption — see OcrWord.region_box)."""
     words = []
     parts = []
     pos = 0
@@ -104,7 +157,9 @@ def assemble(lines: list[list[tuple[str, Box, float]]]) -> OcrResult:
         if line_idx:
             parts.append("\n")
             pos += 1
-        for word_idx, (text, box, conf) in enumerate(line):
+        for word_idx, item in enumerate(line):
+            text, box, conf = item[0], item[1], item[2]
+            region_box = item[3] if len(item) > 3 else box
             if word_idx:
                 parts.append(" ")
                 pos += 1
@@ -116,6 +171,7 @@ def assemble(lines: list[list[tuple[str, Box, float]]]) -> OcrResult:
                     line=line_idx,
                     char_start=pos,
                     char_end=pos + len(text),
+                    region_box=region_box,
                 )
             )
             parts.append(text)

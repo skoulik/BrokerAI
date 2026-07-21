@@ -240,7 +240,10 @@ def result_to_ocr(result: dict) -> OcrResult:
             else None
         )
         words = _region_words(text, line_box, frags)
-        regions.append((line_box, [(w, b, conf) for w, b in words]))
+        # Carry the region (line) box alongside each word: the fragment
+        # boxes are inset from the glyphs, so painting grows out to it
+        # (OcrWord.region_box / OcrResult.painted_boxes_for_span).
+        regions.append((line_box, [(w, b, conf, line_box) for w, b in words]))
 
     return assemble(_rows(regions))
 

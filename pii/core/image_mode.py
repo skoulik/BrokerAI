@@ -3,8 +3,8 @@
 The image path reuses the WHOLE text pipeline (all detection layers,
 overlap merging, invalid-identifier collection) by running it on the
 OCR-assembled text, then mapping each merged span back to pixel boxes
-(pii.core.ocr.OcrResult.boxes_for_span) and painting on the ORIGINAL image —
-detection never sees pixels, painting never sees raw analyzer results.
+(pii.core.ocr.OcrResult.painted_boxes_for_span) and painting on the ORIGINAL
+image — detection never sees pixels, painting never sees raw analyzer results.
 
 Painting is pseudonymization, not blank redaction: each box is filled
 with the page background color and the span's placeholder (PERSON_1) is
@@ -106,7 +106,7 @@ def strip_from_ocr(
     segments = [
         Segment(
             label=pmap.placeholder_for(r.entity_type, ocr.text[r.start : r.end]),
-            boxes=ocr.boxes_for_span(r.start, r.end),
+            boxes=ocr.painted_boxes_for_span(r.start, r.end),
         )
         for r in spans  # detect() returns document order == numbering order
     ]
