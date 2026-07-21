@@ -91,3 +91,35 @@ def test_distant_person_spans_stay_separate():
         if r.entity_type == "PERSON"
     ]
     assert len(persons) == 2  # ' to ' is not a comma/whitespace gap
+
+
+def test_reversed_two_token_person_refound_from_canonical():
+    # The 1.pdf 'KULIK OLGA' leak: under same-window interference the model
+    # returns only the canonical 'OLGA KULIK' (the reversed mention collapses
+    # to a sub-threshold surname fragment), so the given name leaks. The
+    # reversed order must be re-found from the confident canonical detection.
+    rec = Gliner2Recognizer()
+    rec._model = _RecordingFakeModel({"person": ["OLGA KULIK"]})
+    text = "OLGA KULIK\nAccount name(s) KULIK OLGA"
+    found = sorted(
+        text[r.start:r.end]
+        for r in rec.analyze(text, entities=None)
+        if r.entity_type == "PERSON"
+    )
+    assert "OLGA KULIK" in found
+    assert "KULIK OLGA" in found  # reversed order recovered — no OLGA leak
+
+
+def test_three_token_person_not_reversed():
+    # FP guard: reversal is restricted to two-token names. A 3-token name is
+    # not reversed (particle/middle-name order is ambiguous).
+    rec = Gliner2Recognizer()
+    rec._model = _RecordingFakeModel({"person": ["ANNA MARIE SMITH"]})
+    text = "ANNA MARIE SMITH paid rent to SMITH MARIE ANNA today"
+    persons = [
+        text[r.start:r.end]
+        for r in rec.analyze(text, entities=None)
+        if r.entity_type == "PERSON"
+    ]
+    assert "ANNA MARIE SMITH" in persons
+    assert "SMITH MARIE ANNA" not in persons

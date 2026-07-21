@@ -316,30 +316,31 @@ class Gliner2Recognizer(EntityRecognizer):
                             < AU_BANK_ACCOUNT_MIN_DIGITS
                         ):
                             continue
-                        for start, end in _occurrences(window_text, ent["text"]):
-                            if entity_type == "PERSON":
-                                m = _HONORIFIC.search(window_text, 0, start)
-                                if m:
-                                    start = m.start()
-                            span = (
-                                window_offset + start,
-                                window_offset + end,
-                                entity_type,
-                            )
-                            if span in seen:
-                                continue
-                            seen.add(span)
-                            score = ent["confidence"]
-                            if entity_type == "ADDRESS":
-                                score = max(score, self.threshold)
-                            results.append(
-                                RecognizerResult(
-                                    entity_type=entity_type,
-                                    start=span[0],
-                                    end=span[1],
-                                    score=score,
+                        for surface in _search_forms(entity_type, ent["text"]):
+                            for start, end in _occurrences(window_text, surface):
+                                if entity_type == "PERSON":
+                                    m = _HONORIFIC.search(window_text, 0, start)
+                                    if m:
+                                        start = m.start()
+                                span = (
+                                    window_offset + start,
+                                    window_offset + end,
+                                    entity_type,
                                 )
-                            )
+                                if span in seen:
+                                    continue
+                                seen.add(span)
+                                score = ent["confidence"]
+                                if entity_type == "ADDRESS":
+                                    score = max(score, self.threshold)
+                                results.append(
+                                    RecognizerResult(
+                                        entity_type=entity_type,
+                                        start=span[0],
+                                        end=span[1],
+                                        score=score,
+                                    )
+                                )
         return _coalesce_adjacent(results, text)
 
 
@@ -372,6 +373,27 @@ def _coalesce_adjacent(results, text):
                 merged.append(r)
         out.extend(merged)
     return out
+
+
+def _search_forms(entity_type: str, text: str) -> list[str]:
+    """Surface strings to locate for a detected entity: the detected text,
+    plus — for a two-token PERSON — its reversed (surname-first) order.
+
+    GLiNER2's global attention collapses a reversed mention when the
+    canonical order also sits in the window (module docstring): it emits the
+    canonical name at full score and the reversed one as a sub-threshold
+    fragment (surname only), so the given name leaks. Re-finding the reversed
+    order from the CONFIDENT canonical detection recovers it — 'OLGA KULIK'
+    detected also marks 'KULIK OLGA' wherever it appears, at the canonical's
+    score. Two tokens only: reversing 3+ tokens (particle surnames, middle
+    names) is ambiguous and false-positive-prone, and a reversed bigram
+    matching non-name text needs both tokens adjacent in reverse — rare."""
+    forms = [text]
+    if entity_type == "PERSON":
+        tokens = text.split()
+        if len(tokens) == 2:
+            forms.append(f"{tokens[1]} {tokens[0]}")
+    return forms
 
 
 def _occurrences(text: str, needle: str):
