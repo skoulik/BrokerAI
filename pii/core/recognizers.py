@@ -117,72 +117,43 @@ class AuAccountNumberRecognizer(PatternRecognizer):
 
 
 class JointNameRecognizer(PatternRecognizer):
-    """Joint-account name forms as layer-1 patterns: initials-pair
-    'E & J Moore' / 'J & E LAWRENCE' and shared-surname 'Julie and Brian
-    Summers' / 'JULIE AND BRIAN SUMMERS'.
+    """Joint-account INITIALS form as a layer-1 pattern: 'E & J Moore' /
+    'J & E LAWRENCE'.
 
-    GLiNER2 scores these forms 0.93+ in clean context but loses span
-    segmentation when they sit inside transaction-line junk — adjacent
-    ref-codes/keywords produce glue spans ('LAWRENCE RENT'), dropped
-    initials, or split pairs ('BRIAN SUMMERS' + 'JULIE') — the 2026-07-15
-    diagnostic (DONE.md). The context that breaks the NER is regular,
-    machine-generated text, which is exactly where a pattern is reliable,
-    so the mechanical forms are owned here.
+    GLiNER2 loses this form in transaction-line junk — it drops the bare
+    initials and glues the surname to an adjacent keyword ('LAWRENCE RENT',
+    the 2026-07-15 diagnostic in DONE.md) — and single letters carry no name
+    signal for the model to latch onto, so the mechanical initials form is
+    owned here.
 
-    Scores are confident rather than context-gated: the context enhancer
-    only looks 5 tokens back, and on statement lines the joint name often
-    trails a payee/ref tail longer than that ('Online W... Loan to ORG PTY
-    LTD J & E Moore'). The cost is that three capitalised words joined by
-    'and' can also be an organization or a statement phrase. The guards are
-    positional (2026-07-15 review round — an any-position stop-list
-    sacrificed real surnames like Fee/Card):
+    The shared-surname FULL-name form ('Julie and Brian Summers') is NOT a
+    pattern any more (2026-07-21, issue #4): matching three words joined by
+    'and' is indistinguishable from prose ('CAREFULLY AND IMMEDIATELY NOTIFY')
+    by any lexical rule — capitalisation is no signal on ALL-CAPS statements,
+    and a vocabulary stop-list can't be complete. GLiNER2 emits a PERSON
+    fragment on each side of the connector for real names, so the full form is
+    now handled by expanding those detections — the joint-connector merge in
+    gliner2_recognizer._mergeable — which is name-signal-gated by construction.
 
-    - given-name slots (before/right after the connector) reject statement
-      vocabulary — phrases carry their giveaway word there ('PRINCIPAL AND
-      INTEREST PAYMENT', 'HOME AND CONTENTS INSURANCE');
-    - the surname slot rejects only corporate markers ('HARVEY AND MILLER
-      HOLDINGS'), so 'Julie and Brian Fee' still strips;
-    - a corporate-tail lookahead keeps 'TAYLOR AND SCOTT LAWYERS PTY LTD'
-      intact (the marker sits just past the three-word match).
-
-    Remaining accepted trade-offs (recall-first), each pinned by a pytest
-    test and an eval keep-probe (ORGANIZATION_AND / ORGANIZATION_AND_BARE
-    in pii_eval): org names with no corporate marker anywhere ('P & O
-    CRUISES', 'ANGUS AND ROBERTSON BOOKSHOP') get stripped, and statement
-    phrases whose giveaway word sits only in the surname slot ('FIRE AND
-    THEFT COVER') get stripped.
-
-    Case sensitivity matters. The name-word class is ``[A-Z]...`` and the real
-    ALL-CAPS/Title forms are covered by it plus the explicit
-    ``(?:and|AND|And)`` connector — but presidio compiles patterns with
-    IGNORECASE ON by default, which silently turns ``[A-Z]`` into "any letter"
-    and made lowercase prose ('simple and convenient online') match as a joint
-    name (issue #4, PROSE_AND keep-probe). So __init__ overrides
-    ``global_regex_flags`` to drop IGNORECASE; ``_NO_CORP_TAIL`` keeps its own
-    inline ``(?i:...)`` so the corporate-tail lookahead stays case-insensitive
-    regardless. ALL-CAPS prose still matches the shape and leans on the
-    vocabulary guard — a smaller residual left for a follow-up."""
+    Only guard left: an initials pair whose surname slot is a corporate marker
+    ('E & J HOLDINGS') is an organization, not a couple — rejected in
+    validate_result, and a corporate-tail lookahead keeps 'E & J MOORE
+    LAWYERS'-style names off the pattern too. __init__ drops presidio's default
+    IGNORECASE so the initials '[A-Z]' and surname '[A-Z]...' classes stay
+    case-sensitive (uppercase initials are the real form; this keeps lowercase
+    noise like 'r & d team' from matching)."""
 
     # A name word: capitalised, 2+ chars, allows O'Brien / Smith-Jones /
     # McDonald and their ALL-CAPS forms.
     _NAME = r"[A-Z][A-Za-z'’-]+"
-    # Statement vocabulary — rejected in the given-name slots only.
-    STATEMENT_WORDS = {
-        "TERMS", "CONDITIONS", "APPLY", "PRINCIPAL", "INTEREST", "FEE",
-        "FEES", "CHARGE", "CHARGES", "PAYMENT", "PAYMENTS", "SAVINGS",
-        "CHEQUE", "LOAN", "LOANS", "ACCOUNT", "ACCOUNTS", "SALARY", "WAGES",
-        "CREDIT", "DEBIT", "CARD", "TRANSFER", "DEPOSIT", "WITHDRAWAL",
-        "BALANCE", "STATEMENT", "INSURANCE", "BANKING", "HOME", "CONTENTS",
-    }
-    # Corporate markers — rejected in the surname slot, and looked ahead
-    # for right past the match (organization names, not couples).
+    # Corporate markers — rejected in the surname slot, and looked ahead for
+    # right past the match (an initials-fronted organization, not a couple).
     CORPORATE_WORDS = {
         "PTY", "LTD", "LIMITED", "CO", "GROUP", "TRUST", "HOLDINGS",
         "SERVICES", "CONSULTING", "MANAGEMENT", "PARTNERS", "ASSOCIATES",
         "LAWYERS", "SOLICITORS", "ACCOUNTANTS", "BROTHERS", "SONS",
         "TRADING",
     }
-    _GIVEN_SLOT_STOP = STATEMENT_WORDS | CORPORATE_WORDS
     _NO_CORP_TAIL = rf"(?!\s+(?i:{'|'.join(sorted(CORPORATE_WORDS))})\b)"
     PATTERNS = [
         Pattern(
@@ -190,26 +161,14 @@ class JointNameRecognizer(PatternRecognizer):
             rf"\b[A-Z]\s?&\s?[A-Z]\s+{_NAME}\b{_NO_CORP_TAIL}",
             0.5,
         ),
-        # Mixed case like 'JULIE and Brian' is accepted too — harmless.
-        Pattern(
-            "joint full names",
-            rf"\b{_NAME}\s+(?:and|AND|And)\s+{_NAME}\s+{_NAME}\b"
-            rf"{_NO_CORP_TAIL}",
-            0.45,
-        ),
     ]
 
     def validate_result(self, pattern_text: str) -> bool | None:
-        """Positional vocabulary check (see class docstring). None (not
-        True) on pass — True would boost the score to 1.0 and erase the
-        deliberate confidence ordering of the patterns."""
+        """Reject an initials pair whose surname slot is a corporate marker
+        ('E & J HOLDINGS' is an org). None (not True) on pass — True would
+        boost the score to 1.0 and erase the pattern's deliberate score."""
         tokens = [t.upper() for t in pattern_text.split()]
         if tokens[-1] in self.CORPORATE_WORDS:
-            return False
-        # Given-name slots: everything before the surname except the
-        # connector and the single-letter initials/'&'.
-        given = [t for t in tokens[:-1] if len(t) > 1 and t != "AND"]
-        if any(t in self._GIVEN_SLOT_STOP for t in given):
             return False
         return None
 
@@ -218,8 +177,8 @@ class JointNameRecognizer(PatternRecognizer):
             supported_entity="PERSON",
             patterns=self.PATTERNS,
             name="JointNameRecognizer",
-            # Drop presidio's default IGNORECASE so the [A-Z] name-word class
-            # is case-sensitive (see class docstring, issue #4).
+            # Drop presidio's default IGNORECASE so the initials '[A-Z]' and
+            # surname classes stay case-sensitive (issue #4).
             global_regex_flags=regex.MULTILINE | regex.DOTALL,
             **kwargs,
         )

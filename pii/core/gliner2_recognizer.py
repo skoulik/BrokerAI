@@ -47,7 +47,15 @@ around, with different results:
   emit reversed names as adjacent fragments — 'SCHAEFER' + 'JOSEPH RENT'
   — whose union misses only the joining space). Coalescing two genuinely
   distinct adjacent names into one span costs a pseudonym-consistency
-  wart, never a leak.
+  wart, never a leak. The shared-surname joint form ('Julie and Brian
+  Summers') is coalesced too (2026-07-21, issue #4): GLiNER2 emits a PERSON
+  fragment on each side of the ' and '/' & ' connector, so merging across it
+  captures the couple — as a span expansion of the model's own detections,
+  name-signal-gated by construction (prose 'X and Y Z' yields no PERSON, so
+  it can't trigger). The left fragment must be a single token so two DISTINCT
+  people ('Julie Summers and Brian Reid') stay separate; the FP-prone lexical
+  'X and Y Z' pattern this replaced was retired from JointNameRecognizer,
+  which now owns only the initials form GLiNER2 can't segment.
 
 GLiNER2 schemas attach a description to each label; descriptions carry the
 AU-specific definitions instead of overloading the label string.
@@ -218,6 +226,12 @@ BATCH_SIZE = 4
 _HONORIFIC = re.compile(r"\b(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+$", re.IGNORECASE)
 _COALESCE_GAP = re.compile(r"^,?\s*$")
 COALESCE_GAP_MAX = 4
+# Joint-name connector between two PERSON fragments ('Julie and Brian
+# Summers' -> 'Julie' + 'Brian Summers'; 'E & J Moore'). Merging across it
+# is how the full-name joint form is handled — as a span expansion of
+# GLiNER2's own detections, gated by the model actually detecting a person
+# on each side (so prose 'X and Y Z' can't trigger it). See _mergeable.
+_JOINT_GAP = re.compile(r"^\s+(?:and|&)\s+$", re.IGNORECASE)
 
 
 class Gliner2Recognizer(EntityRecognizer):
@@ -360,19 +374,36 @@ def _coalesce_adjacent(results, text):
             key=lambda r: (r.start, r.end),
         ):
             last = merged[-1] if merged else None
-            if (
-                last is not None
-                and r.start - last.end <= COALESCE_GAP_MAX
-                and _COALESCE_GAP.match(
-                    text[max(last.end, 0) : max(r.start, 0)]
-                )
-            ):
+            if last is not None and _mergeable(last, r, text, etype):
                 last.end = max(last.end, r.end)
                 last.score = max(last.score, r.score)
             else:
                 merged.append(r)
         out.extend(merged)
     return out
+
+
+def _mergeable(last, r, text, etype: str) -> bool:
+    """Whether span `r` coalesces into the preceding same-type span `last`.
+
+    Two cases (text between them is the gap):
+    - comma/whitespace gap — fragmented multi-part addresses and names;
+    - PERSON only: a joint connector (' and ' / ' & ') where `last` is a
+      single token — a couple sharing a surname ('Julie' + ' and ' + 'Brian
+      Summers'). Restricting `last` to one token keeps two DISTINCT people
+      ('Julie Summers' + ' and ' + 'Brian Reid') as separate placeholders.
+      This is the full-name joint form, handled as an expansion of the
+      model's own PERSON detections rather than a lexical pattern (issue #4)."""
+    gap = text[max(last.end, 0) : max(r.start, 0)]
+    if r.start - last.end <= COALESCE_GAP_MAX and _COALESCE_GAP.match(gap):
+        return True
+    if (
+        etype == "PERSON"
+        and _JOINT_GAP.match(gap)
+        and len(text[last.start : last.end].split()) == 1
+    ):
+        return True
+    return False
 
 
 def _search_forms(entity_type: str, text: str) -> list[str]:

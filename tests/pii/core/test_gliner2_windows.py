@@ -110,6 +110,46 @@ def test_reversed_two_token_person_refound_from_canonical():
     assert "KULIK OLGA" in found  # reversed order recovered — no OLGA leak
 
 
+def test_joint_connector_merges_couple_fragments():
+    # Full-name joint form (issue #4): GLiNER2 emits a fragment on each side;
+    # they merge across the ' and ' / ' & ' connector into the couple's single
+    # span. Name-signal-gated by construction (both sides are real detections).
+    rec = Gliner2Recognizer()
+    rec._model = _RecordingFakeModel({"person": ["JULIE", "BRIAN SUMMERS"]})
+    text = "OSKO P12345678 JULIE AND BRIAN SUMMERS RENT"
+    persons = [
+        r for r in rec.analyze(text, entities=None) if r.entity_type == "PERSON"
+    ]
+    assert len(persons) == 1
+    assert text[persons[0].start:persons[0].end] == "JULIE AND BRIAN SUMMERS"
+
+
+def test_joint_connector_merges_title_case():
+    rec = Gliner2Recognizer()
+    rec._model = _RecordingFakeModel({"person": ["Jeffrey", "Randall Lawrence"]})
+    text = "To Jeffrey and Randall Lawrence today"
+    (person,) = [
+        r for r in rec.analyze(text, entities=None) if r.entity_type == "PERSON"
+    ]
+    assert text[person.start:person.end] == "Jeffrey and Randall Lawrence"
+
+
+def test_joint_connector_keeps_distinct_people_separate():
+    # Two full names either side of ' and ' are DISTINCT people, not a couple.
+    # The single-token guard on the left fragment keeps them separate so they
+    # get distinct placeholders.
+    rec = Gliner2Recognizer()
+    rec._model = _RecordingFakeModel({"person": ["Julie Summers", "Brian Reid"]})
+    text = "Pay Julie Summers and Brian Reid now"
+    persons = [
+        r for r in rec.analyze(text, entities=None) if r.entity_type == "PERSON"
+    ]
+    assert len(persons) == 2
+    assert sorted(text[p.start:p.end] for p in persons) == [
+        "Brian Reid", "Julie Summers",
+    ]
+
+
 def test_three_token_person_not_reversed():
     # FP guard: reversal is restricted to two-token names. A 3-token name is
     # not reversed (particle/middle-name order is ambiguous).

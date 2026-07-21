@@ -77,7 +77,7 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     for t in ("LOCATION", "LOCATION_SHORT", "ADDRESS_BARE",
               "PERSON_JOINT", "PERSON_REVERSED", "CONTEXTUAL_ID",
               "PERSON_COMMA", "PERSON_PARTICLE", "PERSON_MULTIWORD",
-              "ORGANIZATION_PRIVATE"):
+              "ORGANIZATION_PRIVATE", "PERSON_COLLIDING"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(e["strip_expected"] for e in by_type[t]), t
         gated = t == "PERSON_JOINT"
@@ -97,11 +97,11 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
         assert all(not e["strip_expected"] and not e["critical"]
                    for e in by_type[t]), t
 
-    # Colliding-surname joint draws ride the critical PERSON gate.
+    # Colliding-surname joint draws are the non-gated PERSON_COLLIDING probe.
     assert any(
         e["value"].split()[-1].upper() in ("FEE", "CARD")
-        for e in by_type["PERSON"]
-    ), "no colliding-surname joint draw in corpus"
+        for e in by_type["PERSON_COLLIDING"]
+    ), "no colliding-surname draw in corpus"
 
     # Account-holder private entities: a trust and a PTY LTD name must appear
     # as strip-expected ORGANIZATION_PRIVATE (org_policy, 2026-07-21) — the

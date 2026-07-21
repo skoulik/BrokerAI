@@ -38,10 +38,12 @@ too (2026-07-15 review round):
   names in the joint-name shape with no corporate marker anywhere
   ("P & O CRUISES") get stripped by the person patterns; expected
   over-strips, watched so the loss never silently grows.
-- colliding surnames (Fee, Card — real surnames that are also statement
-  vocabulary) are drawn as ordinary PERSON joint forms: the positional
-  guard must still strip them, and PERSON is gate-critical, so a guard
-  regression trips the gate.
+- colliding surnames (Fee, Card — surnames that are also statement
+  vocabulary) are drawn as PERSON_COLLIDING: the full-name form is now
+  GLiNER2-driven (connector-merge, issue #4) and the model does not
+  recognise a word-like surname, so the given names strip but the surname
+  leaks. Accepted 2026-07-21 — a non-gated per-form probe, not the critical
+  PERSON gate.
 """
 
 import random
@@ -93,12 +95,14 @@ def description(pool: Pool) -> list:
             (f"{couple_a.first} and {couple_b.first} {couple_a.last}",
              "PERSON"),
             (couple_a.reversed_caps, "PERSON_REVERSED"),
-            # Colliding surname: statement vocabulary in the surname slot
-            # (see module docstring) — deterministic layer-1 strip, so it
-            # rides the critical PERSON gate.
+            # Colliding surname: a surname that is also statement vocabulary
+            # (Fee/Card). The full-name form is now GLiNER2-driven (connector-
+            # merge, issue #4) and the model doesn't recognise a word-like
+            # surname, so the given names strip but the surname leaks —
+            # accepted (2026-07-21). Non-gated PERSON_COLLIDING probe.
             (f"{couple_a.first} and {couple_b.first} "
              f"{rng.choice(COLLIDING_SURNAMES)}",
-             "PERSON"),
+             "PERSON_COLLIDING"),
         ]
     )
     patterns = [

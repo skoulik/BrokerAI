@@ -7,6 +7,8 @@ strip asserted here is the pattern's own work. The corpus counterparts are
 the PERSON_JOINT probes and joint-form PERSON draws in pii_eval/txbank.py.
 """
 
+import pytest
+
 from pii.core.mapping import PseudonymMap
 
 
@@ -25,40 +27,18 @@ def test_joint_initials_title_case(pipeline):
     assert "Moore" not in out
 
 
-def test_joint_full_all_caps(pipeline):
-    # GLiNER2 split this shape into 'BRIAN SUMMERS'@0.98 + 'JULIE'@0.49
-    # (connector leaked).
-    out, _, _ = pipeline.strip(
-        "OSKO P4X92K11QR JULIE AND BRIAN SUMMERS RENT", PseudonymMap()
-    )
-    assert "JULIE" not in out and "SUMMERS" not in out
-    assert "RENT" in out
+# The shared-surname FULL-name form ('Julie and Brian Summers') is no longer
+# a layer-1 pattern (2026-07-21, issue #4) — it's handled by expanding
+# GLiNER2's own PERSON detections across the ' and '/' & ' connector, so it's
+# model-dependent. Those cases moved to the connector-merge tests in
+# test_gliner2_windows.py (fake model) and the model-marked check below.
 
 
-def test_joint_full_title_case(pipeline):
-    out, _, _ = pipeline.strip(
-        "Transfer to other Bank NetBank To Jeffrey and Randall Lawrence",
-        PseudonymMap(),
-    )
-    assert "Lawrence" not in out
-
-
-def test_joint_full_beyond_context_window(pipeline):
-    # The context enhancer looks only 5 tokens back, and this corpus line
-    # ('Online W... Loan to ORG ... NAME') puts the name further out — the
-    # pattern must strip on its own confidence, not context promotion.
-    out, _, _ = pipeline.strip(
-        "ONLINE W123456789 LOAN TO OAKFIELD CONSULTING PTY LTD "
-        "JULIE AND BRIAN SUMMERS",
-        PseudonymMap(),
-    )
-    assert "SUMMERS" not in out
-    assert "OAKFIELD CONSULTING PTY LTD" in out  # payee org untouched
-
-
-def test_statement_phrases_not_stripped(pipeline):
-    # 'X AND Y Z' caps triples that are statement vocabulary, not couples —
-    # the giveaway word sits in a given-name slot.
+def test_statement_phrases_not_matched_as_joint(pipeline):
+    # 'X AND Y Z' caps triples that are prose, not couples. With the full-name
+    # pattern retired (issue #4) no layer-1 rule matches them, and GLiNER2
+    # (stubbed here) doesn't emit persons for them — so they stay put. A
+    # regression guard against re-introducing a lexical full-name pattern.
     for text in (
         "PRINCIPAL AND INTEREST PAYMENT",
         "LOAN TERMS AND CONDITIONS APPLY",
@@ -69,46 +49,49 @@ def test_statement_phrases_not_stripped(pipeline):
         assert out == text, text
 
 
-def test_surname_colliding_with_statement_word_still_strips(pipeline):
-    # Fee and Card are real surnames; the positional guard must not
-    # sacrifice them (statement vocabulary only rejects in the given-name
-    # slots, never the surname slot).
-    for text, surname in (
-        ("Loan Repayment Julie and Brian Fee", "Fee"),
-        ("OSKO P4X92K11QR JULIE AND BRIAN CARD RENT", "CARD"),
-    ):
-        out, _, _ = pipeline.strip(text, PseudonymMap())
-        assert surname not in out.replace("Repayment", ""), text
-        assert "Julie" not in out and "JULIE" not in out, text
+@pytest.mark.model
+def test_colliding_surname_couple_given_names_strip(make_pipeline):
+    # Fee/Card are surnames that are also statement vocabulary. The full-name
+    # form is now GLiNER2-driven (connector-merge), and GLiNER2 doesn't
+    # recognise the word-like surname — so the GIVEN names strip (the couple
+    # merges) but the colliding surname leaks. Accepted 2026-07-21; the
+    # non-gated PERSON_COLLIDING eval probe measures the residual.
+    pipeline = make_pipeline(stub_ner=False)
+    out, _, _ = pipeline.strip(
+        "Loan Repayment Julie and Brian Fee", PseudonymMap()
+    )
+    assert "Julie" not in out and "Brian" not in out  # the couple is stripped
 
 
-def test_corporate_and_name_not_stripped(pipeline):
-    # The JointNameRecognizer's PERSON-path guard: 'X AND Y Z' org names with
-    # a corporate marker (surname slot or trailing tail) must NOT be mis-split
-    # into joint persons. NER is stubbed here, so no ORGANIZATION span exists
-    # and org_policy has nothing to act on -> out == text isolates the guard.
-    # (Under the full pipeline the PTY LTD ones ARE stripped as private
-    # ORGANIZATION entities by org_policy, issue #2 — a different path.)
+def test_full_name_org_not_matched_as_joint(pipeline):
+    # With the full-name pattern retired, 'X AND Y Z' org names are no longer
+    # mis-split into joint persons by any layer-1 rule (NER stubbed here). A
+    # regression guard. (Under the full pipeline the PTY LTD ones are stripped
+    # as private ORGANIZATION entities by org_policy, issue #2 — a different
+    # path; the connector-merge only fires on GLiNER2 PERSON detections.)
     for text in (
-        "EFTPOS ANGUS AND ROBERTSON PTY LTD 4821 AU",   # tail lookahead
-        "PAYMENT TO TAYLOR AND SCOTT LAWYERS PTY LTD",  # tail lookahead
-        "TFR HARVEY AND MILLER HOLDINGS",               # surname slot
+        "EFTPOS ANGUS AND ROBERTSON PTY LTD 4821 AU",
+        "PAYMENT TO TAYLOR AND SCOTT LAWYERS PTY LTD",
+        "TFR HARVEY AND MILLER HOLDINGS",
+        "EFTPOS ANGUS AND ROBERTSON BOOKSHOP 4821 AU",  # was over-stripped
     ):
         out, _, _ = pipeline.strip(text, PseudonymMap())
         assert out == text, text
 
 
-def test_bare_and_org_sacrifice_pinned(pipeline):
-    # The documented recall-first loss: org names with no corporate marker
-    # anywhere match the person patterns and get stripped. Pinned so a
-    # change in either direction is noticed; the eval measures the same
-    # class as the ORGANIZATION_AND_BARE keep-probe.
-    for text, marker in (
-        ("EFTPOS P & O CRUISES 4821 AU", "CRUISES"),
-        ("EFTPOS ANGUS AND ROBERTSON BOOKSHOP 4821 AU", "BOOKSHOP"),
-    ):
-        out, _, _ = pipeline.strip(text, PseudonymMap())
-        assert marker not in out, text
+def test_initials_org_bare_still_sacrificed(pipeline):
+    # 'P & O CRUISES' still matches the INITIALS pattern (P & O + surname slot)
+    # and is stripped — the documented recall-first loss the initials pattern
+    # keeps (ORGANIZATION_AND_BARE keep-probe measures it).
+    out, _, _ = pipeline.strip("EFTPOS P & O CRUISES 4821 AU", PseudonymMap())
+    assert "CRUISES" not in out
+
+
+def test_initials_corporate_surname_kept(pipeline):
+    # The one guard left on the initials pattern: a corporate marker in the
+    # surname slot is an org, not a couple.
+    out, _, _ = pipeline.strip("TFR E & J HOLDINGS", PseudonymMap())
+    assert out == "TFR E & J HOLDINGS"
 
 
 def test_lowercase_prose_untouched(pipeline):
