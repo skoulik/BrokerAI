@@ -128,6 +128,63 @@ def test_painted_midline_clamps_to_neighbour_midpoint():
     assert box.left > 30 and box.right < 130
 
 
+def _run_past_region_right():
+    # Pathology from "ServletRetrieve (6).pdf": a footer line's region box
+    # STOPS SHORT of the run's word boxes (paddle emitted a region that
+    # doesn't contain its own words). "FAX" is a left-neighbour; the run
+    # "O3 9708" (a phone fragment) sits to the RIGHT of the region's right
+    # edge. Without unioning the region with the word extent, the region
+    # right (100) lands left of the neighbour-clamped left edge -> negative
+    # width -> Image.new ValueError, aborting the whole page.
+    region = _box(0, top=0, width=100, height=20)  # right = 100
+
+    def w(left, word, width):
+        return (word, _box(left, top=2, width=width, height=16), 90.0, region)
+
+    return assemble([[w(80, "FAX", 15), w(110, "O3", 20), w(135, "9708", 25)]])
+
+
+def test_painted_run_past_stale_region_right_no_negative_width():
+    result = _run_past_region_right()
+    start = result.text.index("O3")
+    (box,) = result.painted_boxes_for_span(start, start + len("O3 9708"))
+    # The bug produced right < left; the box must be well-formed...
+    assert box.width >= 0 and box.height >= 0
+    # ...cover the whole run (word union 110..160)...
+    assert box.left <= 110 and box.right >= 160
+    # ...without overpainting the kept "FAX" neighbour (right = 95).
+    assert box.left > 95
+    # exact geometry: left clamps to the FAX midpoint, right to the run edge
+    assert box.left == (95 + 110) // 2
+    assert box.right == 160
+
+
+def _run_before_region_left():
+    # Mirror pathology: the run sits to the LEFT of a region box whose left
+    # edge starts past the run, with a right-neighbour clamp. Without the
+    # union the region left (200) lands right of the clamped right edge ->
+    # negative width.
+    region = _box(200, top=0, width=100, height=20)  # left = 200
+
+    def w(left, word, width):
+        return (word, _box(left, top=2, width=width, height=16), 90.0, region)
+
+    return assemble([[w(150, "O3", 20), w(180, "9708", 25), w(230, "FAX", 15)]])
+
+
+def test_painted_run_before_stale_region_left_no_negative_width():
+    result = _run_before_region_left()
+    start = result.text.index("O3")
+    (box,) = result.painted_boxes_for_span(start, start + len("O3 9708"))
+    assert box.width >= 0 and box.height >= 0
+    # covers the run (word union 150..205)...
+    assert box.left <= 150 and box.right >= 205
+    # ...without overpainting the kept "FAX" neighbour (left = 230).
+    assert box.right < 230
+    assert box.left == 150
+    assert box.right == (230 + 205) // 2
+
+
 def test_painted_without_region_matches_boxes_for_span():
     # 3-tuple callers supply no region geometry (region_box defaults to the
     # word box), so painting must not differ from boxes_for_span.

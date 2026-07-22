@@ -124,8 +124,17 @@ class OcrResult:
             u_left = min(w.box.left for w in run)
             u_right = max(w.box.right for w in run)
             regions = [w.region_box or w.box for w in run]
-            left = min(r.left for r in regions)
-            right = max(r.right for r in regions)
+            # Union the region box with the word extent. A region box is
+            # meant to CONTAIN its words, but paddle occasionally emits one
+            # that doesn't (measured on a footer line where the run's words
+            # sit past the region's right edge — "ServletRetrieve (6).pdf").
+            # Taking min/max against u_left/u_right keeps the documented
+            # invariant "region edge lies outside the word-union edge", so a
+            # stale region box can never pull an edge PAST the words and the
+            # neighbour clamps below can't produce right < left (negative
+            # width -> Image.new ValueError).
+            left = min(min(r.left for r in regions), u_left)
+            right = max(max(r.right for r in regions), u_right)
             top = min(r.top for r in regions)
             bottom = max(r.bottom for r in regions)
             # Clamp the region extension back toward any same-line word not

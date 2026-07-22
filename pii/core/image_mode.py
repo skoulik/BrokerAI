@@ -17,6 +17,7 @@ plaintext INCLUDING the PII — like the pseudonym map, it is a local-only
 artifact.
 """
 
+import warnings
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -75,6 +76,24 @@ def paint_segments(
     for seg in segments:
         for box in seg.boxes:
             grown = _grow(box, margin, out)
+            if grown.width <= 0 or grown.height <= 0:
+                # A degenerate box paints nothing; skip it rather than let
+                # Image.new reject a negative dimension and abort the whole
+                # page. painted_boxes_for_span guards its own geometry, so
+                # this is a belt-and-suspenders backstop for any future OCR
+                # pathology that yields an empty/inverted box. It must NOT
+                # pass unnoticed: an unpainted box means PII pixels may have
+                # survived, so warn with the geometry to make it diagnosable
+                # (this fired for real once — see test_ocr regression cases).
+                warnings.warn(
+                    f"skipping degenerate paint box for {seg.label!r}: "
+                    f"raw={box} grown={grown} on {out.width}x{out.height} "
+                    "image — PII pixels for this span may survive; check "
+                    "OcrResult.painted_boxes_for_span geometry",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                continue
             if style == "fill":
                 _paint(out, grown, seg.label, fill, ink)
             else:

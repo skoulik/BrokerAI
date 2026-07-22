@@ -94,6 +94,44 @@ def test_paint_segments_frame_style_keeps_content_readable():
     assert _FRAME_COLOR in _colors(out, _grow(box, 2, out))  # outline drawn
 
 
+def test_paint_segments_skips_degenerate_box_and_warns():
+    # Belt-and-suspenders backstop: a segment box that survives to
+    # paint_segments with an inverted (negative-width) rectangle must not
+    # crash the page (the "ServletRetrieve (6).pdf" failure was Image.new
+    # rejecting a negative dimension). It is skipped, but loudly.
+    import warnings
+
+    img = Image.new("RGB", (200, 60), "white")
+    bad = Box(left=150, top=10, width=-40, height=14)  # right=110 < left
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = paint_segments(img, [Segment("PHONE_1", [bad])])
+    # No crash, nothing painted (page stays white), and a warning names it.
+    assert _colors(out, Box(0, 0, 200, 60)) == {(255, 255, 255)}
+    assert any(
+        issubclass(w.category, RuntimeWarning) and "PHONE_1" in str(w.message)
+        for w in caught
+    )
+
+
+def test_paint_segments_mixed_good_and_degenerate(pipeline):
+    # A degenerate box alongside a valid one: the good box still paints, the
+    # bad one is skipped — one bad span never sinks the rest of the page.
+    good = Box(left=20, top=10, width=100, height=14)
+    bad = Box(left=180, top=30, width=-30, height=14)
+    img = Image.new("RGB", (220, 60), "white")
+    ImageDraw.Draw(img).rectangle(
+        (good.left, good.top, good.right, good.bottom), fill=RED
+    )
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        out = paint_segments(img, [Segment("PERSON_1", [good, bad])])
+    assert RED not in _colors(out, good)  # good box covered
+    assert (0, 0, 0) in _colors(out, good)  # label ink drawn
+
+
 def test_grow_clamps_to_image_bounds():
     img = Image.new("RGB", (100, 50))
     grown = _grow(Box(0, 0, 10, 10), 2, img)
