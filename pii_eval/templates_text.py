@@ -123,10 +123,13 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
 
     doc.raw("Self-employment\n")
     doc.raw("  Entity:          ").private_org(biz.name).nl()
-    if biz.trust:
-        # account-holder private entity, stripped by org_policy (2026-07-21) —
-        # same stance as the PTY LTD name above
-        doc.raw("  Trustee for:     ").private_org(biz.trust).nl()
+    # Always rendered: a TRUST-marker private org is a guaranteed corpus
+    # feature (test_generate asserts its presence; found coincidence-
+    # dependent on pool draws 2026-07-22), stripped by org_policy — same
+    # stance as the PTY LTD name above. Derive a name when the pool
+    # business carries no trust.
+    trust = biz.trust or f"{biz.name.split()[0]} FAMILY TRUST"
+    doc.raw("  Trustee for:     ").private_org(trust).nl()
     doc.raw("  ABN:             ")
     if invalid:
         doc.pii(au.invalid_abn(rng), "AU_ABN_INVALID",
@@ -152,6 +155,22 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     # ('...74 377...') must NOT be mistaken for a grouped account number.
     doc.raw("  Recent loan payment: ").pii(
         "2,148.74 377,970.04", "AMOUNT_COLUMN", strip_expected=False
+    ).nl()
+    # Identifier post-validation keep-probes (issue #10): a letter+10-digit
+    # receipt reference (GLiNER2 mislabels the shape TFN/licence/passport),
+    # a >16-digit run (can never be an AU account+BSB), and a masked last-4
+    # card disclosure (the deliberate stance: a last-4 fragment alone is
+    # not strip-worthy — it falls under the digit floors, consistent with
+    # layer-1). All three must survive unstripped.
+    doc.raw("  Deposit receipt:     ").pii(
+        txbank.receipt_reference(rng), "REFERENCE_NUMBER",
+        strip_expected=False,
+    ).nl()
+    doc.raw("  Batch trace:         ").pii(
+        txbank.overlong_digits(rng), "DIGITS_OVERLONG", strip_expected=False
+    ).nl()
+    doc.raw("  Repayments drawn from card ending ").pii(
+        f"{rng.randrange(0, 10000):04d}", "CARD_LAST4", strip_expected=False
     ).nl(2)
 
     occupation = rng.choice(["dentist", "electrician", "GP", "teacher"])

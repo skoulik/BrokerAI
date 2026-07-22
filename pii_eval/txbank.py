@@ -2,9 +2,16 @@
 
 Each pattern returns a list of parts consumable by build.Doc: plain strings,
 or (value, entity_type) / (value, entity_type, strip_expected) tuples.
-Receipt/reference codes (FT..., W10..., REF...) are left un-annotated on
-purpose: they are neither required strips nor protected keeps, so the scorer
-ignores whatever the pipeline does with them.
+Mixed alphanumeric receipt/reference codes (FT..., REF...) are left
+un-annotated on purpose: they are neither required strips nor protected
+keeps, so the scorer ignores whatever the pipeline does with them. The
+exception (issue #10, 2026-07-22) is the letter+10-digit NAB receipt shape
+('W1045366576'): on real statements GLiNER2 labeled that shape TFN /
+driver licence / passport semi-randomly, so it is annotated as the
+REFERENCE_NUMBER keep-probe — the identifier post-validation pass
+(gliner2_recognizer.IDENTIFIER_VALIDATORS) must drop those guesses.
+DIGITS_OVERLONG is its sibling: a bare >16-digit run can never be an AU
+account (+BSB) and must not be stripped as one.
 
 The two documented-hard person surface forms are annotated with distinct
 truth types — PERSON_JOINT ("E & J Moore") and PERSON_REVERSED ("MOORE
@@ -75,6 +82,21 @@ COLLIDING_SURNAMES = ["Fee", "Card"]
 def _ref(rng: random.Random, prefix: str, n: int = 10) -> str:
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789"
     return prefix + "".join(rng.choice(alphabet) for _ in range(n))
+
+
+def receipt_reference(rng: random.Random) -> str:
+    """A bank receipt/trace reference in the NAB statement shape: one
+    letter + 10 digits ('W1045366576') — the REFERENCE_NUMBER keep-probe
+    value (module docstring)."""
+    return rng.choice("WHGQFMRB") + "".join(
+        rng.choice("0123456789") for _ in range(10)
+    )
+
+
+def overlong_digits(rng: random.Random) -> str:
+    """A bare 22-digit run — the DIGITS_OVERLONG keep-probe value: beyond
+    any AU account(+BSB) length, must not strip as AU_BANK_ACCOUNT."""
+    return str(rng.randrange(10**21, 10**22))
 
 
 def _amount(rng: random.Random, lo=10, hi=20000) -> float:
@@ -180,6 +202,16 @@ def description(pool: Pool) -> list:
             (couple_a.caps, "PERSON"),
             " MOB ",
             (couple_a.mobile, "PHONE_NUMBER"),
+        ],
+        # REFERENCE_NUMBER / DIGITS_OVERLONG keep-probes (issue #10) in
+        # their real statement context — see module docstring.
+        lambda: [
+            "MISCELLANEOUS CREDIT ",
+            (receipt_reference(rng), "REFERENCE_NUMBER", False),
+        ],
+        lambda: [
+            "BPAY BATCH TRACE ",
+            (overlong_digits(rng), "DIGITS_OVERLONG", False),
         ],
     ]
     return rng.choice(patterns)()

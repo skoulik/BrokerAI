@@ -21,7 +21,10 @@ class _NoopGliner2(EntityRecognizer):
     loading the model. Mirrors the real recognizer's contract — it now owns
     LOCATION alongside PERSON — but emits nothing."""
 
-    def __init__(self):
+    def __init__(self, **kwargs):
+        # kwargs (e.g. demote_invalid) are accepted and ignored — the stub
+        # must keep the real constructor's signature so PiiPipeline can pass
+        # its configuration through.
         super().__init__(
             supported_entities=["PERSON", "LOCATION"], name="Gliner2Recognizer"
         )

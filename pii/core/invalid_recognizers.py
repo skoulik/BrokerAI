@@ -33,6 +33,15 @@ registers nothing — the historical silent drop.
 
 from presidio_analyzer import Pattern, PatternRecognizer
 
+from pii.core.checksums import (
+    abn_checksum,
+    acn_checksum,
+    digits,
+    luhn_checksum,
+    medicare_checksum,
+    tfn_checksum,
+)
+
 TIERS = ("ignore", "likely", "context", "all")
 
 _IN_SPAN_SCORE = 0.5
@@ -50,43 +59,6 @@ VALIDATED_RECOGNIZERS = {
     "AuTfnRecognizer", "AuMedicareRecognizer", "AuAbnRecognizer",
     "AuAcnRecognizer", "CreditCardRecognizer", "PhoneRecognizer",
 }
-
-
-def _digits(text: str) -> str:
-    return "".join(c for c in text if c.isdigit())
-
-
-def _tfn_checksum(d: str) -> bool:
-    weights = (1, 4, 3, 7, 5, 8, 6, 9, 10)
-    return sum(w * int(x) for w, x in zip(weights, d)) % 11 == 0
-
-
-def _medicare_checksum(d: str) -> bool:
-    weights = (1, 3, 7, 9, 1, 3, 7, 9)
-    return sum(w * int(x) for w, x in zip(weights, d)) % 10 == int(d[8])
-
-
-def _abn_checksum(d: str) -> bool:
-    weights = (10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
-    nums = [int(x) for x in d]
-    nums[0] = 9 if nums[0] == 0 else nums[0] - 1
-    return sum(w * x for w, x in zip(weights, nums)) % 89 == 0
-
-
-def _acn_checksum(d: str) -> bool:
-    weights = (8, 7, 6, 5, 4, 3, 2, 1)
-    remainder = sum(w * int(x) for w, x in zip(weights, d)) % 10
-    return (10 - remainder) % 10 == int(d[8])
-
-
-def _luhn_checksum(d: str) -> bool:
-    total = 0
-    for i, c in enumerate(reversed(d)):
-        x = int(c)
-        if i % 2 == 1:
-            x *= 2
-        total += x - 9 if x > 9 else x
-    return total % 10 == 0
 
 
 class _ShadowRecognizer(PatternRecognizer):
@@ -129,7 +101,7 @@ class _ShadowRecognizer(PatternRecognizer):
         # Inverted: None (keep the pattern's tier score, context enhancer
         # still applies) when the mirrored rule FAILS; False (drop) when it
         # passes — the real recognizer owns that match.
-        return None if self.rule_fails(_digits(pattern_text)) else False
+        return None if self.rule_fails(digits(pattern_text)) else False
 
 
 class InvalidAuTfnRecognizer(_ShadowRecognizer):
@@ -145,7 +117,7 @@ class InvalidAuTfnRecognizer(_ShadowRecognizer):
     CONTEXT = ["tax file number", "tfn"]
 
     def rule_fails(self, d: str) -> bool:
-        return len(d) == 9 and not _tfn_checksum(d)
+        return len(d) == 9 and not tfn_checksum(d)
 
 
 class InvalidAuMedicareRecognizer(_ShadowRecognizer):
@@ -161,7 +133,7 @@ class InvalidAuMedicareRecognizer(_ShadowRecognizer):
     CONTEXT = ["medicare"]
 
     def rule_fails(self, d: str) -> bool:
-        return len(d) == 10 and not _medicare_checksum(d)
+        return len(d) == 10 and not medicare_checksum(d)
 
 
 class MalformedAuMedicareRecognizer(_ShadowRecognizer):
@@ -198,7 +170,7 @@ class InvalidAuAbnRecognizer(_ShadowRecognizer):
     CONTEXT = ["australian business number", "abn"]
 
     def rule_fails(self, d: str) -> bool:
-        return len(d) == 11 and not _abn_checksum(d)
+        return len(d) == 11 and not abn_checksum(d)
 
 
 class InvalidAuAcnRecognizer(_ShadowRecognizer):
@@ -214,7 +186,7 @@ class InvalidAuAcnRecognizer(_ShadowRecognizer):
     CONTEXT = ["australian company number", "acn"]
 
     def rule_fails(self, d: str) -> bool:
-        return len(d) == 9 and not _acn_checksum(d)
+        return len(d) == 9 and not acn_checksum(d)
 
 
 class InvalidCreditCardRecognizer(_ShadowRecognizer):
@@ -230,7 +202,7 @@ class InvalidCreditCardRecognizer(_ShadowRecognizer):
     CONTEXT = ["credit", "card", "visa", "mastercard", "amex", "debit"]
 
     def rule_fails(self, d: str) -> bool:
-        return 12 <= len(d) <= 19 and not _luhn_checksum(d)
+        return 12 <= len(d) <= 19 and not luhn_checksum(d)
 
 
 _RECOGNIZERS = (

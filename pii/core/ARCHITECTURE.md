@@ -282,7 +282,46 @@ Same-day siblings of the location floor, from the "short strings shouldn't quali
 - **PERSON and ORGANIZATION: no floor, deliberately** (confirmed with Sergei) — real 2-char
   surnames (Wu, Ng) make a PERSON floor a leak risk on a CRITICAL type; real 3-char orgs
   (NAB, ANZ, BHP) make an ORG floor wrong. The measured short FPs cluster on numeric-ID
-  types instead; the general policy for those guesses is an open TODO item.
+  types instead; their general policy shipped 2026-07-22 as identifier post-validation
+  (next section).
+
+### NER identifier guesses are post-validated — checksums where they exist, structure where they don't (2026-07-22)
+
+Layer-1's identifier recognizers are validation-backed (AU checksums, Luhn), but GLiNER2's
+numeric-ID emissions used to strip unvalidated — and on real statements the model labels
+bank receipt references (a letter + 10 digits, 'W1045366576') semi-randomly as TFN, driver
+licence or passport (14 junk identifier detections on one NAB statement — review issue #10,
+which also covered the AFSL/credit-licence-as-drivers-licence finding). Every numeric-ID
+guess now passes its class rule before it may strip
+(`gliner2_recognizer.IDENTIFIER_VALIDATORS`; arithmetic in `pii/core/checksums.py`, shared
+with the shadow recognizers):
+
+- **Checksummed classes (AU_TFN, AU_MEDICARE): digit count + class arithmetic.** A guess
+  with the right SHAPE but a failing checksum demotes to its `*_INVALID` class and joins
+  the shadow-recognizer findings — same typo/OCR-mangle/forgery rationale, Sergei's
+  option (b) 2026-07-22 — unless the pipeline runs `invalid_identifiers="ignore"` (wired
+  as `Gliner2Recognizer(demote_invalid=False)`, keeping the historical silent drop).
+  Structurally impossible guesses (wrong digit count, bad Medicare first digit) are
+  plain-dropped. Exception: legacy 8-digit TFNs pass structurally WITHOUT arithmetic —
+  there is no reliable public checksum variant for them and layer-1's 9-digit pattern
+  can't cover them, so a wrong 8-digit guess merely over-strips while a wrong demotion
+  could leak a real one.
+- **AU_BANK_ACCOUNT: 5-16 digits** — the 2026-07-14 floor plus a cap (10-digit account +
+  6-digit BSB prefix the model sometimes emits in one span). The cap kills the bogus
+  22-digit run that over-extended a credit card via `_merge_overlaps` (issue #6's
+  recorded side effect).
+- **No-checksum classes get structural caps only**: PASSPORT ≤ 9 digits (AU format is
+  1-2 letters + 7 digits), AU_DRIVERS_LICENCE ≤ 10 alphanumeric characters (no AU state
+  issues longer ones — this also drops 'Australian credit licence NNNNNN' phrases).
+- **Masked last-4 disclosures ('card ending 1234') are deliberately not strip-worthy** —
+  they fall under the digit floors, consistent with layer-1 (`\d{5,10}` never matched
+  them). The CARD_LAST4 keep-probe watches the stance.
+
+Trade-off accepted: a real TFN with an OCR-mangled digit, unlabeled and ungrouped in free
+text, is now dropped instead of stripped — indistinguishable from the junk population; the
+labeled/grouped/context cases stay covered by the shadow recognizers. Dual coverage:
+model-free validator tests in `tests/pii/core/test_gliner2_floors.py`, keep-probes
+REFERENCE_NUMBER / DIGITS_OVERLONG / CARD_LAST4 in pii_eval.
 
 ### Mechanical joint-name forms are layer-1 patterns, not an NER problem (2026-07-15)
 

@@ -888,6 +888,48 @@ the move; new completed tasks append to the matching section with their records.
       **Open watch item:** both models hold VRAM during pipeline runs (worker paddle + parent
       GLiNER2 on one 11 GB GPU) — fine for page renders, first OOM lever is
       `text_det_limit_side_len`; carried into the knobs TODO.)*
+- [x] Policy for GLiNER2's numeric-ID *guesses* (2026-07-14, length-heuristic discussion).
+      Diagnostic on the tier-1 corpus: nearly every short false positive is GLiNER2 labeling
+      a numeric-ID type that layer-1 already owns with a checksum — `'42'` as AU_BANK_ACCOUNT,
+      `'K3EN5L'` / `'TAS 2628'` as AU_TFN. A LOCATION-style char-length floor is the wrong
+      instrument (TFN FPs are non-numeric junk; the real fix is format/digit-count) AND must
+      NOT be applied to PERSON or ORGANIZATION — real short surnames (Wu, Ng) and bank
+      acronyms (NAB, ANZ, BHP) live there, so a floor is a leak risk / pointless respectively
+      (confirmed with Sergei). Cleaner single lever than N per-class floors: constrain
+      GLiNER2's numeric-ID emissions — either drop those labels (layer-1 validates them) or
+      route each guess through its layer-1 checksum recognizer before it may strip.
+      *(2026-07-22 — SHIPPED as identifier post-validation, driven by review issue #10:
+      on the real dd24ae14 NAB statement GLiNER2 labeled letter+10-digit bank receipt
+      references semi-randomly as TFN (8), driver licence (4 + the 'Australian Credit
+      Licence 230686' phrase — review other-finding #1) and passport (2); a bogus 22-digit
+      AU_BANK_ACCOUNT guess on the Amplify statement also over-extended a credit card via
+      `_merge_overlaps` (issue #6's recorded side effect). Implementation:
+      `gliner2_recognizer.IDENTIFIER_VALIDATORS` — per-type validators run where the
+      2026-07-14 account floor ran; checksum arithmetic extracted from
+      `invalid_recognizers.py` into the shared `pii/core/checksums.py`. Rules: AU_TFN
+      9 digits + mod-11 (legacy 8-digit passes structurally — no reliable public checksum
+      variant, and layer-1's 9-digit pattern can't cover them, so demotion could leak a
+      real one while an FP merely over-strips); AU_MEDICARE 10-11 digits, first digit 2-6,
+      mod-10; AU_BANK_ACCOUNT 5-16 digits (floor + BSB-prefixed cap); PASSPORT ≤ 9 digits;
+      AU_DRIVERS_LICENCE ≤ 10 alnum chars. Disposition — Sergei's option (b): shape-correct
+      checksum failures DEMOTE to `*_INVALID` and join the shadow-recognizer findings;
+      structurally impossible guesses plain-drop; under the `ignore` tier demotion is off
+      (`Gliner2Recognizer(demote_invalid=False)`, wired from `invalid_identifiers`).
+      Last-4 stance settled: masked disclosures ('card ending 1234') are NOT strip-worthy —
+      digit floors drop them, consistent with layer-1; CARD_LAST4 keep-probe added per the
+      2026-07-15 corpus note, alongside REFERENCE_NUMBER (letter+10-digit receipt shape,
+      both a guaranteed loan-doc probe and a txbank statement pattern) and DIGITS_OVERLONG
+      (22-digit run). The loan template now always renders a trustee line (trust-name
+      presence in the corpus was coincidence-dependent on pool draws and the added rng
+      consumption shifted seed 42 past it). Verified: dd24ae14 fresh-map run shows ZERO
+      junk identifier detections (was 14) with every legit detection intact; Amplify shows
+      the 22-digit account and licence-phrase junk gone, BPAY Ref still CARD. Trade-off
+      accepted: an unlabeled, ungrouped OCR-mangled real TFN in free text is now dropped —
+      indistinguishable from the junk population; labeled/grouped/context cases remain
+      covered by the shadow recognizers. Tests: 7 model-free validator tests in
+      `tests/pii/core/test_gliner2_floors.py` (checksum keeps/demotions, demote-off wiring,
+      digit caps, licence/passport structure); fast suite 189, model suite 8 incl. tier-1
+      gate — all green.)*
 
 ## Evaluation
 

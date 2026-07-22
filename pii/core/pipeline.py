@@ -15,7 +15,9 @@ placeholders from a PseudonymMap.
 
 Checksum-invalid identifier candidates (a value shaped like a TFN whose
 mod-11 arithmetic fails — a typo, bad OCR, or forgery) are collected by
-the shadow recognizers in pii.core.invalid_recognizers, controlled by the
+the shadow recognizers in pii.core.invalid_recognizers — plus GLiNER2
+identifier guesses demoted by post-validation (shape-correct, checksum-
+failed; pii.core.gliner2_recognizer) — controlled by the
 `invalid_identifiers` tier, and returned by detect()/strip() as
 InvalidFinding records. They are only *masked* when mask_invalid=True
 adds the invalid classes to strip_entities. The findings are near-PII
@@ -152,7 +154,16 @@ class PiiPipeline:
         # registry without loading the model (fast, model-free default suite).
         from pii.core.gliner2_recognizer import Gliner2Recognizer
 
-        registry.add_recognizer(Gliner2Recognizer())
+        # NER identifier guesses are post-validated in the recognizer
+        # (checksums/format, issue #10); shape-correct checksum failures
+        # demote to the *_INVALID classes and join the findings below —
+        # except under the 'ignore' tier, which keeps the historical
+        # silent drop for NER guesses too.
+        registry.add_recognizer(
+            Gliner2Recognizer(
+                demote_invalid=(invalid_identifiers != "ignore")
+            )
+        )
         self.analyzer = AnalyzerEngine(
             nlp_engine=nlp_engine, registry=registry, supported_languages=["en"]
         )

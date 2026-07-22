@@ -271,27 +271,6 @@ experiment (future session; owns the next engine-shaped decision).
       groups, not full isolation. Sequencing: needs at least a provisional
       cross-pass overlap-resolution rule — best run together with (or right after)
       the overlaps-merging task above.
-- [ ] Policy for GLiNER2's numeric-ID *guesses* (2026-07-14, length-heuristic discussion).
-      Diagnostic on the tier-1 corpus: nearly every short false positive is GLiNER2 labeling
-      a numeric-ID type that layer-1 already owns with a checksum — `'42'` as AU_BANK_ACCOUNT,
-      `'K3EN5L'` / `'TAS 2628'` as AU_TFN. A LOCATION-style char-length floor is the wrong
-      instrument (TFN FPs are non-numeric junk; the real fix is format/digit-count) AND must
-      NOT be applied to PERSON or ORGANIZATION — real short surnames (Wu, Ng) and bank
-      acronyms (NAB, ANZ, BHP) live there, so a floor is a leak risk / pointless respectively
-      (confirmed with Sergei). Cleaner single lever than N per-class floors: constrain
-      GLiNER2's numeric-ID emissions — either drop those labels (layer-1 validates them) or
-      route each guess through its layer-1 checksum recognizer before it may strip. The
-      quick safe subset is DONE: `AU_BANK_ACCOUNT_MIN_DIGITS=5` floor on GLiNER2's account
-      guesses (kills the `'42'` fragment, zero recall cost — spaced accounts survive because
-      the model emits them as one span and the floor counts digits, not chars;
-      tests/pii/core/test_gliner2_floors.py). The general per-class/validation policy for the
-      other numeric IDs (TFN junk like `'K3EN5L'`, etc.) remains open. Edge to decide
-      there: masked last-4 disclosures ("card ending 1234") fall under the digit floors by
-      design — consistent with layer-1 (`\d{5,10}` never matched them), but the policy
-      should take a deliberate stance on whether last-4 fragments are strip-worthy. Overlaps the
-      invalid-identifiers and overlaps-merging work. *(Corpus note 2026-07-15: pii_eval
-      generates no masked last-4 forms yet — add them, with a truth convention for
-      whichever stance is chosen, when this policy lands.)*
 - [ ] Ablation: are the address workarounds still needed at max_width=12?
       Postponed (decision 2026-07-14) until the tier-1 corpus has more and more
       varied address examples — 12 ADDRESS spans from a handful of templates is

@@ -90,9 +90,13 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
 
     # Joint-name recognizer trade-off keep-probes (2026-07-15): 'AND'-orgs
     # with a corporate marker (must keep) and without one (the documented
-    # sacrifice). Per-form keep rows, never gate members.
+    # sacrifice). Per-form keep rows, never gate members. The issue-#10
+    # trio (2026-07-22): letter+10-digit receipt refs, >16-digit runs and
+    # masked last-4 card disclosures must survive identifier
+    # post-validation unstripped.
     for t in ("ORGANIZATION_AND", "ORGANIZATION_AND_BARE", "PROSE_AND",
-              "AMOUNT_COLUMN"):
+              "AMOUNT_COLUMN", "REFERENCE_NUMBER", "DIGITS_OVERLONG",
+              "CARD_LAST4"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(not e["strip_expected"] and not e["critical"]
                    for e in by_type[t]), t
