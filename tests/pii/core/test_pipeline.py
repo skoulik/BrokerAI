@@ -106,17 +106,27 @@ def test_labeled_account_pattern_releases_trailing_amount():
 
 def test_labeled_account_releases_trailing_amount_e2e(pipeline):
     # Pipeline-level: the account strips in full (the guard only backtracks
-    # the amount group off) and the amount survives. The amount here is
-    # chosen so PhoneRecognizer stays silent — libphonenumber reads some
-    # account+amount digit runs ('32-151-6825 1' -> 3215168251) as a valid
-    # US number and _merge_overlaps would union that span over the amount:
-    # a separate swallower, found 2026-07-22 while fixing issue #11 and
-    # reported as its own finding.
-    text = "Interest Charged From A/C 32-151-6825 148.74CR"
-    out, _, _ = pipeline.strip(text, PseudonymMap())
-    assert "32-151-6825" not in out, out       # account stripped
-    assert "A/C" not in out, out               # label in-span, stripped
-    assert out.endswith(" 148.74CR"), out      # amount released intact
+    # the amount group off) and the amount survives. Both amount shapes:
+    # '1.50' additionally exercises the issue-#11 follow-up — with US phone
+    # regions libphonenumber read '32-151-6825 1' as a valid US number
+    # (3215168251) and _merge_overlaps draped that span over the amount;
+    # AU-only regions keep PhoneRecognizer silent here.
+    for amount in ("148.74CR", "1.50"):
+        text = f"Interest Charged From A/C 32-151-6825 {amount}"
+        out, _, _ = pipeline.strip(text, PseudonymMap())
+        assert "32-151-6825" not in out, out       # account stripped
+        assert "A/C" not in out, out               # label in-span, stripped
+        assert out.endswith(f" {amount}"), out     # amount released intact
+
+
+def test_phone_au_only_regions_keep_all_real_forms(pipeline):
+    # The AU-only sacrifice must not touch the forms that actually occur:
+    # AU 13-numbers/mobiles and international '+'-prefixed numbers (parsed
+    # region-independently, so foreign contacts still strip).
+    for number in ("13 22 65", "0412 345 678", "+613 8536 7870",
+                   "+1 305 555 0123"):
+        out, _, _ = pipeline.strip(f"Contact {number} today", PseudonymMap())
+        assert number not in out, out
 
 
 def test_labeled_account_without_amount_still_full_match(pipeline):

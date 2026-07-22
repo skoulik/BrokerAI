@@ -127,11 +127,17 @@ class PiiPipeline:
         # date-as-PERSON false positives, and weaker LOCATION recall (6/11 vs
         # 11/11 contextual towns — DONE.md 2026-07-14).
         registry.remove_recognizer("SpacyRecognizer")
-        # Default phone regions don't include AU.
+        # Default phone regions don't include AU. AU-only on purpose
+        # (issue #11 follow-up, Sergei's option A, 2026-07-22): with US in
+        # the region list, libphonenumber read account+amount digit runs
+        # ('A/C 30-743-3257 1.50' -> '3074332571') as valid US numbers, and
+        # _merge_overlaps draped the phone span over the account, eating the
+        # amount's integer part. International '+'-prefixed numbers are
+        # parsed region-independently, so '+1 305 555 0123' still strips —
+        # the only sacrifice is bare US/GB-domestic-format numbers, which
+        # don't occur on AU statements.
         registry.remove_recognizer("PhoneRecognizer")
-        registry.add_recognizer(
-            PhoneRecognizer(supported_regions=("AU", "US", "GB"))
-        )
+        registry.add_recognizer(PhoneRecognizer(supported_regions=("AU",)))
         # The AU checksum recognizers aren't part of the default registry load.
         for recognizer_cls in (
             AuTfnRecognizer,

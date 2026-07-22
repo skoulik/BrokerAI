@@ -190,6 +190,14 @@ explicitly. The checksum logic is ordinary local Python in the library
 TFN scores 1.00, a digit-swapped one is rejected entirely. Keep presidio ≥ 2.2.363 —
 2.2.362's ACN validator rejects every ACN with check digit 0.
 
+Phone regions are **AU-only** (issue #11 follow-up, Sergei's option A, 2026-07-22; was
+AU+US+GB): with US in the list, libphonenumber read account+amount digit runs
+('A/C 30-743-3257 1.50' → '3074332571') as valid US numbers and the merged span re-swallowed
+the amount the labeled-account guard had just released. Zero measured loss: international
+'+'-prefixed numbers are parsed region-independently ('+1 305 555 0123' still strips), AU
+13-numbers/1800/mobiles unaffected — the only sacrifice is bare US/GB-domestic-format
+numbers, which don't occur on AU statements.
+
 ### Recall-first span handling (2026-07-12 — two leak classes found and designed out)
 
 Scoring philosophy: a false positive costs some analytical utility; a false negative leaks
