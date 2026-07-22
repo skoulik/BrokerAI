@@ -130,6 +130,13 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     # business carries no trust.
     trust = biz.trust or f"{biz.name.split()[0]} FAMILY TRUST"
     doc.raw("  Trustee for:     ").private_org(trust).nl()
+    # ORGANIZATION_ATF probe (issue #9): the '<company> ATF <trust>' line
+    # form with the DOC-TRUNCATED trust name real statements produce
+    # ('... ATF SK BU') — the layer-1 ATF-tail pattern must strip the
+    # clause even though the truncation removes the trust's own marker.
+    truncated_trust = f"ATF {biz.name.split()[0]} FAMILY TRU"
+    doc.raw("  Account name:    ").private_org(biz.name).raw(" ")
+    doc.pii(truncated_trust, "ORGANIZATION_ATF").nl()
     doc.raw("  ABN:             ")
     if invalid:
         doc.pii(au.invalid_abn(rng), "AU_ABN_INVALID",

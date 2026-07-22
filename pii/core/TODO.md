@@ -202,6 +202,15 @@ experiment (future session; owns the next engine-shaped decision).
       Input (2026-07-14, invalid-identifiers work): invalid-class spans already rank below
       any valid type in `_merge_overlaps` (union extents, valid class wins the placeholder)
       — fold that rule into the general algorithm definition.
+- [ ] Loyalty-program ID class (issue #7, 2026-07-22 — design call pending). The Qantas
+      frequent-flyer number on the Amplify statement (page 2) is not detected: no current
+      class covers it, yet it identifies the customer. Decide: (a) is a loyalty ID
+      strip-worthy PII (probably yes — it is a stable customer identifier linkable across
+      documents); (b) one generic LOYALTY_ID class or per-program; (c) mechanism — a layer-1
+      context pattern ('Frequent Flyer', 'Membership No', 'Rewards number' + digit run,
+      the AuAccountNumberRecognizer context-promotion idiom) vs a GLiNER2 label (label
+      competition risk — see the labels-per-pass experiment). Dual coverage on landing:
+      pytest + a pii_eval probe with a truth type per the established convention.
 - [ ] OCR column segmentation for label/value header blocks (issue #8a, 2026-07-22).
       Two-column page headers (ANZ: left 'Postal Address' → address lines, right 'Trading
       Account Number' → '314811') band into single assembled lines by design — side-by-side

@@ -17,6 +17,8 @@ from pii.core.org_policy import is_private_entity
     "Smith Superannuation Fund",
     "JONES SMSF",
     "THE TRUSTEE FOR SK BUSINESS TRUST",
+    "AS TRUSTEES FOR THE KULIK FAMILY TRUST",  # plural trustees (issue #9)
+    "ATF SK BU",                               # doc-truncated trustee clause
     "TAYLOR AND SCOTT LAWYERS PTY LTD",        # joint-shaped, still private
 ])
 def test_private_entities_stripped(name):

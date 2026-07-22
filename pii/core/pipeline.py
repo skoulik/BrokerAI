@@ -50,6 +50,7 @@ from pii.core.invalid_recognizers import (
 from pii.core.mapping import PseudonymMap
 from pii.core.org_policy import is_private_entity
 from pii.core.recognizers import (
+    AtfTailRecognizer,
     AuAccountNumberRecognizer,
     AuAfslRecognizer,
     AuBsbRecognizer,
@@ -160,6 +161,10 @@ class PiiPipeline:
         # SUMMERS') — mechanical enough for layer 1, and GLiNER2's known
         # segmentation gap under transaction junk (2026-07-15, DONE.md).
         registry.add_recognizer(JointNameRecognizer())
+        # '<company> ATF <trust>' trustee clauses — mechanical legal form
+        # owned at layer 1 (issue #9): doc-truncated trust names defeat NER
+        # confidence and marker matching, the connector never does.
+        registry.add_recognizer(AtfTailRecognizer())
         for recognizer in make_invalid_recognizers(invalid_identifiers):
             registry.add_recognizer(recognizer)
         # Layer 2: GLiNER2 zero-shot NER. The import is deferred so tests can

@@ -77,7 +77,8 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     for t in ("LOCATION", "LOCATION_SHORT", "ADDRESS_BARE",
               "PERSON_JOINT", "PERSON_REVERSED", "CONTEXTUAL_ID",
               "PERSON_COMMA", "PERSON_PARTICLE", "PERSON_MULTIWORD",
-              "ORGANIZATION_PRIVATE", "PERSON_COLLIDING"):
+              "ORGANIZATION_PRIVATE", "PERSON_COLLIDING",
+              "ORGANIZATION_ATF"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(e["strip_expected"] for e in by_type[t]), t
         gated = t == "PERSON_JOINT"

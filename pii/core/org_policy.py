@@ -21,8 +21,10 @@ import re
 # Legal-form markers of a private company / trust / fund. Bare LTD/LIMITED is
 # excluded on purpose: too many public companies use it ('QBE ... Limited'),
 # and the keep-list can't be exhaustive. Matched case-insensitively.
+# trustee takes the plural too ('as trustees for', joint trustees —
+# issue #9, 2026-07-22).
 _MARKERS = re.compile(
-    r"\b(?:pty|trust(?:ee)?|atf|super(?:annuation)?\s+fund|smsf)\b",
+    r"\b(?:pty|trust(?:ees?)?|atf|super(?:annuation)?\s+fund|smsf)\b",
     re.IGNORECASE,
 )
 

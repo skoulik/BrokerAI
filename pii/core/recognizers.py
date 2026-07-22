@@ -213,6 +213,39 @@ class JointNameRecognizer(PatternRecognizer):
         )
 
 
+class AtfTailRecognizer(PatternRecognizer):
+    """The trustee clause of '<company> ATF <trust name>' lines — issue #9
+    (2026-07-22). Real statements truncate the account-name field mid-word
+    ('SK MANAGEMENT VICTORIA PTY LTD ATF SK BU', '... ATF SK BUSINESS TRU'),
+    which defeats both NER (GLiNER2 scores the truncated trust fragment
+    0.30-0.55, below threshold or markerless) and org_policy's marker
+    matching ('TRU'/'BU' are not 'TRUST'). The connector itself is the one
+    reliable signal, so the mechanical form is owned at layer 1 (the
+    JointNameRecognizer precedent): match 'ATF' / 'as trustee(s) for' plus
+    the rest of the line (capped) as one ORGANIZATION span. org_policy then
+    strips it as a private entity — 'atf'/'trustee' are marker words — so
+    the trust name is covered no matter where the doc cut it off. A false
+    'ATF' hit in prose costs an over-strip of one line tail (safe
+    direction); on column-banded lines the tail may take glued right-column
+    text with it — same trade-off."""
+
+    PATTERNS = [
+        Pattern(
+            "atf tail",
+            r"\b(?:atf|as\s+trustees?\s+for)\s+\S[^\n]{0,60}",
+            0.45,
+        ),
+    ]
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            supported_entity="ORGANIZATION",
+            patterns=self.PATTERNS,
+            name="AtfTailRecognizer",
+            **kwargs,
+        )
+
+
 class AuAfslRecognizer(PatternRecognizer):
     """AFSL (Australian Financial Services Licence) numbers — issue #8c /
     review other-finding #1 (2026-07-22). A KEPT class: public corporate

@@ -136,6 +136,21 @@ def test_bsb_account_combined_splits_into_two_spans(pipeline):
     assert out.count("ACCOUNT_1") == 2, out
 
 
+def test_atf_tail_stripped_including_truncated_forms(pipeline):
+    # Issue #9: '<company> ATF <trust>' — the doc truncates the field
+    # mid-word ('ATF SK BU', '... SK BUSINESS TRU'), defeating NER
+    # confidence and marker matching; the layer-1 ATF-tail pattern covers
+    # the clause to end-of-line regardless, and org_policy strips it (atf
+    # marker). The next line must stay untouched.
+    for tail in ("ATF SK BU", "ATF SK BUSINESS TRU",
+                 "as trustees for THE KULIK FAMILY TRUST"):
+        text = f"ACCOUNT NAME PTY LTD {tail}\nStatement starts 22 February"
+        out, _, _ = pipeline.strip(text, PseudonymMap())
+        assert tail not in out, out
+        assert "ORG_" in out, out
+        assert out.endswith("Statement starts 22 February"), out
+
+
 def test_corporate_licence_numbers_detected_and_kept(pipeline):
     # Issue #8c / other-finding #1: AFSL and Australian Credit Licence
     # numbers are public corporate identifiers — detected under their own
