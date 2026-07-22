@@ -202,8 +202,20 @@ experiment (future session; owns the next engine-shaped decision).
       Input (2026-07-14, invalid-identifiers work): invalid-class spans already rank below
       any valid type in `_merge_overlaps` (union extents, valid class wins the placeholder)
       — fold that rule into the general algorithm definition.
-- [ ] Metadata scrubbing on all output formats *(eval note 2026-07-15: no pii_eval
-      corpus format carries metadata — extend a tier alongside this task)*
+- [ ] OCR column segmentation for label/value header blocks (issue #8a, 2026-07-22).
+      Two-column page headers (ANZ: left 'Postal Address' → address lines, right 'Trading
+      Account Number' → '314811') band into single assembled lines by design — side-by-side
+      cells ARE one visual row — so the text reads '24 STACEY DRIVE, CARRICKALINGA SA 5204
+      314811' and GLiNER2 emits the WHOLE line as one ADDRESS span (0.99; its addr-split pass
+      even scores the bare '314811' as a locality line at 0.45). Everything strips, so no
+      leak — the damage is aliasing ('314811' hides in ADDRESS_n instead of getting the
+      consistent ACCOUNT_n it gets elsewhere) and label/value association (the account's
+      label sits one row up in its own column, out of pattern/context reach). Fix class:
+      detect column structure in the OCR layer and isolate columns as separate segments —
+      the RECORD_SEPARATOR cell-isolation precedent (csv_mode → GLiNER2 windows) is the
+      mechanism to reuse. Scope decision needed: header blocks only, or general multi-column
+      handling (interacts with _rows and the transaction-table banding that MUST stay
+      row-wise).
 - [ ] Slim the Presidio NLP engine: exclude `parser` and `ner` from the en_core_web_sm
       pipeline. Presidio loads the model with bare `spacy.load()` (spacy_nlp_engine.py, no
       component exclusions), so every analyzed text pays for the full 6-component pipeline;

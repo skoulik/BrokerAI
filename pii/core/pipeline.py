@@ -51,7 +51,9 @@ from pii.core.mapping import PseudonymMap
 from pii.core.org_policy import is_private_entity
 from pii.core.recognizers import (
     AuAccountNumberRecognizer,
+    AuAfslRecognizer,
     AuBsbRecognizer,
+    AuCreditLicenceRecognizer,
     JointNameRecognizer,
     PayIdRecognizer,
 )
@@ -149,6 +151,11 @@ class PiiPipeline:
         registry.add_recognizer(AuBsbRecognizer())
         registry.add_recognizer(AuAccountNumberRecognizer())
         registry.add_recognizer(PayIdRecognizer())
+        # KEPT classes (not in DEFAULT_STRIP_ENTITIES): public corporate
+        # licence numbers, detected so reports discriminate them from
+        # AU_DRIVERS_LICENCE (issue #8c / review other-finding #1).
+        registry.add_recognizer(AuAfslRecognizer())
+        registry.add_recognizer(AuCreditLicenceRecognizer())
         # Joint-account name forms ('E & J Moore', 'JULIE AND BRIAN
         # SUMMERS') — mechanical enough for layer 1, and GLiNER2's known
         # segmentation gap under transaction junk (2026-07-15, DONE.md).
@@ -264,25 +271,44 @@ def _rank(r) -> tuple:
 
 def _merge_overlaps(results):
     """Union overlapping spans into one; the merged span takes the
-    highest-ranked member's entity type (see _rank). Recall-first:
+    highest-ranked member's entity type (see _rank) — except AU_BSB, which
+    may label a union only if the BSB member itself covers the whole
+    extent (issue #8b, 2026-07-22). A BSB is a routing code, the least
+    identifying thing a union can contain, yet its context word promotes
+    it past account scores ('BSB Cash Account Number 014-936 111873883':
+    BSB 0.6+0.35 context = 0.95 beat the whole-run account guess at 0.93),
+    so score alone would hide an account number under a BSB_n placeholder.
+    A standalone BSB (union == its own span) keeps its label even when a
+    grouped-account pattern double-covers the same digits. Recall-first:
     everything any span covered gets replaced."""
-    merged = []
+    unions: list[list] = []
+    end = None
     for r in sorted(results, key=lambda r: (r.start, -r.end)):
-        last = merged[-1] if merged else None
-        if last is not None and r.start < last.end:
-            last.end = max(last.end, r.end)
-            if _rank(r) > _rank(last):
-                last.score = r.score
-                last.entity_type = r.entity_type
+        if unions and r.start < end:
+            unions[-1].append(r)
+            end = max(end, r.end)
         else:
-            merged.append(
-                RecognizerResult(
-                    entity_type=r.entity_type,
-                    start=r.start,
-                    end=r.end,
-                    score=r.score,
-                )
+            unions.append([r])
+            end = r.end
+    merged = []
+    for members in unions:
+        start = min(m.start for m in members)
+        end = max(m.end for m in members)
+        candidates = [
+            m
+            for m in members
+            if m.entity_type != "AU_BSB"
+            or (m.start == start and m.end == end)
+        ] or members
+        best = max(candidates, key=_rank)
+        merged.append(
+            RecognizerResult(
+                entity_type=best.entity_type,
+                start=start,
+                end=end,
+                score=best.score,
             )
+        )
     return merged
 
 

@@ -13,17 +13,32 @@ from presidio_analyzer import Pattern, PatternRecognizer
 
 
 class AuBsbRecognizer(PatternRecognizer):
-    """BSB codes: 3 digits, separator, 3 digits; optionally followed by an
-    account number (the combined form is unambiguous enough to score high
-    without context words)."""
+    """BSB codes: 3 digits, separator, 3 digits; a following account number
+    makes the BSB unambiguous enough to score high without context words.
+
+    The combined BSB+account forms used to emit ONE span labeled AU_BSB,
+    which mislabeled the account half and broke pseudonym aliasing (issue
+    #8b, 2026-07-22: '014-936 111873883' -> placeholder BSB_n hiding an
+    account). They are now split: the BSB patterns here match only the BSB
+    digits with the account as a lookahead, and AuAccountNumberRecognizer
+    carries the mirror-image lookbehind patterns for the account half — two
+    spans, two placeholders, so a bare '111873883' elsewhere aliases to the
+    SAME ACCOUNT_n. (When GLiNER2 also emits the combined run as one
+    account guess, _merge_overlaps unions the split back into a single
+    AU_BANK_ACCOUNT span — still an account label, never BSB-over-account.)
+    """
 
     PATTERNS = [
-        Pattern("bsb+account", r"\b\d{3}[- ]\d{3}[- ]?\s?\d{5,10}\b", 0.6),
+        Pattern(
+            "bsb before account",
+            r"\b\d{3}[- ]\d{3}(?=[- ]?\s?\d{5,10}\b)",
+            0.6,
+        ),
         # Transaction-description form: unseparated BSB directly followed by
         # an account number ("from 944600 000731114"). Found leaking by the
         # Tier-1 corpus (pii_eval) — the dominant form inside statement
         # descriptions, where no context words appear.
-        Pattern("bsb+account bare", r"\b\d{6}[ -]\d{5,10}\b", 0.55),
+        Pattern("bsb bare before account", r"\b\d{6}(?=[ -]\d{5,10}\b)", 0.55),
         Pattern("bsb", r"\b\d{3}[- ]\d{3}\b", 0.2),
     ]
     CONTEXT = ["bsb", "branch", "bank", "deposit", "transfer"]
@@ -81,6 +96,16 @@ class AuAccountNumberRecognizer(PatternRecognizer):
             r"\b(?!(?:19|20)\d{2}-(?:(?:19|20)?\d{2})\b)\d{4,6}-\d{2,6}\b",
             0.45,
         ),
+        # The account half of the combined BSB+account forms (issue #8b —
+        # split spans, see AuBsbRecognizer): the preceding BSB is the
+        # unambiguity signal, carried as a variable-length lookbehind
+        # (presidio compiles with the `regex` library, which supports it).
+        Pattern(
+            "account after bsb",
+            r"(?<=\b\d{3}[- ]\d{3}[- ]?\s?)\d{5,10}\b",
+            0.55,
+        ),
+        Pattern("account after bare bsb", r"(?<=\b\d{6}[ -])\d{5,10}\b", 0.55),
         # "A/C 7412154728", "a/c 1234 5678", "Acct No: 000 731 114": the
         # a/c-family label matched in-span (see class docstring; the label
         # lands inside the placeholder — harmless, recall-first). Contiguous
@@ -184,6 +209,58 @@ class JointNameRecognizer(PatternRecognizer):
             # Drop presidio's default IGNORECASE so the initials '[A-Z]' and
             # surname classes stay case-sensitive (issue #4).
             global_regex_flags=regex.MULTILINE | regex.DOTALL,
+            **kwargs,
+        )
+
+
+class AuAfslRecognizer(PatternRecognizer):
+    """AFSL (Australian Financial Services Licence) numbers — issue #8c /
+    review other-finding #1 (2026-07-22). A KEPT class: public corporate
+    identifiers from bank document footers, analytical value, not personal
+    PII — AU_AFSL is not in DEFAULT_STRIP_ENTITIES. Detected so reports
+    discriminate them from AU_DRIVERS_LICENCE (GLiNER2 used to label the
+    bare numbers 'driver licence'; its corporate-licence context guard is
+    the strip-suppression half of this fix). The label word is the
+    AFSL-vs-credit-licence discriminator; both are 5-6 digit numbers with
+    no public checksum."""
+
+    PATTERNS = [
+        Pattern(
+            "afsl labeled",
+            r"\b(?:afsl|(?:australian\s+)?financial\s+services\s+licen[cs]e)"
+            r"\s*(?:no\.?|number|#)?\s*:?\s*\d{5,6}\b",
+            0.7,
+        ),
+    ]
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            supported_entity="AU_AFSL",
+            patterns=self.PATTERNS,
+            name="AuAfslRecognizer",
+            **kwargs,
+        )
+
+
+class AuCreditLicenceRecognizer(PatternRecognizer):
+    """Australian Credit Licence numbers — the sibling of AuAfslRecognizer
+    (same rationale, same footer habitat, discriminated by label word).
+    KEPT class: AU_CREDIT_LICENCE is not in DEFAULT_STRIP_ENTITIES."""
+
+    PATTERNS = [
+        Pattern(
+            "credit licence labeled",
+            r"\b(?:(?:australian\s+)?credit\s+licen[cs]e|acl)"
+            r"\s*(?:no\.?|number|#)?\s*:?\s*\d{5,6}\b",
+            0.7,
+        ),
+    ]
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            supported_entity="AU_CREDIT_LICENCE",
+            patterns=self.PATTERNS,
+            name="AuCreditLicenceRecognizer",
             **kwargs,
         )
 

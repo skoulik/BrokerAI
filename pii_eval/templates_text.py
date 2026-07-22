@@ -213,5 +213,17 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     doc.pii(rng.choice(TOWNS), "LOCATION")
     doc.raw(". Applicant 1 previously resided in ")
     doc.pii(rng.choice(SHORT_SUBURBS), "LOCATION_SHORT")
+    doc.raw(".").nl(2)
+    # Corporate-licence keep-probes (issue #8c / other-finding #1): AFSL
+    # and Australian Credit Licence numbers are public corporate
+    # identifiers — kept classes AU_AFSL/AU_CREDIT_LICENCE — and the bare
+    # number must not strip as a driver licence (GLiNER2's footer
+    # mislabel, suppressed by its corporate-licence context guard).
+    doc.raw(f"Credit services arranged by {acct.bank} ")
+    doc.pii(f"AFSL {rng.randrange(10**5, 10**6)}", "AU_AFSL",
+            strip_expected=False)
+    doc.raw(", ")
+    doc.pii(f"Australian Credit Licence {rng.randrange(10**5, 10**6)}",
+            "AU_CREDIT_LICENCE", strip_expected=False)
     doc.raw(".").nl()
     return doc

@@ -156,3 +156,22 @@ def test_licence_alnum_cap():
     text = ("DL 123456789 then L2724656893 then "
             "Australian credit licence 230686")
     assert _spans(rec, text, "AU_DRIVERS_LICENCE") == ["123456789"]
+
+
+def test_licence_corporate_context_guard():
+    # Issue #8c / other-finding #1: the model labels the BARE 5-6 digit
+    # number in a bank footer 'driver licence number' — right after an
+    # AFSL / Australian Credit Licence label it is a public corporate
+    # identifier (layer-1's kept classes own it), so the guess is dropped.
+    # A genuine driver-licence label ('Licence no: ...') must NOT trigger
+    # the guard.
+    rec = Gliner2Recognizer()
+    rec._model = _FakeModel({"driver licence number": ["234527"]})
+    for context, kept in (
+        ("Australian Credit Licence 234527", False),
+        ("australian credit license no: 234527", False),
+        ("AFSL 234527", False),
+        ("Licence no: 234527", True),
+    ):
+        got = _spans(rec, context, "AU_DRIVERS_LICENCE")
+        assert got == (["234527"] if kept else []), context

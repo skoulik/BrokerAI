@@ -309,6 +309,19 @@ OVERLAP_CHARS = 300
 BATCH_SIZE = 4
 
 _HONORIFIC = re.compile(r"\b(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+$", re.IGNORECASE)
+# Corporate-licence context guard on driver-licence guesses (issue #8c /
+# review other-finding #1, 2026-07-22): a 5-6 digit run right after an
+# AFSL / Australian Credit Licence label in a bank footer is a PUBLIC
+# corporate identifier — layer-1's kept AU_AFSL/AU_CREDIT_LICENCE classes
+# own it — but the model labels the bare number 'driver licence number'.
+# Anchored at the guess's start ($ + endpos), so a genuine 'Licence no:
+# NNNNNN' driver form (no afsl/credit/financial-services word) never
+# matches.
+_CORPORATE_LICENCE = re.compile(
+    r"(?:afsl|acl|(?:australian\s+)?(?:credit|financial\s+services)\s+"
+    r"licen[cs]e)\s*(?:no\.?|number|#)?\s*:?\s*$",
+    re.IGNORECASE,
+)
 _COALESCE_GAP = re.compile(r"^,?\s*$")
 COALESCE_GAP_MAX = 4
 # Joint-name connector between two PERSON fragments ('Julie and Brian
@@ -439,6 +452,13 @@ class Gliner2Recognizer(EntityRecognizer):
                                     m = _HONORIFIC.search(window_text, 0, start)
                                     if m:
                                         start = m.start()
+                                if (
+                                    emit_type == "AU_DRIVERS_LICENCE"
+                                    and _CORPORATE_LICENCE.search(
+                                        window_text, max(0, start - 60), start
+                                    )
+                                ):
+                                    continue
                                 span = (
                                     window_offset + start,
                                     window_offset + end,

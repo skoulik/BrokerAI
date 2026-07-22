@@ -119,6 +119,39 @@ def test_labeled_account_releases_trailing_amount_e2e(pipeline):
         assert out.endswith(f" {amount}"), out     # amount released intact
 
 
+def test_bsb_account_combined_splits_into_two_spans(pipeline):
+    # Issue #8b: '014-936 111873883' used to emit ONE span labeled AU_BSB —
+    # the account half hid under a BSB_n placeholder and a bare
+    # '111873883' elsewhere aliased to a DIFFERENT placeholder. Split
+    # patterns now give each half its own span/placeholder, and the bare
+    # re-mention reuses the account's.
+    text = ("BSB Cash Account Number 014-936 111873883 and later "
+            "account 111873883 again")
+    pmap = PseudonymMap()
+    out, _, _ = pipeline.strip(text, pmap)
+    assert "014-936" not in out and "111873883" not in out, out
+    assert "BSB_1" in out and "ACCOUNT_1" in out, out
+    # the context-promoted re-mention aliases to the SAME placeholder —
+    # the point of the split (one BSB_n-covered blob can't do this)
+    assert out.count("ACCOUNT_1") == 2, out
+
+
+def test_corporate_licence_numbers_detected_and_kept(pipeline):
+    # Issue #8c / other-finding #1: AFSL and Australian Credit Licence
+    # numbers are public corporate identifiers — detected under their own
+    # classes for report discrimination, KEPT by default.
+    text = ("ANZ ABN 11 005 357 522. Australian Credit Licence 234527. "
+            "Advice under AFSL 233714.")
+    detections = {
+        (r.entity_type, text[r.start:r.end]) for r in pipeline.analyze(text)
+    }
+    assert any(t == "AU_CREDIT_LICENCE" for t, _ in detections), detections
+    assert any(t == "AU_AFSL" for t, _ in detections), detections
+    out, _, _ = pipeline.strip(text, PseudonymMap())
+    assert "Australian Credit Licence 234527" in out, out  # kept
+    assert "AFSL 233714" in out, out                       # kept
+
+
 def test_phone_au_only_regions_keep_all_real_forms(pipeline):
     # The AU-only sacrifice must not touch the forms that actually occur:
     # AU 13-numbers/mobiles and international '+'-prefixed numbers (parsed
@@ -212,13 +245,16 @@ def test_strip_orgs_forces_all_including_institutions(make_pipeline, monkeypatch
 
 def test_merge_overlaps_unions_extents_higher_score_wins_type():
     # A small high-score span must not evict the wider covering span —
-    # extents union, label follows the higher score.
+    # extents union. The label used to follow score alone, which let a
+    # context-promoted BSB name a union hiding an account number; AU_BSB
+    # now ranks below every other valid type (issue #8b), so the account
+    # names the merged span regardless of score.
     merged = _merge_overlaps(
         [_rr("AU_BANK_ACCOUNT", 0, 20, 0.52), _rr("AU_BSB", 0, 7, 0.55)]
     )
     assert len(merged) == 1
     assert (merged[0].start, merged[0].end) == (0, 20)
-    assert merged[0].entity_type == "AU_BSB"
+    assert merged[0].entity_type == "AU_BANK_ACCOUNT"
 
 
 def test_merge_overlaps_keeps_disjoint_spans():

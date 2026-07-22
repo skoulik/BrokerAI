@@ -96,7 +96,8 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     # post-validation unstripped.
     for t in ("ORGANIZATION_AND", "ORGANIZATION_AND_BARE", "PROSE_AND",
               "AMOUNT_COLUMN", "REFERENCE_NUMBER", "DIGITS_OVERLONG",
-              "CARD_LAST4", "TRAILING_AMOUNT"):
+              "CARD_LAST4", "TRAILING_AMOUNT", "AU_AFSL",
+              "AU_CREDIT_LICENCE"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(not e["strip_expected"] and not e["critical"]
                    for e in by_type[t]), t
