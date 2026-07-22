@@ -85,11 +85,15 @@ class AuAccountNumberRecognizer(PatternRecognizer):
         # a/c-family label matched in-span (see class docstring; the label
         # lands inside the placeholder — harmless, recall-first). Contiguous
         # alternative first so an unbroken run isn't truncated by the
-        # grouped one.
+        # grouped one. The trailing (?![.,]?\d) is the issue-#3 amount guard
+        # (issue #11, 2026-07-22): without it the grouped alternative eats
+        # the integer part of a following amount ('A/C 30-743-3257 148.74'
+        # -> '... 148'); with it the regex backtracks to drop the amount
+        # group, so the account itself still matches in full.
         Pattern(
             "labeled account",
             r"(?i)\b(?:a/?c|acct?)\b\.?\s*(?:no\.?|number|#)?\s*:?\s*"
-            r"(?:\d{5,10}|\d{1,6}(?:[ -]\d{1,6}){1,3})\b",
+            r"(?:\d{5,10}|\d{1,6}(?:[ -]\d{1,6}){1,3})(?![.,]?\d)\b",
             0.5,
         ),
     ]

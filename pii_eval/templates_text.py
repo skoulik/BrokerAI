@@ -171,7 +171,19 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     ).nl()
     doc.raw("  Repayments drawn from card ending ").pii(
         f"{rng.randrange(0, 10000):04d}", "CARD_LAST4", strip_expected=False
-    ).nl(2)
+    ).nl()
+    # TRAILING_AMOUNT keep-probe (issue #11): a decimal amount right after a
+    # labeled grouped account — the labeled-account pattern must strip the
+    # account in full yet release the amount (the issue-#3 guard extended to
+    # the labeled form; without it the grouped tail ate the amount's integer
+    # part: 'A/C 30-743-3257 148.74' -> '... 148').
+    grouped_acct = (f"{rng.randrange(10, 100)}-{rng.randrange(100, 1000)}-"
+                    f"{rng.randrange(1000, 10000)}")
+    doc.raw("  Interest charged from A/C ").pii(
+        grouped_acct, "AU_BANK_ACCOUNT"
+    ).raw(" ").pii(
+        f"{rng.uniform(1, 300):.2f}", "TRAILING_AMOUNT", strip_expected=False
+    ).raw("CR").nl(2)
 
     occupation = rng.choice(["dentist", "electrician", "GP", "teacher"])
     town = rng.choice(["Wagga Wagga", "Ballarat", "Dubbo", "Cairns"])

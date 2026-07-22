@@ -4,6 +4,7 @@ from presidio_analyzer import RecognizerResult
 
 from pii.core.mapping import PseudonymMap
 from pii.core.pipeline import _merge_overlaps
+from pii.core.recognizers import AuAccountNumberRecognizer
 
 # Checksum-valid literals (pii_eval.au generators, fixed seeds).
 VALID_TFN = "291 417 774"
@@ -85,6 +86,46 @@ def test_transaction_amount_columns_not_account(pipeline):
     ):
         out, _, _ = pipeline.strip(text, PseudonymMap())
         assert out == text, text
+
+
+def test_labeled_account_pattern_releases_trailing_amount():
+    # Issue #11: the 'labeled account' pattern lacked the issue-#3 amount
+    # guard, so its grouped alternative ate the integer part of a following
+    # amount ('A/C 30-743-3257 148.74CR' -> 'A/C 30-743-3257 148',
+    # 'A/C ... 1.50' -> 'A/C ... 1'). Recognizer-level: no emitted span may
+    # reach past the account itself.
+    rec = AuAccountNumberRecognizer()
+    for amount in ("148.74CR", "1.50"):
+        text = f"A/C 32-151-6825 {amount}"
+        spans = rec.analyze(text, ["AU_BANK_ACCOUNT"])
+        assert spans, text
+        assert max(r.end for r in spans) <= len("A/C 32-151-6825"), (
+            [text[r.start:r.end] for r in spans]
+        )
+
+
+def test_labeled_account_releases_trailing_amount_e2e(pipeline):
+    # Pipeline-level: the account strips in full (the guard only backtracks
+    # the amount group off) and the amount survives. The amount here is
+    # chosen so PhoneRecognizer stays silent — libphonenumber reads some
+    # account+amount digit runs ('32-151-6825 1' -> 3215168251) as a valid
+    # US number and _merge_overlaps would union that span over the amount:
+    # a separate swallower, found 2026-07-22 while fixing issue #11 and
+    # reported as its own finding.
+    text = "Interest Charged From A/C 32-151-6825 148.74CR"
+    out, _, _ = pipeline.strip(text, PseudonymMap())
+    assert "32-151-6825" not in out, out       # account stripped
+    assert "A/C" not in out, out               # label in-span, stripped
+    assert out.endswith(" 148.74CR"), out      # amount released intact
+
+
+def test_labeled_account_without_amount_still_full_match(pipeline):
+    # The guard must not truncate a genuinely grouped trailing segment
+    # (nothing distinguishes it from a 4-group account when no decimal
+    # follows) nor break the contiguous/sentence-final forms.
+    for account in ("30-743-3257 148", "7412154728", "1234 5678"):
+        out, _, _ = pipeline.strip(f"From A/C {account}.", PseudonymMap())
+        assert account not in out, out
 
 
 def test_strip_credit_card(pipeline):
