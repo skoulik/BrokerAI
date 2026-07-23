@@ -1,121 +1,93 @@
 """GLiNER2 zero-shot NER as a Presidio recognizer (detection layer 2),
-using Fastino's PII-tuned GLiNER2 model. Replaced the original GLiNER (v1)
-backend, removed 2026-07-13 (in git history).
+using Fastino's PII-tuned GLiNER2 model. The design rationale and history —
+the GLiNER v1 -> v2 switch, the spaCy/LOCATION decisions, the max_width
+experiment and eval numbers — live in pii/core/ARCHITECTURE.md and DONE.md.
+This docstring is the operational contract for editing NER behaviour.
 
-Tuned from probing the same failure modes the GLiNER v1 recognizer worked
-around, with different results:
-- no ALL-CAPS recall penalty ('TRANSFER TO J SMITH ACC 12345678' scores the
-  same as its title-cased form), so no de-capitalized variants;
-- no context blindness (that line is still found buried mid-document), so
-  no per-line prediction units;
-- but no input truncation either: the mdeberta encoder attends over the
-  whole text, and quadratic attention makes long inputs explode (20k chars
-  = 15 s, 60k chars = CUDA OOM). Overlapping windows are therefore still
-  required — for memory/speed, not recall — and can be wider than GLiNER's;
-- global attention has a second cost (2026-07-15 diagnosis, records in
-  DONE.md): when the SAME person appears in one window under two word
-  orders ('PAYID ... JOSEPH SCHAEFER' and 'OSKO ... SCHAEFER JOSEPH'), the
-  canonical mention keeps its score and the reversed one collapses to
-  sub-threshold fragments — reversed order alone is learned fine (0.94 in
-  a junk blob without the canonical mention). Therefore text containing
-  RECORD_SEPARATOR (U+241E — csv_mode's cell sentinel) is windowed per
-  segment: cells are independent units whose spans get clamped per cell
-  anyway, so cross-cell context is pure noise and isolating it removes
-  the interference by construction;
-- formatted results carry ONE span per unique entity text even when the
-  model detected several mentions, deduplicated case-insensitively
-  ('Eric Smith' shadows 'ERIC SMITH'; format_results=False shows the
-  duplicates, but has no spans at all), so every occurrence of a detected
-  entity's text is located by case-insensitive search and given its own
-  span;
-- person spans often exclude an honorific ('Ms Eric Moore' -> 'Eric
-  Moore'), leaving the title behind as a partial leak, so PERSON spans are
-  extended left over an immediately preceding honorific;
-- labels compete inside a schema (the count-based decoder finds 'New
-  Kaylamouth NSW 2926' with an address-only schema but loses it when the
-  other 12 labels are present, and even the three address flavors suppress
-  each other when combined: 'Flat 66 7 Maddox Alleyway' scores 1.0 under
-  'street address' alone, 0.49 next to its siblings) — so addresses get
-  two extra single-purpose schema passes: a generic AU address label, and
-  a street-line/locality-line split. AU address confidences run lower than
-  the model's other labels, so these passes use a lower operating
-  threshold and their scores are floored to the main threshold to survive
-  the pipeline's global cutoff (same spirit as Presidio's fixed pattern
-  scores). Adjacent same-type spans separated only by comma/whitespace
-  are coalesced for ADDRESS (a two-span 'street, suburb' detection must
-  not leak the comma) and PERSON (2026-07-15: isolated statement lines
-  emit reversed names as adjacent fragments — 'SCHAEFER' + 'JOSEPH RENT'
-  — whose union misses only the joining space). Coalescing two genuinely
-  distinct adjacent names into one span costs a pseudonym-consistency
-  wart, never a leak. The shared-surname joint form ('Julie and Brian
-  Summers') is coalesced too (2026-07-21, issue #4): GLiNER2 emits a PERSON
-  fragment on each side of the ' and '/' & ' connector, so merging across it
-  captures the couple — as a span expansion of the model's own detections,
-  name-signal-gated by construction (prose 'X and Y Z' yields no PERSON, so
-  it can't trigger). The left fragment must be a single token so two DISTINCT
-  people ('Julie Summers and Brian Reid') stay separate; the FP-prone lexical
-  'X and Y Z' pattern this replaced was retired from JointNameRecognizer,
-  which now owns only the initials form GLiNER2 can't segment.
+Behaviour, and the reason the code is shaped this way:
+- No ALL-CAPS recall penalty and no context blindness ('TRANSFER TO J SMITH
+  ACC 12345678' scores the same title-cased, and is found buried
+  mid-document), so no de-capitalized variants and no per-line prediction.
+- Long inputs are still windowed, for MEMORY not recall: the mdeberta
+  encoder attends over the whole text and quadratic attention makes long
+  inputs explode (~20k chars = 15 s, ~60k = CUDA OOM). Windows can be wide.
+- Text containing RECORD_SEPARATOR (U+241E — csv_mode's cell sentinel) is
+  windowed PER SEGMENT. Global attention lets the same person under two
+  word orders in one window interfere: the canonical mention keeps its
+  score and the reversed one collapses to sub-threshold fragments (reversed
+  order alone is learned fine). Cells are independent and their spans are
+  clamped per cell anyway, so isolating them removes the interference by
+  construction.
+- Formatted results carry ONE span per unique entity text (deduplicated
+  case-insensitively; 'Eric Smith' would otherwise shadow 'ERIC SMITH'), so
+  every occurrence is then located by case-insensitive search and given its
+  own span.
+- PERSON spans are extended left over an immediately preceding honorific
+  ('Ms Eric Moore' would otherwise leave 'Ms' behind as a partial leak).
+- Labels compete inside a schema (count-based decoder): the same address
+  scores ~1.0 under an address-only schema but ~0.5 among the other labels.
+  So ADDRESS gets two extra single-purpose passes (a generic AU-address
+  label, and a street-line/locality-line split) at a lower operating
+  threshold, with scores floored to the main threshold to survive the
+  pipeline cutoff (same spirit as Presidio's fixed pattern scores).
+- Adjacent same-type spans separated only by comma/whitespace are coalesced
+  for ADDRESS and PERSON (a two-span 'street, suburb' must not leak the
+  comma; isolated statement lines emit reversed names as adjacent fragments
+  'SCHAEFER' + 'JOSEPH RENT'). Merging two genuinely distinct adjacent names
+  costs a pseudonym-consistency wart, never a leak. The shared-surname joint
+  form ('Julie and Brian Summers') is coalesced across the ' and '/' & '
+  connector as an expansion of the model's own PERSON detections —
+  name-signal-gated by construction (prose 'X and Y Z' yields no PERSON). The
+  left fragment must be a single token so two DISTINCT people ('Julie Summers
+  and Brian Reid') stay separate. (JointNameRecognizer owns only the initials
+  form GLiNER2 can't segment.)
 
 GLiNER2 schemas attach a description to each label; descriptions carry the
 AU-specific definitions instead of overloading the label string.
 
-The model ships with max_width=8: spans are enumerated over 1..8 words, so
-longer entities can never be emitted — the root cause of one-line AU
-addresses ('Flat 66 7 Maddox Alleyway, New Kaylamouth NSW 2926', 9 words;
-the tokenizer counts the comma as a word, so 10) coming out as fragments.
-max_width is an enumeration parameter, not baked into weights (SpanMarkerV0
-scores a span from its start/end tokens only), so it is lifted at inference
-by overriding BOTH model.max_width and the span_rep layer's copy (used in a
-.view(); overriding only the model attribute shape-errors). Experiment
-2026-07-14 on the tier-1 corpus: the scorer generalizes past its training
-width — full one-line addresses score 0.99 as single spans (fragments
-0.29), NMS keeps the whole span, no precision change at width 10-12, +1.5%
-layer-2 latency at 12; width 16 showed the first extra ORGANIZATION
-over-strip, so stay below it.
+max_width (DEFAULT_MAX_WIDTH): the model ships with max_width=8, so spans
+over 8 words can never be emitted — the root cause of one-line AU addresses
+('Flat 66 7 Maddox Alleyway, New Kaylamouth NSW 2926', 9 words; the
+tokenizer counts the comma as a word, so 10) fragmenting. It is an
+enumeration parameter, not baked into weights (SpanMarkerV0 scores a span
+from its start/end tokens only), so it is lifted at inference by overriding
+BOTH model.max_width AND the span_rep layer's copy (used in a .view();
+overriding only the model attribute shape-errors). Stay <= ~12 — width 16
+starts showing wide-span false positives.
 
-Standalone LOCATION detection was retired 2026-07-23: a bare city/town name
-on its own ('a teacher in Cairns') is acceptable verbatim in financial
-documents, so the dedicated single-label location pass and its
-LOCATION_MIN_CHARS floor were removed. The ADDRESS passes still own full
-addresses and suburb-state-postcode lines; only bare place names in prose now
-pass through. The pass had existed 2026-07-15..2026-07-23 as the
-contextual-identifier net that replaced the retired SpacyRecognizer LOCATION
-detector (chosen head-to-head over spaCy, 11/11 vs 6/11 contextual towns);
-see DONE.md.
+No standalone place-name detection: bare city/town names pass verbatim (the
+ADDRESS passes still own full addresses and suburb-state-postcode lines).
+See ARCHITECTURE.md for the decision.
 
-Identifier emissions are post-validated (IDENTIFIER_VALIDATORS, issue #10,
-2026-07-22): layer-1's identifier recognizers are checksum/format-validated,
-but the model's guesses bypassed all validation — on real statements it
-labels bank receipt references (a letter + 10 digits, 'W1045366576')
-semi-randomly as TFN, driver licence or passport. Each numeric-ID guess now
-passes its class arithmetic before it may strip:
+Identifier post-validation (IDENTIFIER_VALIDATORS): layer-1's identifier
+recognizers are checksum/format-validated, but the model's numeric-ID
+guesses bypassed all validation — on real statements it labels bank receipt
+references (a letter + 10 digits, 'W1045366576') semi-randomly as TFN,
+driver licence or passport. Each numeric-ID guess now passes its class rule
+before it may strip:
 - AU_TFN: 9 digits + ATO mod-11 (pii.core.checksums). Legacy 8-digit TFNs
   pass structurally without arithmetic — no reliable public checksum
   variant, and layer-1's 9-digit pattern can't cover them, so demoting a
   real one would leak it (an 8-digit FP merely over-strips);
 - AU_MEDICARE: 10-11 digits, first digit 2-6, mod-10 over the card number;
 - AU_BANK_ACCOUNT: 5-16 digits (5-10 for the account, up to 6 more for a
-  BSB prefix the model includes in one span). Subsumes the 2026-07-14
-  MIN_DIGITS floor; the cap kills a bogus 22-digit run that over-extended
-  a credit card via _merge_overlaps. Counted on digits, not characters —
-  space-grouped accounts ('0007 3111 4') come out as ONE span and internal
-  separators must not push a real account under the floor;
+  BSB prefix the model includes in one span). Counted on digits, not
+  characters — space-grouped accounts ('0007 3111 4') come out as ONE span
+  and internal separators must not push a real account under the floor. The
+  cap also kills junk runs long enough for _merge_overlaps to drape a
+  neighbouring CREDIT_CARD over;
 - PASSPORT / AU_DRIVERS_LICENCE carry no public checksum, so the guards are
   structural: passports at most 9 digits (AU format is 1-2 letters +
   7 digits), licences at most 10 alphanumeric characters (no AU state
   issues longer ones — this also drops 'Australian credit licence NNNNNN'
   phrases mislabeled as licences).
-A guess whose SHAPE is right but whose checksum fails (exactly 9 digits
-failing TFN mod-11) is demoted to the matching *_INVALID class — it joins
-the shadow-recognizer findings (typo/OCR-mangle/forgery report, see
+A guess whose SHAPE is right but whose checksum fails is demoted to the
+matching *_INVALID class and joins the shadow-recognizer findings (see
 pii.core.invalid_recognizers) instead of silently vanishing — unless the
-pipeline runs the 'ignore' tier (demote_invalid=False), the historical
-silent drop. Structurally impossible guesses (wrong digit count, letters
-in a TFN) are plain-dropped. Masked last-4 disclosures ('card ending
-1234') fall under the digit floors by design, consistent with layer-1
-(\\d{5,10} never matched them): a last-4 fragment alone is not
-strip-worthy.
+pipeline runs the 'ignore' tier (demote_invalid=False). Structurally
+impossible guesses are plain-dropped. Masked last-4 disclosures ('card
+ending 1234') fall under the digit floors by design, consistent with
+layer-1: a last-4 fragment alone is not strip-worthy.
 """
 
 import contextlib
@@ -207,19 +179,14 @@ ADDRESS_LABELS_SPLIT = {
 }
 ADDRESS_THRESHOLD = 0.3
 
-# Standalone LOCATION detection retired 2026-07-23: a bare city/town name on
-# its own ('Security property is in Cairns') is acceptable verbatim in
-# financial documents, so the dedicated single-label location pass and its
-# LOCATION_MIN_CHARS floor were removed. The ADDRESS passes still own full
-# addresses and suburb-state-postcode lines ('NEWTOWN NSW 2042'); only bare
-# place names in prose now pass through. (The pass existed 2026-07-15..
-# 2026-07-23 as the contextual-identifier net that replaced the retired
-# SpacyRecognizer LOCATION detector; see DONE.md.)
+# No standalone place-name label: bare city/town names pass verbatim; the
+# ADDRESS passes above own full addresses and suburb-state-postcode lines.
+# See ARCHITECTURE.md for the decision.
 
 # Digit bounds on GLiNER2's AU_BANK_ACCOUNT *guesses*: a fragment like '42'
-# otherwise strips two stray digits (the 2026-07-14 floor), and an unbounded
-# junk run ('...22 digits...') otherwise claims a span that _merge_overlaps
-# drapes a neighbouring CREDIT_CARD over (issue #10 sibling, 2026-07-22).
+# otherwise strips two stray digits, and an unbounded junk run ('...22
+# digits...') otherwise claims a span that _merge_overlaps drapes a
+# neighbouring CREDIT_CARD over.
 # Australian bare account numbers are 5-10 digits — matching the layer-1
 # AuAccountNumberRecognizer pattern (\d{5,10}) — and the model sometimes
 # includes a 6-digit BSB prefix in the same span, hence the 16 cap. Counted

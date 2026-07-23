@@ -179,15 +179,12 @@ experiment (future session; owns the next engine-shaped decision).
       probably require a known *given* name in the pair, not just surnames), and the
       overlap policy vs keep-ORGANIZATION spans. Sibling of the AU place-name
       gazetteer task (same trie/set-matching machinery, same fuzzy-budget idea).
-- [ ] **Layer-3 local-LLM audit pass** — *contingent, not committed (expectation set
-      2026-07-15): the plan is to evaluate the tool end-to-end with layers 1+2 only, and
-      build layer 3 only if those results prove unsatisfactory — see ROADMAP.md and
-      ARCHITECTURE.md.* Design if built: "does this still contain anything identifying?"
-      via llama-server; catches contextual identifiers NER can't see ("the borrower's wife,
-      a dentist in Wagga Wagga"). *(2026-07-23: the bundled "drop the GLiNER2 location pass"
-      revisit is moot — standalone LOCATION detection was retired outright, so bare place
-      names already pass to where layer 3 would own them. The SpacyRecognizer that pass
-      replaced was retired 2026-07-15; records in DONE.md.)*
+- [ ] **Layer-3 local-LLM audit pass** — *contingent, not committed: the plan is to evaluate
+      the tool end-to-end with layers 1+2 only, and build layer 3 only if those results prove
+      unsatisfactory — see ROADMAP.md and ARCHITECTURE.md.* Design if built: "does this still
+      contain anything identifying?" via llama-server; catches contextual identifiers NER
+      can't see ("the borrower's wife, a dentist in Wagga Wagga"), including the bare place
+      names given up when standalone place-name detection was retired.
 - [ ] Overlaps merging algorithm — define and document. Interesting areas: how the weights are
       combined (max, average, bayesian/aposteriori), what if winning classes of overlaps
       do not agree, should we merge at all in some cases. Adjacent-span coalescing for
@@ -235,19 +232,17 @@ experiment (future session; owns the next engine-shaped decision).
       no recognizer/enhancer touches `nlp_artifacts.entities`/sents, then measure layer-1+2
       latency on the eval corpus. (spaCy source review finding (m), 2026-07-15 — record in
       [DONE.md](DONE.md).)
-- [ ] AU place-name gazetteer as a cheap deterministic LOCATION layer (spaCy source review
+- [ ] AU place-name gazetteer as a cheap deterministic place-name layer (spaCy source review
       finding (j)): FlashText/PhraseMatcher-style trie — or plain set matching at our char
       level — over a public AU suburb/town list, case-insensitive, whitespace-normalized.
       Gives recall on bare town names; decide its overlap policy vs the ADDRESS passes when
       the overlaps-merging task above is done. Consider a fuzzy edit budget of
       `max(2, 0.3·len)` for OCR damage (review finding (i)).
-      *(2026-07-23: standalone LOCATION detection was retired — a lone place name is now
-      accepted verbatim (ARCHITECTURE decision). This task is therefore CONTINGENT on
-      reversing that stance, or on layer-3 findings showing bare place names must be caught
-      after all; it is not a live gap while the retirement holds. The old `LOCATION_MIN_CHARS=4`
-      floor-recovery rationale is moot — both the pass and its floor are gone. If revived, the
-      corpus `LOCATION` probe is now a KEEP probe and would flip back, and a no-context
-      short-suburb surface form should be added; `LOCATION_SHORT` was removed 2026-07-23.)*
+      **Contingent:** standalone place-name detection was retired (ARCHITECTURE decision) —
+      bare place names pass verbatim, so this is not a live gap unless that stance is reversed
+      or layer-3 findings show bare towns must be caught. If revived, the corpus `LOCATION`
+      probe (now a KEEP probe) flips back, and a no-context short-suburb surface form should
+      be re-added.
 
 ## Experiments — GLiNER2 tuning
 

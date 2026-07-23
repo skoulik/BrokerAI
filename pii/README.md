@@ -37,7 +37,7 @@ python -m pii rehydrate cloud_answer.txt --map statement.pii_map.json
 ```
 
 `strip`/`analyze` accept `-` for stdin. The pseudonym map is
-**per-document by default** (2026-07-18): `--map` defaults to
+**per-document by default**: `--map` defaults to
 `<input>.pii_map.json` next to the input file, so placeholder numbering
 restarts with each document. Pass one `--map` path across runs to keep
 placeholders consistent over a document set instead; `rehydrate` and
@@ -59,11 +59,10 @@ rehydratable, not blacked out. Detection never sees pixels; painting
 happens on the original image (`pii/core/ocr.py` for the engine seam and
 span→box mapping, `pii/core/image_mode.py` for the painting).
 
-The OCR engine is **PaddleOCR** (Tesseract was retired 2026-07-17 after a
-fidelity bake-off — ~25× lower character error, records in
-`pii/core/DONE.md`). `--ocr-backend` selects the model tier: `paddle`
-(default = `paddle:v6_medium`), `paddle:v5_server`, `paddle:v6_medium`;
-models auto-download to `models/paddlex` on first use. With the GPU paddle
+The OCR engine is **PaddleOCR**. `--ocr-backend` selects the model tier:
+`paddle` (default = `paddle:v6_medium`), `paddle:v5_server`,
+`paddle:v6_medium`; models auto-download to `models/paddlex` on first use.
+With the GPU paddle
 wheel the engine and the NER model cannot share a Windows process, so the
 pipeline drives OCR through a persistent worker subprocess
 (`pii/core/ocr_worker.py`); the CPU wheel runs it in-process.
@@ -126,41 +125,34 @@ logged 44 noise findings over 11 docs.
    (`AU_BSB`), account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`), and
    joint-account name forms ("E & J Moore", "JULIE AND BRIAN SUMMERS" →
    `PERSON`) — mechanical shapes GLiNER2 loses inside transaction-line junk.
-2. **Zero-shot NER** — names, addresses and DOB; distinguishes person vs
+2. **Zero-shot NER** — names, addresses and DOB, distinguishing person vs
    organization for bank transaction descriptions. GLiNER2
-   (`pii/core/gliner2_recognizer.py`, Fastino's PII-tuned model, schema
-   descriptions). Standalone `LOCATION` detection (a bare-place-name pass)
-   was retired 2026-07-23 — a lone city/town name is acceptable verbatim in
+   (`pii/core/gliner2_recognizer.py`, Fastino's PII-tuned model). Bare place
+   names are not detected — a lone city/town name is acceptable verbatim in
    financial documents; the address passes still own address-shaped lines.
-   The original GLiNER (v1) backend was evaluated side-by-side and removed
-   2026-07-13 (it's in git history). spaCy (`en_core_web_sm`) is Presidio's
-   NLP engine only — its `SpacyRecognizer` detector was retired 2026-07-15.
+   spaCy (`en_core_web_sm`) is Presidio's NLP engine only, not a detector.
 3. **Local-LLM audit pass** — planned; will use llama-server.
 
 Behaviour worth knowing when running the tool: `DATE_TIME` and
 `ORGANIZATION` are detected but **kept** by default (transaction dates and
 merchant names are the analytical substance of a statement; `DATE_OF_BIRTH`
 is stripped); some over-stripping is the accepted recall-first cost — every
-ambiguity resolves toward stripping. The design rationale behind all of
-this (recall-first span handling, the spaCy detector retirement, GLiNER2
-tuning) lives in [ARCHITECTURE.md](ARCHITECTURE.md).
+ambiguity resolves toward stripping. The design rationale behind all of this
+lives in [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 
 ## Performance
 
-The NER model moves itself to CUDA when available (CUDA torch installed
-2026-07-12 for the RTX 2080 Ti). On the 9-document eval corpus the NER
-share of the run is ~0.7 s (GLiNER2; the removed v1 backend took ~3.3 s,
-~15 min on CPU). GLiNER2 always loads now that the patterns-only regime is
-retired (2026-07-15); spaCy loads too, as Presidio's NLP engine (still
+The NER model moves itself to CUDA when available. On the 9-document eval
+corpus the NER share of the run is ~0.7 s (GLiNER2 on the RTX 2080 Ti).
+GLiNER2 always loads; spaCy loads too, as Presidio's NLP engine (still
 required — keep the `en_core_web_sm` download above).
 
 ## Evaluation
 
 Scored by the Tier-1 synthetic corpus in [pii_eval](../pii_eval/README.md)
-(`python -m pii_eval generate` / `score`). Current state:
-all pattern entities 100%; PERSON 100%; ADDRESS 83% (the max_width=12
-lift closed the one-line fragmentation; the 2 remaining leaks are bare
-ALL-CAPS street lines with no state/postcode context, width-independent). Contextual identifiers ("a dentist in
-Wagga Wagga") are undetectable by layers 1–2 by nature — a target for the
-planned layer-3 LLM audit. Keep presidio ≥ 2.2.363: 2.2.362's ACN
-validator rejects every ACN with check digit 0.
+(`python -m pii_eval generate` / `score`). Current state: all pattern
+entities 100%; PERSON 100%; ADDRESS ~83% (the residual leaks are bare
+ALL-CAPS street lines with no state/postcode context). Contextual
+identifiers ("a dentist in Wagga Wagga") are undetectable by layers 1–2 by
+nature — a target for the planned layer-3 LLM audit. Keep presidio ≥
+2.2.363: 2.2.362's ACN validator rejects every ACN with check digit 0.

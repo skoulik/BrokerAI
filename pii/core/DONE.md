@@ -216,6 +216,25 @@ the move; new completed tasks append to the matching section with their records.
       queued for the layer-3 audit (the committed docs-9 gate, seed 42, still PASSes). Out of
       scope, as planned: the ORG-absorbs-contained-location merge rule (overlaps task, TODO.md)
       — the location pass reaches org-over-strip parity without it.
+- [x] **Retire standalone LOCATION detection** *(2026-07-23; reverses the 2026-07-15
+      "GLiNER2 owns LOCATION" ship above). Sergei's call: a lone city/town name
+      ('Security property is in Cairns') is acceptable verbatim in mortgage-policy and
+      bank-statement documents, and is not worth a dedicated schema pass' latency or its
+      false-positive surface. Removed the single-label GLiNER2 location pass
+      (`LOCATION_LABELS`/`LOCATION_THRESHOLD`) and its `LOCATION_MIN_CHARS=4` floor; dropped
+      `LOCATION` from `DEFAULT_STRIP_ENTITIES`, the placeholder map, and
+      `Gliner2Recognizer`'s supported entities. The ADDRESS passes are untouched — full
+      addresses and suburb-state-postcode lines still strip, and a suburb in clearly
+      address-flavoured context ('resided in Kew') can still be caught by the ADDRESS pass
+      (an intended residual overlap). Contextual identifiers that are neither addresses nor
+      layer-1 types are now deferred wholesale to the planned layer-3 audit. Corpus
+      counterpart: the `LOCATION` truth type flipped from a strip probe to a KEEP probe, and
+      `LOCATION_SHORT` (the old floor-sacrifice probe) was removed. The AU place-name
+      gazetteer TODO is now contingent on reversing this stance.)*
+- [x] **Drop URL and IP_ADDRESS detection** *(2026-07-23). Not relevant to financial
+      documents; the predefined `UrlRecognizer`/`IpRecognizer` are removed from the registry
+      so they never detect (leaving them loaded-but-unstripped would still clutter
+      analyze()/reports).)*
 - [x] Log checksum-invalid identifiers. If an identifier candidate passes the detectors, but
       is rejected by the checksum validator, this should be logged. Evaluate if the output
       will become too noisy because of this and if so, make the feature optional. Rationale:

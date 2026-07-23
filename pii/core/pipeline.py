@@ -4,13 +4,13 @@ Layer 1: Presidio pattern/checksum recognizers — built-in AU_TFN, AU_ABN,
          AU_ACN, AU_MEDICARE, credit cards, emails — plus the custom
          recognizers in pii.core.recognizers (BSB, account, PayID,
          joint-account name forms) and an AU-region phone recognizer.
-         URL/IP detection is deliberately dropped (2026-07-23): not
-         relevant to financial documents, and the predefined
-         UrlRecognizer/IpRecognizer are removed from the registry.
-Layer 2: zero-shot NER (names, addresses, DOB, person-vs-org, and bare
-         place names as contextual identifiers) — GLiNER2. spaCy is
+         URL/IP detection is deliberately dropped (not relevant to
+         financial documents): the predefined UrlRecognizer/IpRecognizer
+         are removed from the registry.
+Layer 2: zero-shot NER (names, addresses, DOB, person-vs-org) — GLiNER2.
+         Bare place names are not detected (pass verbatim). spaCy is
          Presidio's NLP engine only (tokens/lemmas → context enhancer),
-         not a detector (SpacyRecognizer retired 2026-07-15).
+         not a detector.
 Layer 3 (future): local-LLM audit pass via llama-server.
 
 Detected spans are resolved for overlaps and replaced with consistent
@@ -124,22 +124,18 @@ class PiiPipeline:
         registry = RecognizerRegistry(supported_languages=["en"])
         registry.load_predefined_recognizers(nlp_engine=nlp_engine)
         # spaCy stays as Presidio's NLP engine (tokens/lemmas feed the context
-        # enhancer) but is retired as a detector (2026-07-15): GLiNER2 owns
-        # PERSON/ORG/dates and its own emissions only added glue spans (PERSON
-        # crossing OCR line breaks) and date-as-PERSON false positives. (spaCy
-        # also had weaker LOCATION recall than the GLiNER2 location pass that
-        # briefly replaced it, 6/11 vs 11/11 contextual towns — DONE.md
-        # 2026-07-14 — but standalone LOCATION detection was itself retired
-        # 2026-07-23; bare place names now pass verbatim.)
+        # enhancer) but is not a detector: GLiNER2 owns PERSON/ORG/dates and
+        # spaCy's own emissions only added glue spans (PERSON crossing OCR line
+        # breaks) and date-as-PERSON false positives. See ARCHITECTURE.md.
         registry.remove_recognizer("SpacyRecognizer")
-        # URL/IP are not relevant to financial documents (2026-07-23): drop
-        # the predefined recognizers so they never detect — leaving them
-        # loaded but merely unstripped would still clutter analyze()/reports.
+        # URL/IP are not relevant to financial documents: drop the predefined
+        # recognizers so they never detect — leaving them loaded but merely
+        # unstripped would still clutter analyze()/reports.
         registry.remove_recognizer("UrlRecognizer")
         registry.remove_recognizer("IpRecognizer")
         # Default phone regions don't include AU. AU-only on purpose
-        # (issue #11 follow-up, Sergei's option A, 2026-07-22): with US in
-        # the region list, libphonenumber read account+amount digit runs
+        # (issue #11): with US in the region list, libphonenumber read
+        # account+amount digit runs
         # ('A/C 30-743-3257 1.50' -> '3074332571') as valid US numbers, and
         # _merge_overlaps draped the phone span over the account, eating the
         # amount's integer part. International '+'-prefixed numbers are

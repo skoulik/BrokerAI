@@ -8,6 +8,30 @@ Docs: each component has its own `ARCHITECTURE`/`ROADMAP`/`TODO`/`DONE` — engi
 [core/](core/ARCHITECTURE.md), CLI in [cli/](cli/ARCHITECTURE.md), GUI stubs in
 [gui/](gui/ARCHITECTURE.md). Root [README.md](README.md) is usage; the root
 `ARCHITECTURE`/`ROADMAP`/`TODO`/`DONE` are the **umbrella** (component map + cross-cutting only).
+
+## Documentation ownership — one home per kind of fact
+
+A decision belongs in **exactly one** place. The recurring failure mode is narrating the same
+decision into six files (ARCHITECTURE + README + this file + TODO + a source docstring + DONE);
+when it later changes, most copies go stale. Keep each kind of fact in its home:
+
+| File | Owns | Must NOT carry |
+|---|---|---|
+| `core/ARCHITECTURE.md` | The **current** design + its rationale (the "why"). One date-stamp per decision for provenance. | A changelog of reversals. |
+| `core/DONE.md` | The **raw history** — experiments, eval numbers, head-to-heads, retired approaches. Append-only. | Distilled current design (that's ARCHITECTURE's job). |
+| `core/TODO.md` | Open work only. | Re-explanations of closed decisions. |
+| `README.md` | **Usage** — flags, behaviour a user running the tool needs. | Dates, issue numbers, eval numbers, design rationale (→ link ARCHITECTURE). |
+| this file (`pii/CLAUDE.md`) | **Invariants** a future session must not break, stated imperatively + a one-line why. | Multi-sentence re-derived rationale. |
+| source docstrings | What the code **does** + non-obvious **operational** constraints for editing *that file*. | Eval numbers, dated history, head-to-heads (→ one pointer). |
+
+Two habits that keep it from drifting back:
+
+- **When a decision is superseded, rewrite it** to state today's design — do not stack a
+  "superseded in part" note on top of the old entry. The before/after story goes to DONE.md; a
+  reader of ARCHITECTURE should never have to diff two dated entries to learn the current state.
+- **Move, don't delete, real history.** If you strip a dated experiment or eval numbers out of
+  README/ARCHITECTURE/a docstring, make sure DONE.md carries it first.
+
 New engine decisions go to [core/ARCHITECTURE.md](core/ARCHITECTURE.md); finished engine TODO
 items move to [core/DONE.md](core/DONE.md) with their records.
 
@@ -30,18 +54,14 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   passes, honorific extension, `max_width` — are documented in `pii/core/gliner2_recognizer.py`;
   read that docstring before touching NER behaviour. Default `max_width=12`; do not raise
   past ~12 (wide-span false-positive creep starts around 16).
-- **spaCy is the NLP engine only, not a detector (retired 2026-07-15).** `SpacyRecognizer` is
-  removed from the registry and the `--no-ner` patterns-only regime is gone; GLiNER2 owns
-  PERSON/ORG/dates. spaCy stays loaded solely for Presidio's context enhancer (tokens/lemmas).
-  Its old PERSON/DATE_TIME detector emissions were glue/FP-prone on OCR text; see
-  `tests/pii/core/test_registry_policy.py`, [core/ARCHITECTURE.md](core/ARCHITECTURE.md) and
-  the [core/DONE.md](core/DONE.md) record.
-- **Standalone LOCATION detection retired 2026-07-23.** The dedicated GLiNER2 location pass and
-  its `LOCATION_MIN_CHARS=4` floor were removed — a lone city/town name is acceptable verbatim
-  in financial documents. `LOCATION` is gone from `DEFAULT_STRIP_ENTITIES`, the placeholder map
-  and the recognizer's supported entities. The ADDRESS passes are untouched (full addresses and
-  suburb-postcode lines still strip); the corpus `LOCATION` probe is now a keep probe. See the
-  decision in [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
+- **spaCy is the NLP engine only, not a detector.** `SpacyRecognizer` is not in the registry
+  and the `--no-ner` patterns-only regime is gone; GLiNER2 owns PERSON/ORG/dates. spaCy stays
+  loaded solely for Presidio's context enhancer (tokens/lemmas). Regression-tested in
+  `tests/pii/core/test_registry_policy.py`; rationale in [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
+- **No standalone place-name detection.** A lone city/town name passes verbatim; `LOCATION` is
+  not in `DEFAULT_STRIP_ENTITIES`, the placeholder map, or the recognizer's supported entities.
+  The ADDRESS passes still strip full addresses and suburb-postcode lines. Rationale in
+  [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 - **Edge cases get dual coverage (2026-07-15).** Every newly identified corner case or fail
   mode gets BOTH a pytest test (model-free via the fake-model/stub patterns where possible,
   `model`-marked otherwise) AND a pii_eval corpus probe (distinct truth type per the
