@@ -69,7 +69,7 @@ flowchart TB
 
     subgraph PIPE["pipeline.py — PiiPipeline"]
         AE["Presidio AnalyzerEngine<br>(spaCy NLP engine: tokens/lemmas<br>→ context enhancer)"]
-        L1["Layer 1 — patterns/checksums<br>built-in AU TFN/Medicare/ABN/ACN,<br>cards, email, phone, IBAN, IP, URL<br>+ recognizers.py: BSB, account, PayID<br>+ invalid_recognizers.py: shadows"]
+        L1["Layer 1 — patterns/checksums<br>built-in AU TFN/Medicare/ABN/ACN,<br>cards, email, phone, IBAN<br>+ recognizers.py: BSB, account, PayID<br>+ invalid_recognizers.py: shadows"]
         L2["Layer 2 — gliner2_recognizer.py<br>GLiNER2: PERSON, ORG, ADDRESS, DOB,<br>LOCATION (contextual identifiers)"]
         L3["Layer 3 — local-LLM audit<br>via llama-server (planned)"]
         MRG["filter to strip list →<br>union-merge overlapping spans"]
@@ -136,7 +136,7 @@ Three layers, unioned — no single detector catches everything (2026-07-05):
 
 | Layer | Engine | Owns | Status |
 |---|---|---|---|
-| 1 | Presidio patterns + checksums | TFN, Medicare, ABN/ACN, BSB, account, PayID, cards, email, phone, IBAN, IP, URL; invalid-candidate shadows | shipped |
+| 1 | Presidio patterns + checksums | TFN, Medicare, ABN/ACN, BSB, account, PayID, cards, email, phone, IBAN; invalid-candidate shadows | shipped |
 | 2 | GLiNER2 zero-shot NER | PERSON, ORGANIZATION, ADDRESS, DATE_OF_BIRTH, LOCATION (bare place names as contextual identifiers) (+ unvalidated guesses of layer-1 types) | shipped |
 | 3 | Local LLM audit (llama-server) | contextual identifiers ("the borrower's wife, a dentist in Wagga Wagga") | planned |
 

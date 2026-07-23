@@ -121,8 +121,8 @@ logged 44 noise findings over 11 docs.
 
 1. **Presidio patterns/checksums** — built-in `AU_TFN`, `AU_MEDICARE`,
    `AU_ABN`, `AU_ACN` (checksum-validated, explicit registration needed —
-   they are not in Presidio's default registry), credit cards, emails, URLs,
-   IPs, AU-region phones; custom recognizers in `pii/core/recognizers.py` for BSB
+   they are not in Presidio's default registry), credit cards, emails,
+   AU-region phones; custom recognizers in `pii/core/recognizers.py` for BSB
    (`AU_BSB`), account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`), and
    joint-account name forms ("E & J Moore", "JULIE AND BRIAN SUMMERS" →
    `PERSON`) — mechanical shapes GLiNER2 loses inside transaction-line junk.

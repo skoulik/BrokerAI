@@ -39,8 +39,6 @@ PLACEHOLDER_PREFIXES = {
     "ADDRESS": "ADDRESS",
     "DATE_OF_BIRTH": "DOB",
     "ORGANIZATION": "ORG",
-    "URL": "URL",
-    "IP_ADDRESS": "IP",
 }
 
 _PLACEHOLDER_RE = re.compile(

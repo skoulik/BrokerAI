@@ -31,6 +31,21 @@ def test_spacy_recognizer_retired(pipeline):
     assert _recognizer(pipeline, "SpacyRecognizer") is None
 
 
+def test_url_ip_recognizers_removed(pipeline):
+    # URL/IP dropped 2026-07-23: not relevant to financial documents. The
+    # predefined recognizers are removed from the registry (not merely
+    # unstripped), so they never detect and never clutter analyze()/reports.
+    assert _recognizer(pipeline, "UrlRecognizer") is None
+    assert _recognizer(pipeline, "IpRecognizer") is None
+
+
+def test_url_ip_not_in_default_strip():
+    from pii.core import DEFAULT_STRIP_ENTITIES
+
+    assert "URL" not in DEFAULT_STRIP_ENTITIES
+    assert "IP_ADDRESS" not in DEFAULT_STRIP_ENTITIES
+
+
 def test_gliner2_present_and_owns_location(pipeline):
     gliner2 = _recognizer(pipeline, "Gliner2Recognizer")
     assert gliner2 is not None
