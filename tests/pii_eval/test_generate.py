@@ -63,18 +63,19 @@ def test_invalid_docs_appended_without_disturbing_base(tmp_path):
 
 def test_known_hard_forms_present_and_not_gated(tmp_path):
     """The per-form probe types (corpus additions 2026-07-15) must keep
-    appearing: bare-town locations, the 3-letter-suburb floor sacrifice,
-    bare street lines, suburb-suffixed merchant keep-orgs and account-holder
-    private entities (ORGANIZATION_PRIVATE strip, 2026-07-21). The unfixed
-    ones may not enter the critical gate; PERSON_JOINT is gated since the
-    layer-1 joint-name recognizer took ownership (2026-07-15)."""
+    appearing: bare street lines, suburb-suffixed merchant keep-orgs and
+    account-holder private entities (ORGANIZATION_PRIVATE strip, 2026-07-21).
+    The unfixed ones may not enter the critical gate; PERSON_JOINT is gated
+    since the layer-1 joint-name recognizer took ownership (2026-07-15).
+    Bare-town LOCATION became a KEEP probe when standalone location detection
+    was retired (2026-07-23) — asserted in the keep-probe block below."""
     generate(str(tmp_path), seed=42, docs=9)
     ents = [e for d in _load(tmp_path)["docs"] for e in d["entities"]]
     by_type = {}
     for e in ents:
         by_type.setdefault(e["type"], []).append(e)
 
-    for t in ("LOCATION", "LOCATION_SHORT", "ADDRESS_BARE",
+    for t in ("ADDRESS_BARE",
               "PERSON_JOINT", "PERSON_REVERSED", "CONTEXTUAL_ID",
               "PERSON_COMMA", "PERSON_PARTICLE", "PERSON_MULTIWORD",
               "ORGANIZATION_PRIVATE", "PERSON_COLLIDING",
@@ -95,9 +96,9 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     # trio (2026-07-22): letter+10-digit receipt refs, >16-digit runs and
     # masked last-4 card disclosures must survive identifier
     # post-validation unstripped.
-    for t in ("ORGANIZATION_AND", "ORGANIZATION_AND_BARE", "PROSE_AND",
-              "AMOUNT_COLUMN", "REFERENCE_NUMBER", "DIGITS_OVERLONG",
-              "CARD_LAST4", "TRAILING_AMOUNT", "AU_AFSL",
+    for t in ("LOCATION", "ORGANIZATION_AND", "ORGANIZATION_AND_BARE",
+              "PROSE_AND", "AMOUNT_COLUMN", "REFERENCE_NUMBER",
+              "DIGITS_OVERLONG", "CARD_LAST4", "TRAILING_AMOUNT", "AU_AFSL",
               "AU_CREDIT_LICENCE"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(not e["strip_expected"] and not e["critical"]

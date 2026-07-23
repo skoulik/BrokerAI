@@ -2,10 +2,14 @@
 
 spaCy stays as Presidio's NLP engine (tokens/lemmas → context enhancer) but is
 no longer a detector: SpacyRecognizer is gone from the registry and GLiNER2
-owns PERSON/ORG/dates and LOCATION. en_core_web_sm's own PERSON/DATE_TIME
-emissions were glue spans crossing OCR line breaks ('Emily Watson\\nAddress')
-and date-as-name false positives, and its LOCATION recall was worse than
-GLiNER2's (6/11 vs 11/11 contextual towns — DONE.md 2026-07-14).
+owns PERSON/ORG/dates. en_core_web_sm's own PERSON/DATE_TIME emissions were
+glue spans crossing OCR line breaks ('Emily Watson\\nAddress') and date-as-name
+false positives.
+
+Standalone LOCATION detection was retired 2026-07-23: a bare city/town name is
+acceptable verbatim in financial documents, so GLiNER2's location pass and its
+char floor were removed. The ADDRESS passes still own full addresses and
+suburb-state-postcode lines.
 
 Registry-composition tests use a stubbed GLiNER2 (no model load); the marked
 tests check the nuances on the real stack.
@@ -46,10 +50,18 @@ def test_url_ip_not_in_default_strip():
     assert "IP_ADDRESS" not in DEFAULT_STRIP_ENTITIES
 
 
-def test_gliner2_present_and_owns_location(pipeline):
+def test_gliner2_present_and_location_retired(pipeline):
+    # Standalone LOCATION detection retired 2026-07-23: the recognizer is
+    # present but no longer advertises LOCATION as a supported entity.
     gliner2 = _recognizer(pipeline, "Gliner2Recognizer")
     assert gliner2 is not None
-    assert "LOCATION" in gliner2.supported_entities
+    assert "LOCATION" not in gliner2.supported_entities
+
+
+def test_location_not_in_default_strip():
+    from pii.core import DEFAULT_STRIP_ENTITIES
+
+    assert "LOCATION" not in DEFAULT_STRIP_ENTITIES
 
 
 @pytest.mark.model
@@ -68,27 +80,29 @@ def test_real_ner_demo_statement_nuances(make_pipeline):
 
 
 @pytest.mark.model
-def test_real_ner_bare_town_is_location(make_pipeline):
-    # The GLiNER2 location pass is now the production contextual-identifier
-    # net that replaced spaCy LOCATION: a bare town name in prose is caught.
+def test_real_ner_bare_town_not_detected_as_location(make_pipeline):
+    # Standalone LOCATION detection retired 2026-07-23: a bare town name in
+    # prose ('a teacher in Cairns') emits no LOCATION span and passes verbatim.
+    # (The ADDRESS passes are untouched and still own address-shaped lines;
+    # this asserts only that the dedicated location net is gone.)
     pipe = make_pipeline(stub_ner=False)
     text = "Her partner is a teacher in Cairns."
     results = pipe.analyze(text)
-    locations = [
-        text[r.start : r.end] for r in results if r.entity_type == "LOCATION"
-    ]
-    assert "Cairns" in locations
+    assert not any(r.entity_type == "LOCATION" for r in results)
+    cairns = text.index("Cairns")
+    plan = pipe.plan(text)
+    assert not any(r.start <= cairns < r.end for r in plan)  # kept verbatim
 
 
 @pytest.mark.model
-def test_real_ner_short_suburb_rescued_by_address_pass(make_pipeline):
-    # 3-letter suburbs are dropped by the location pass's char floor
-    # (test_gliner2_floors), but in sentence context the ADDRESS pass emits
-    # them — verified 2026-07-15 at barely-above-threshold score (Kew 0.433
-    # vs threshold 0.4). If this starts failing, the rescue is gone and the
-    # short-suburb exposure widened from contextless mentions to in-context
-    # ones too — raise the priority of the gazetteer task in pii/TODO.md.
-    # Corpus counterpart: the LOCATION_SHORT probe rows.
+def test_real_ner_suburb_in_address_context_still_stripped(make_pipeline):
+    # Standalone LOCATION detection is retired (2026-07-23), so a bare town in
+    # plain prose passes verbatim (test_real_ner_bare_town_not_detected...).
+    # The ADDRESS passes are deliberately untouched, though: a suburb in
+    # address-flavored context ('resided in Kew') is still emitted by the
+    # ADDRESS pass — verified 2026-07-15 at barely-above-threshold score (Kew
+    # 0.433 vs threshold 0.4). This documents the residual, intended overlap;
+    # if it starts failing the ADDRESS pass weakened, not a regression here.
     pipe = make_pipeline(stub_ner=False)
     text = "Applicant 1 previously resided in Kew."
     plan = pipe.plan(text)

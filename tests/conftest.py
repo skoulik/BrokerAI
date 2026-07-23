@@ -18,15 +18,15 @@ from presidio_analyzer import EntityRecognizer
 
 class _NoopGliner2(EntityRecognizer):
     """Stands in for Gliner2Recognizer so the registry can be composed without
-    loading the model. Mirrors the real recognizer's contract — it now owns
-    LOCATION alongside PERSON — but emits nothing."""
+    loading the model. Mirrors the real recognizer's contract but emits
+    nothing. (Standalone LOCATION detection was retired 2026-07-23.)"""
 
     def __init__(self, **kwargs):
         # kwargs (e.g. demote_invalid) are accepted and ignored — the stub
         # must keep the real constructor's signature so PiiPipeline can pass
         # its configuration through.
         super().__init__(
-            supported_entities=["PERSON", "LOCATION"], name="Gliner2Recognizer"
+            supported_entities=["PERSON"], name="Gliner2Recognizer"
         )
 
     def load(self):

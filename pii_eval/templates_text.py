@@ -14,7 +14,7 @@ import random
 
 from pii_eval import au, txbank
 from pii_eval.build import Doc
-from pii_eval.personas import SHORT_SUBURBS, TOWNS, Pool
+from pii_eval.personas import TOWNS, Pool
 
 
 def _date(rng: random.Random, year: int) -> str:
@@ -210,16 +210,14 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     doc.raw(f"{acct.bank}. Repayments are ")
     doc.pii("simple and convenient online", "PROSE_AND",
             strip_expected=False).raw(".").nl()
-    # Bare-town mentions: LOCATION measures the GLiNER2 location pass on
-    # standalone names (no address context); LOCATION_SHORT is the real
-    # 3-letter-suburb class the LOCATION_MIN_CHARS=4 floor knowingly
-    # sacrifices — expected to leak until the gazetteer task lands, so it
-    # reports per-form (the PERSON_JOINT precedent). Neither is in
+    # Bare-town mention: standalone LOCATION detection was retired 2026-07-23
+    # (a bare place name is acceptable verbatim in financial docs), so this is
+    # a KEEP probe — the town must survive. The ADDRESS passes still own
+    # address-shaped lines, so a suburb in clearly address-flavored context can
+    # still strip; this prose deliberately keeps the mention plain. Not in
     # build.CRITICAL.
     doc.raw("  Security property is in ")
-    doc.pii(rng.choice(TOWNS), "LOCATION")
-    doc.raw(". Applicant 1 previously resided in ")
-    doc.pii(rng.choice(SHORT_SUBURBS), "LOCATION_SHORT")
+    doc.pii(rng.choice(TOWNS), "LOCATION", strip_expected=False)
     doc.raw(".").nl(2)
     # Corporate-licence keep-probes (issue #8c / other-finding #1): AFSL
     # and Australian Credit Licence numbers are public corporate

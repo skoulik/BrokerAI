@@ -70,7 +70,7 @@ flowchart TB
     subgraph PIPE["pipeline.py — PiiPipeline"]
         AE["Presidio AnalyzerEngine<br>(spaCy NLP engine: tokens/lemmas<br>→ context enhancer)"]
         L1["Layer 1 — patterns/checksums<br>built-in AU TFN/Medicare/ABN/ACN,<br>cards, email, phone, IBAN<br>+ recognizers.py: BSB, account, PayID<br>+ invalid_recognizers.py: shadows"]
-        L2["Layer 2 — gliner2_recognizer.py<br>GLiNER2: PERSON, ORG, ADDRESS, DOB,<br>LOCATION (contextual identifiers)"]
+        L2["Layer 2 — gliner2_recognizer.py<br>GLiNER2: PERSON, ORG, ADDRESS, DOB"]
         L3["Layer 3 — local-LLM audit<br>via llama-server (planned)"]
         MRG["filter to strip list →<br>union-merge overlapping spans"]
         AE --- L1
@@ -137,13 +137,14 @@ Three layers, unioned — no single detector catches everything (2026-07-05):
 | Layer | Engine | Owns | Status |
 |---|---|---|---|
 | 1 | Presidio patterns + checksums | TFN, Medicare, ABN/ACN, BSB, account, PayID, cards, email, phone, IBAN; invalid-candidate shadows | shipped |
-| 2 | GLiNER2 zero-shot NER | PERSON, ORGANIZATION, ADDRESS, DATE_OF_BIRTH, LOCATION (bare place names as contextual identifiers) (+ unvalidated guesses of layer-1 types) | shipped |
+| 2 | GLiNER2 zero-shot NER | PERSON, ORGANIZATION, ADDRESS, DATE_OF_BIRTH (+ unvalidated guesses of layer-1 types) | shipped |
 | 3 | Local LLM audit (llama-server) | contextual identifiers ("the borrower's wife, a dentist in Wagga Wagga") | planned |
 
 One pipeline (the `--no-ner` patterns-only regime was retired 2026-07-15, decision below):
-GLiNER2 always loads and owns PERSON/ORG/ADDRESS/DOB and LOCATION; `SpacyRecognizer` is
-removed from the registry, and spaCy serves only as Presidio's NLP engine. Slower than a
-pattern-only pass (model load + CUDA inference), full recall.
+GLiNER2 always loads and owns PERSON/ORG/ADDRESS/DOB; `SpacyRecognizer` is removed from the
+registry, and spaCy serves only as Presidio's NLP engine. Slower than a pattern-only pass
+(model load + CUDA inference), full recall. Standalone `LOCATION` detection was retired
+2026-07-23 (decision below) — bare place names now pass verbatim.
 
 ### Do we still need Presidio and spaCy when NER does the heavy lifting? Yes.
 
@@ -160,9 +161,10 @@ pattern-only pass (model load + CUDA inference), full recall.
   merging, invalid findings, pseudonym planning) sits on top of it.
 - **spaCy is the NLP engine, not a detector (since 2026-07-15).** The lemma-based context
   enhancer consumes spaCy's tokens/lemmas, so spaCy stays loaded — but `SpacyRecognizer` is
-  removed: GLiNER2's location label now owns the bare-city-name contextual identifiers spaCy's
-  LOCATION detector used to (retirement decision below). The layer-3 audit may later let even
-  the GLiNER2 location pass be dropped (TODO.md).
+  removed. GLiNER2's location label briefly took over the bare-city-name contextual
+  identifiers spaCy's LOCATION detector used to emit, but standalone LOCATION detection was
+  itself retired 2026-07-23 (decision below): a lone place name is acceptable verbatim in
+  financial documents. Contextual identifiers are now deferred to the planned layer-3 audit.
 
 ## Design decisions
 
@@ -246,6 +248,11 @@ TODO.md.
 
 ### spaCy detector retired; GLiNER2 owns LOCATION (2026-07-15)
 
+> **Superseded in part (2026-07-23):** the LOCATION half of this decision was reversed —
+> standalone LOCATION detection was retired (see the next decision). The spaCy-detector
+> retirement and the `--no-ner` removal stand; only the "GLiNER2 owns LOCATION" conclusion
+> was undone. The head-to-head numbers below are kept as the historical record.
+
 `SpacyRecognizer` is gone from the registry, and the `--no-ner` patterns-only regime with it;
 spaCy remains solely as Presidio's mandatory NLP engine (tokens/lemmas → context enhancer).
 GLiNER2's location pass — now unconditional (it shipped behind a `location=True` ablation
@@ -275,13 +282,30 @@ History and rationale:
   ORG-absorbs-contained-location merge rule stays out of scope (overlaps task, TODO.md) — the
   location pass reaches org-over-strip parity without it.
 
-Registry composition is regression-tested in `tests/pii/core/test_registry_policy.py` (SpacyRecognizer
-absent, Gliner2Recognizer present and owning LOCATION, via a model-free GLiNER2 shim; two
-model-marked tests check the real-stack nuances).
+Registry composition is regression-tested in `tests/pii/core/test_registry_policy.py`
+(SpacyRecognizer absent, Gliner2Recognizer present; LOCATION no longer among its supported
+entities after the 2026-07-23 retirement, via a model-free GLiNER2 shim; two model-marked
+tests check the real-stack nuances).
+
+### Standalone LOCATION detection retired (2026-07-23)
+
+The dedicated GLiNER2 location pass (`LOCATION_LABELS`, `LOCATION_THRESHOLD`) and its
+`LOCATION_MIN_CHARS=4` floor were removed: a lone city/town name ('Security property is in
+Cairns') is acceptable verbatim in mortgage-policy and bank-statement documents, and is not
+worth a whole schema pass' latency or its false-positive surface. `LOCATION` is dropped from
+`DEFAULT_STRIP_ENTITIES`, from the placeholder map, and from `Gliner2Recognizer`'s supported
+entities. The ADDRESS passes are deliberately untouched, so full addresses and
+suburb-state-postcode lines still strip, and a suburb in clearly address-flavored context
+('resided in Kew') can still be caught by the ADDRESS pass — an intended residual overlap.
+Contextual identifiers that are neither addresses nor covered by layer 1 are now deferred
+wholesale to the planned layer-3 audit. Supersedes the LOCATION half of the 2026-07-15
+decision above. Corpus counterpart: the `LOCATION` truth type flipped from a strip probe to
+a keep probe, and `LOCATION_SHORT` (the old floor-sacrifice probe) was removed.
 
 ### Min-length floors on GLiNER2 guesses — where they apply and where they must not (2026-07-14)
 
-Same-day siblings of the location floor, from the "short strings shouldn't qualify" discussion:
+Same-day siblings of the (since-retired, 2026-07-23) location floor, from the "short strings
+shouldn't qualify" discussion:
 - **AU_BANK_ACCOUNT: always-on digit floor** (`AU_BANK_ACCOUNT_MIN_DIGITS=5`, matching layer-1's
   `\d{5,10}`) — kills fragment guesses ('42') at zero recall cost. Digits, not characters:
   GLiNER2 emits space-grouped accounts ('0007 3111 4') as one span, and separators must not
@@ -626,9 +650,9 @@ The design, should it be built: a local-LLM pass over the layer-1/2-stripped tex
 this still contain anything identifying?" — served by llama-server (the one piece of
 infrastructure shared with the RAG app). It joins the stack *before* overlap merging
 conceptually: its findings become spans like any other layer's, so the CSV and image wrappers
-inherit it for free. It targets what layers 1–2 cannot see by nature: contextual identifiers.
-Its arrival would trigger one recorded revisit (TODO.md): consider dropping the GLiNER2
-location pass.
+inherit it for free. It targets what layers 1–2 cannot see by nature: contextual identifiers — including the bare
+place names given up when the standalone LOCATION pass was retired (2026-07-23), which layer 3
+is now the intended home for.
 
 ### Evaluation (designed 2026-07-05/12; text tier built 2026-07-12)
 

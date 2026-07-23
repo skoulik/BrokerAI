@@ -126,14 +126,15 @@ logged 44 noise findings over 11 docs.
    (`AU_BSB`), account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`), and
    joint-account name forms ("E & J Moore", "JULIE AND BRIAN SUMMERS" →
    `PERSON`) — mechanical shapes GLiNER2 loses inside transaction-line junk.
-2. **Zero-shot NER** — names, addresses, DOB, and bare place names (a
-   contextual-identifier LOCATION pass); distinguishes person vs
+2. **Zero-shot NER** — names, addresses and DOB; distinguishes person vs
    organization for bank transaction descriptions. GLiNER2
    (`pii/core/gliner2_recognizer.py`, Fastino's PII-tuned model, schema
-   descriptions). The original GLiNER (v1) backend was evaluated
-   side-by-side and removed 2026-07-13 (it's in git history). spaCy
-   (`en_core_web_sm`) is Presidio's NLP engine only — its `SpacyRecognizer`
-   detector was retired 2026-07-15 (GLiNER2 now owns LOCATION too).
+   descriptions). Standalone `LOCATION` detection (a bare-place-name pass)
+   was retired 2026-07-23 — a lone city/town name is acceptable verbatim in
+   financial documents; the address passes still own address-shaped lines.
+   The original GLiNER (v1) backend was evaluated side-by-side and removed
+   2026-07-13 (it's in git history). spaCy (`en_core_web_sm`) is Presidio's
+   NLP engine only — its `SpacyRecognizer` detector was retired 2026-07-15.
 3. **Local-LLM audit pass** — planned; will use llama-server.
 
 Behaviour worth knowing when running the tool: `DATE_TIME` and

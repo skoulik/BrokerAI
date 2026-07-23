@@ -1,10 +1,6 @@
 """Post-emission guards on GLiNER2 spans, tested without loading the model
 by feeding controlled predictions through a fake.
 
-- LOCATION char floor (2026-07-14, always on): short codes/acronyms ('NAB')
-  are dropped, real place names ('Wagga Wagga') kept — and genuine
-  3-letter suburbs ('Kew') knowingly fall with the acronyms (the
-  LOCATION_SHORT corpus probe; the gazetteer task is the recovery path).
 - Identifier post-validation (issue #10, 2026-07-22): every numeric-ID
   guess passes its class arithmetic/format before it may strip
   (IDENTIFIER_VALIDATORS). Shape-correct checksum failures demote to the
@@ -59,18 +55,6 @@ def test_bank_account_digit_floor_keeps_spaced_account():
     got = _spans(rec, text, "AU_BANK_ACCOUNT")
     assert "0007 3111 4" in got   # 9 digits across spaces -> reassembled, kept
     assert "42" not in got        # 2-digit fragment -> dropped
-
-
-def test_location_char_floor_drops_short_tokens():
-    rec = Gliner2Recognizer()
-    rec._model = _FakeModel({"location": ["NAB", "Kew", "Wagga Wagga"]})
-    text = "paid NAB near Kew while visiting Wagga Wagga today"
-    got = _spans(rec, text, "LOCATION")
-    assert "Wagga Wagga" in got
-    assert "NAB" not in got
-    # the documented sacrifice: a real 3-letter suburb falls with the
-    # acronyms — the location pass itself cannot protect it
-    assert "Kew" not in got
 
 
 # Checksum-verified literals (same convention as test_invalid.py):

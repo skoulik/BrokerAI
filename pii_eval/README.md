@@ -71,11 +71,12 @@ GLiNER2 stripping the embedded suburb (the 2026-07-14 image-demo wart)
 registers as over-stripped. Trust names ("OAKFIELD FAMILY TRUST") appear
 as statement account holders and loan trustee lines; they are business
 entities, so keep-ORGANIZATION despite the surname stem. The loan notes
-carry bare-town mentions: `LOCATION` (real towns, standalone — no address
-context) and `LOCATION_SHORT` (real 3-letter suburbs: Kew, Ayr, Hay — the
-class the `LOCATION_MIN_CHARS=4` floor knowingly sacrifices, expected to
-leak until the gazetteer task lands). Loan applicant 1 additionally gets a
-PO Box postal address (`ADDRESS`).
+carry a bare-town mention: `LOCATION` (a real town, standalone — no address
+context). Standalone location detection was retired 2026-07-23 (a bare place
+name is acceptable verbatim in financial docs), so `LOCATION` is now a
+**keep** probe — the town must survive; the ADDRESS passes still own
+address-shaped lines. Loan applicant 1 additionally gets a PO Box postal
+address (`ADDRESS`).
 - `loan_inv_*.txt` / `tx_inv_*.csv` — checksum-invalid injection docs
   (`--no-invalid` omits them; they are appended after the base rotation so
   base docs stay byte-identical per seed). Single-digit typos and a
@@ -117,8 +118,9 @@ scorer tracks as over-stripping.
   seeds after the cell-isolation window fix, residual is GLiNER2 label
   competition (see the residual task in pii/TODO.md). `PERSON_COMMA`,
   `PERSON_PARTICLE` and `PERSON_MULTIWORD` (the names doc's other forms)
-  follow the same convention, as do `ADDRESS_BARE`, `LOCATION` and
-  `LOCATION_SHORT`; none of them are gate members.
+  follow the same convention, as does `ADDRESS_BARE`; none of them are gate
+  members. `LOCATION` is now a keep probe (standalone location detection
+  retired 2026-07-23), scored on the over-stripped axis.
 - The joint-name recognizer's precision trade-offs are measured per-form
   (2026-07-15): `ORGANIZATION_AND` — 'X and Y Z' orgs with a corporate
   marker, must stay kept; `ORGANIZATION_AND_BARE` — orgs in the joint-name

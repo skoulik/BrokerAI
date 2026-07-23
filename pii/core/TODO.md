@@ -184,9 +184,10 @@ experiment (future session; owns the next engine-shaped decision).
       build layer 3 only if those results prove unsatisfactory — see ROADMAP.md and
       ARCHITECTURE.md.* Design if built: "does this still contain anything identifying?"
       via llama-server; catches contextual identifiers NER can't see ("the borrower's wife,
-      a dentist in Wagga Wagga"). Bundled revisit for when it lands: consider dropping the
-      GLiNER2 location pass once layer 3 owns contextual IDs (the SpacyRecognizer it
-      replaced was retired 2026-07-15 — records in DONE.md).
+      a dentist in Wagga Wagga"). *(2026-07-23: the bundled "drop the GLiNER2 location pass"
+      revisit is moot — standalone LOCATION detection was retired outright, so bare place
+      names already pass to where layer 3 would own them. The SpacyRecognizer that pass
+      replaced was retired 2026-07-15; records in DONE.md.)*
 - [ ] Overlaps merging algorithm — define and document. Interesting areas: how the weights are
       combined (max, average, bayesian/aposteriori), what if winning classes of overlaps
       do not agree, should we merge at all in some cases. Adjacent-span coalescing for
@@ -237,23 +238,16 @@ experiment (future session; owns the next engine-shaped decision).
 - [ ] AU place-name gazetteer as a cheap deterministic LOCATION layer (spaCy source review
       finding (j)): FlashText/PhraseMatcher-style trie — or plain set matching at our char
       level — over a public AU suburb/town list, case-insensitive, whitespace-normalized.
-      Gives recall on bare town names independent of GLiNER2's location pass (and of the
-      layer-3 audit when it lands); decide its overlap policy vs the location label when
+      Gives recall on bare town names; decide its overlap policy vs the ADDRESS passes when
       the overlaps-merging task above is done. Consider a fuzzy edit budget of
       `max(2, 0.3·len)` for OCR damage (review finding (i)).
-      Also the recovery path for the `LOCATION_MIN_CHARS=4` trade-off: the floor on the
-      GLiNER2 location pass knowingly sacrifices genuine 3-letter suburbs (Kew, Ayr) to
-      kill the short-acronym FP class ('AU', 'NSW', 'NAB') — recorded 2026-07-14 in
-      gliner2_recognizer.py/ARCHITECTURE.md. Gazetteer matches are exact lookups, so no
-      length floor is needed and the 3-letter suburbs come back for free.
-      *(2026-07-15: the tier-1 corpus now carries bare-town `LOCATION` and
-      3-letter-suburb `LOCATION_SHORT` truth rows, so this task has a metric. First
-      numbers, seed 42: both 100% — but the short suburbs are being rescued by the
-      GLiNER2 ADDRESS pass on sentence context ("resided in Kew"), at barely-above-
-      threshold scores (Kew scored 0.433 vs threshold 0.4), not by the floored
-      location pass. Fragile; bare/contextless short suburbs are still the exposed
-      case and the corpus doesn't generate those yet — add a no-context surface form
-      when picking this up.)*
+      *(2026-07-23: standalone LOCATION detection was retired — a lone place name is now
+      accepted verbatim (ARCHITECTURE decision). This task is therefore CONTINGENT on
+      reversing that stance, or on layer-3 findings showing bare place names must be caught
+      after all; it is not a live gap while the retirement holds. The old `LOCATION_MIN_CHARS=4`
+      floor-recovery rationale is moot — both the pass and its floor are gone. If revived, the
+      corpus `LOCATION` probe is now a KEEP probe and would flip back, and a no-context
+      short-suburb surface form should be added; `LOCATION_SHORT` was removed 2026-07-23.)*
 
 ## Experiments — GLiNER2 tuning
 

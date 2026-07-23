@@ -32,10 +32,16 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   past ~12 (wide-span false-positive creep starts around 16).
 - **spaCy is the NLP engine only, not a detector (retired 2026-07-15).** `SpacyRecognizer` is
   removed from the registry and the `--no-ner` patterns-only regime is gone; GLiNER2 owns
-  PERSON/ORG/dates and LOCATION (its location pass defaults on). spaCy stays loaded solely for
-  Presidio's context enhancer (tokens/lemmas). Its old PERSON/DATE_TIME detector emissions were
-  glue/FP-prone on OCR text; see `tests/pii/core/test_registry_policy.py`,
-  [core/ARCHITECTURE.md](core/ARCHITECTURE.md) and the [core/DONE.md](core/DONE.md) record.
+  PERSON/ORG/dates. spaCy stays loaded solely for Presidio's context enhancer (tokens/lemmas).
+  Its old PERSON/DATE_TIME detector emissions were glue/FP-prone on OCR text; see
+  `tests/pii/core/test_registry_policy.py`, [core/ARCHITECTURE.md](core/ARCHITECTURE.md) and
+  the [core/DONE.md](core/DONE.md) record.
+- **Standalone LOCATION detection retired 2026-07-23.** The dedicated GLiNER2 location pass and
+  its `LOCATION_MIN_CHARS=4` floor were removed — a lone city/town name is acceptable verbatim
+  in financial documents. `LOCATION` is gone from `DEFAULT_STRIP_ENTITIES`, the placeholder map
+  and the recognizer's supported entities. The ADDRESS passes are untouched (full addresses and
+  suburb-postcode lines still strip); the corpus `LOCATION` probe is now a keep probe. See the
+  decision in [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 - **Edge cases get dual coverage (2026-07-15).** Every newly identified corner case or fail
   mode gets BOTH a pytest test (model-free via the fake-model/stub patterns where possible,
   `model`-marked otherwise) AND a pii_eval corpus probe (distinct truth type per the

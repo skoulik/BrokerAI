@@ -74,17 +74,15 @@ width — full one-line addresses score 0.99 as single spans (fragments
 layer-2 latency at 12; width 16 showed the first extra ORGANIZATION
 over-strip, so stay below it.
 
-Location pass (always on; the ablation flag was retired 2026-07-15): a
-dedicated single-label LOCATION schema pass for bare place names in prose
-("a teacher in Cairns") — contextual identifiers that are not addresses.
-This is the production contextual-identifier net; it replaced the retired
-SpacyRecognizer LOCATION detector (2026-07-15) rather than standing in for a
-surviving spaCy role. Isolated from the main labels for the same
-label-competition reason as the address passes. Precision guards live on the
-pass: an exclusionary description and a LOCATION_MIN_CHARS floor (its false
-positives were all short codes/acronyms — 'AU', 'NSW', 'NAB'). Chosen
-head-to-head over spaCy LOCATION (11/11 vs 6/11 contextual towns): DONE.md,
-2026-07-14.
+Standalone LOCATION detection was retired 2026-07-23: a bare city/town name
+on its own ('a teacher in Cairns') is acceptable verbatim in financial
+documents, so the dedicated single-label location pass and its
+LOCATION_MIN_CHARS floor were removed. The ADDRESS passes still own full
+addresses and suburb-state-postcode lines; only bare place names in prose now
+pass through. The pass had existed 2026-07-15..2026-07-23 as the
+contextual-identifier net that replaced the retired SpacyRecognizer LOCATION
+detector (chosen head-to-head over spaCy, 11/11 vs 6/11 contextual towns);
+see DONE.md.
 
 Identifier emissions are post-validated (IDENTIFIER_VALIDATORS, issue #10,
 2026-07-22): layer-1's identifier recognizers are checksum/format-validated,
@@ -209,34 +207,14 @@ ADDRESS_LABELS_SPLIT = {
 }
 ADDRESS_THRESHOLD = 0.3
 
-# Location pass (always on). Its own single-label schema — kept apart from the
-# main labels so it neither suppresses PERSON/ORG nor is suppressed by them (label
-# competition, see docstring). Purpose: cover bare place names in prose
-# ("a teacher in Cairns") that are contextual identifiers but not addresses —
-# the production contextual-identifier net that replaced the retired
-# SpacyRecognizer LOCATION detector (2026-07-15). Chosen head-to-head over
-# spaCy in the 2026-07-14 location-label experiment.
-LOCATION_LABELS = {
-    "location": (
-        "A geographic place name on its own: a city, town, suburb or "
-        "locality, e.g. 'Cairns', 'Wagga Wagga', 'Newtown' — NOT a full "
-        "street address, NOT a state or country abbreviation, and NOT a "
-        "company, bank, shop, brand or merchant name",
-        "LOCATION",
-    ),
-}
-LOCATION_THRESHOLD = 0.4
-# Location false positives in the 2026-07-14 experiment were dominated by
-# short ALL-CAPS tokens: the card-transaction country suffix 'AU', state
-# codes ('NSW'/'VIC'/...) and bank/merchant acronyms ('NAB'). None is a real
-# place name, and every AU place name in the corpus is >=4 chars, so a
-# minimum-length floor removes the whole class at once (an explicit
-# {AU, NSW, ...} stop-list was evaluated first but never shipped — every
-# member is <=3 chars, so the floor subsumes it). Trade-off:
-# the handful of genuine 3-letter suburbs (Kew, Ayr) are sacrificed — an
-# acceptable loss for a contextual-identifier safety net; the planned AU
-# place-name gazetteer (TODO.md) is the recovery path for those.
-LOCATION_MIN_CHARS = 4
+# Standalone LOCATION detection retired 2026-07-23: a bare city/town name on
+# its own ('Security property is in Cairns') is acceptable verbatim in
+# financial documents, so the dedicated single-label location pass and its
+# LOCATION_MIN_CHARS floor were removed. The ADDRESS passes still own full
+# addresses and suburb-state-postcode lines ('NEWTOWN NSW 2042'); only bare
+# place names in prose now pass through. (The pass existed 2026-07-15..
+# 2026-07-23 as the contextual-identifier net that replaced the retired
+# SpacyRecognizer LOCATION detector; see DONE.md.)
 
 # Digit bounds on GLiNER2's AU_BANK_ACCOUNT *guesses*: a fragment like '42'
 # otherwise strips two stray digits (the 2026-07-14 floor), and an unbounded
@@ -351,7 +329,6 @@ class Gliner2Recognizer(EntityRecognizer):
         self.demote_invalid = demote_invalid
         self._model = None
         entity_types = {e for _, e in LABELS.values()}
-        entity_types |= {e for _, e in LOCATION_LABELS.values()}
         entity_types |= {"AU_TFN_INVALID", "AU_MEDICARE_INVALID"}
         super().__init__(
             supported_entities=sorted(entity_types),
@@ -403,7 +380,6 @@ class Gliner2Recognizer(EntityRecognizer):
             (LABELS, self.threshold),
             (ADDRESS_LABELS_GENERIC, ADDRESS_THRESHOLD),
             (ADDRESS_LABELS_SPLIT, ADDRESS_THRESHOLD),
-            (LOCATION_LABELS, LOCATION_THRESHOLD),
         ]
         results = []
         seen = set()
@@ -430,11 +406,6 @@ class Gliner2Recognizer(EntityRecognizer):
                     ):
                         continue
                     for ent in ents:
-                        if (
-                            entity_type == "LOCATION"
-                            and len(ent["text"].strip()) < LOCATION_MIN_CHARS
-                        ):
-                            continue
                         emit_type = entity_type
                         validator = IDENTIFIER_VALIDATORS.get(entity_type)
                         if validator is not None:

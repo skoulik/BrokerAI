@@ -96,21 +96,16 @@ MERCHANTS = [
     "NETFLIX.COM", "SPOTIFY", "JB HI-FI", "AUSTRALIA POST", "ALDI STORES",
 ]
 
-# Real AU suburbs/towns, used where the truth type needs a name GLiNER2 (or a
-# future gazetteer) could plausibly know: bare-town LOCATION mentions and the
-# suburb-suffixed merchant forms ("WOOLWORTHS NEWTOWN"). Faker's en_AU city()
-# fabricates names, which is fine for ADDRESS spans (format carries the
-# signal) but wrong for these two cases.
+# Real AU suburbs/towns, used where the truth type needs a real place name:
+# the bare-town LOCATION keep-probe (standalone location detection retired
+# 2026-07-23 — the town must survive verbatim) and the suburb-suffixed
+# merchant forms ("WOOLWORTHS NEWTOWN"). Faker's en_AU city() fabricates
+# names, which is fine for ADDRESS spans (format carries the signal) but wrong
+# for these two cases.
 TOWNS = [
     "Newtown", "Parramatta", "Marrickville", "Fitzroy", "Toowoomba",
     "Wollongong", "Bendigo", "Ballarat", "Dubbo", "Cairns", "Penrith",
 ]
-
-# Real 3-letter localities (Kew VIC, Ayr QLD, Hay NSW) — the class knowingly
-# sacrificed by the GLiNER2 LOCATION_MIN_CHARS=4 floor; annotated with the
-# distinct truth type LOCATION_SHORT so the trade-off reports on its own row
-# (the gazetteer task in pii/TODO.md is the recovery path).
-SHORT_SUBURBS = ["Kew", "Ayr", "Hay"]
 
 _TRUST_KIND = ["FAMILY", "BUSINESS", "PROPERTY", "INVESTMENT"]
 

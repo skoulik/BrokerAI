@@ -81,7 +81,6 @@ DEFAULT_STRIP_ENTITIES = {
     "AU_DRIVERS_LICENCE",
     "PASSPORT",
     "CREDIT_CARD",
-    "LOCATION",
     "ADDRESS",
     "DATE_OF_BIRTH",
     "IBAN_CODE",
@@ -126,10 +125,12 @@ class PiiPipeline:
         registry.load_predefined_recognizers(nlp_engine=nlp_engine)
         # spaCy stays as Presidio's NLP engine (tokens/lemmas feed the context
         # enhancer) but is retired as a detector (2026-07-15): GLiNER2 owns
-        # PERSON/ORG/dates and now LOCATION too, and en_core_web_sm's own
-        # emissions only added glue spans (PERSON crossing OCR line breaks),
-        # date-as-PERSON false positives, and weaker LOCATION recall (6/11 vs
-        # 11/11 contextual towns — DONE.md 2026-07-14).
+        # PERSON/ORG/dates and its own emissions only added glue spans (PERSON
+        # crossing OCR line breaks) and date-as-PERSON false positives. (spaCy
+        # also had weaker LOCATION recall than the GLiNER2 location pass that
+        # briefly replaced it, 6/11 vs 11/11 contextual towns — DONE.md
+        # 2026-07-14 — but standalone LOCATION detection was itself retired
+        # 2026-07-23; bare place names now pass verbatim.)
         registry.remove_recognizer("SpacyRecognizer")
         # URL/IP are not relevant to financial documents (2026-07-23): drop
         # the predefined recognizers so they never detect — leaving them
