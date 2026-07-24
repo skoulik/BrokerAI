@@ -4,6 +4,7 @@
     python -m pii strip statement.pdf --pdf -o statement.clean.pdf
     python -m pii analyze document.txt
     python -m pii rehydrate cloud_answer.txt --map statement.pii_map.json
+    python -m pii debug ocr statement.pdf --format overlay -o ocr.png
 
 strip/analyze accept '-' to read stdin. The pseudonym map defaults to
 per-document — <input>.pii_map.json next to the input file — so each
@@ -18,7 +19,7 @@ import sys
 from pathlib import Path
 
 from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
-from pii.core.ocr import OCR_BACKENDS
+from pii.core.ocr import OCR_BACKENDS, OCR_PAGE_BACKENDS
 
 
 def _read(source: str) -> str:
@@ -60,6 +61,92 @@ def _report_invalid(findings, file=None) -> None:
     for f in findings:
         value = f.value.replace("\n", "\\n")
         print(f"  {f.entity_type:<22} {value!r}  [{f.rule}]", file=file)
+
+
+def _debug_page_images(path: str, is_pdf: bool, page, dpi: int):
+    """Yield (page_number, RGB image) for the selected pages: a single image
+    file, one PDF page (`--page N`), or all PDF pages (`--page` unset)."""
+    from PIL import Image
+
+    if not is_pdf:
+        yield 1, Image.open(path).convert("RGB")
+        return
+    import pymupdf
+
+    from pii.core.pdf_mode import _render_page
+
+    with pymupdf.open(path) as doc:
+        if page is not None:
+            if not 1 <= page <= doc.page_count:
+                raise SystemExit(
+                    f"page {page} out of range (1..{doc.page_count})")
+            yield page, _render_page(doc[page - 1], dpi)
+        else:
+            for number, pg in enumerate(doc, 1):
+                yield number, _render_page(pg, dpi)
+
+
+def _page_progress(number: int, count: int) -> None:
+    print(f"page {number}/{count} ...", file=sys.stderr)
+
+
+def _debug(args) -> int:
+    """`pii debug ocr`: OCR the selected page(s) into OcrPage(s) and dump them
+    (json/text) or annotate the raster(s) (overlay). PDFs default to all pages;
+    overlay to a `.pdf` output reconstructs a fresh image-only PDF like strip."""
+    import json
+    from dataclasses import replace
+
+    from pii.core import ocr_debug
+    from pii.core.ocr import get_ocr_page
+
+    ocr_fn = get_ocr_page(args.ocr_backend)
+    is_pdf = args.input.lower().endswith(".pdf")
+    out_is_pdf = bool(args.output) and args.output.lower().endswith(".pdf")
+
+    def ocr_of(number, image):
+        # The engine can't know the source path / PDF page / render dpi —
+        # record them on the frame for the dump.
+        page = ocr_fn(image)
+        return replace(page, frame=replace(
+            page.frame,
+            page=number if is_pdf else 1,
+            dpi=args.dpi if is_pdf else None,
+            source=args.input,
+        ))
+
+    if args.format == "overlay":
+        if is_pdf and out_is_pdf:
+            from pii.core.pdf_mode import rebuild_pdf
+            rebuild_pdf(
+                args.input, args.output,
+                lambda n, im: ocr_debug.draw_overlay(im, ocr_of(n, im)),
+                dpi=args.dpi,
+                pages=None if args.page is None else {args.page},
+                progress=_page_progress,
+            )
+            print(f"wrote overlay PDF -> {args.output}", file=sys.stderr)
+            return 0
+        imgs = list(_debug_page_images(args.input, is_pdf, args.page, args.dpi))
+        if len(imgs) != 1:
+            raise SystemExit(
+                "overlay to an image needs a single page — pass --page N, or "
+                "give a .pdf output path to annotate all pages")
+        number, image = imgs[0]
+        ocr_debug.draw_overlay(image, ocr_of(number, image)).save(args.output)
+        print(f"wrote overlay -> {args.output}", file=sys.stderr)
+        return 0
+
+    pages = [ocr_of(n, im) for n, im
+             in _debug_page_images(args.input, is_pdf, args.page, args.dpi)]
+    if args.format == "text":
+        _write(args.output, "\n".join(ocr_debug.page_to_text(p) for p in pages))
+    else:
+        payload = (ocr_debug.page_to_dict(pages[0]) if len(pages) == 1
+                   else [ocr_debug.page_to_dict(p) for p in pages])
+        _write(args.output,
+               json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    return 0
 
 
 def main(argv=None) -> int:
@@ -163,7 +250,46 @@ def main(argv=None) -> int:
              "default to guess here)",
     )
 
+    p_debug = sub.add_parser(
+        "debug", help="diagnostics: inspect the OCR perception layer"
+    )
+    debug_sub = p_debug.add_subparsers(dest="debug_command", required=True)
+    p_debug_ocr = debug_sub.add_parser(
+        "ocr", help="OCR a page and dump/annotate the OcrPage "
+                    "(blocks, lines, reading order)"
+    )
+    p_debug_ocr.add_argument("input", help="image or PDF file")
+    p_debug_ocr.add_argument(
+        "-o", "--output",
+        help="output file (default stdout; required for --format overlay)",
+    )
+    p_debug_ocr.add_argument(
+        "--format", choices=["json", "text", "overlay"], default="json",
+        help="json (round-trippable OcrPage), text (human summary), or "
+             "overlay (annotated raster; requires -o) (default json)",
+    )
+    p_debug_ocr.add_argument(
+        "--ocr-backend", choices=list(OCR_PAGE_BACKENDS), default="ppstructure",
+        help="OcrPage backend: ppstructure (PP-StructureV3 — typed blocks + "
+             "reading order) or the paddle line-only tiers (default "
+             "ppstructure)",
+    )
+    p_debug_ocr.add_argument(
+        "--page", type=int, default=None,
+        help="1-based page number for PDF input (default: all pages)",
+    )
+    p_debug_ocr.add_argument(
+        "--dpi", type=int, default=200,
+        help="PDF render resolution (default 200)",
+    )
+
     args = parser.parse_args(argv)
+
+    if args.command == "debug":
+        if (args.debug_command == "ocr" and args.format == "overlay"
+                and (not args.output or args.output == "-")):
+            parser.error("--format overlay requires -o OUTPUT (an image path)")
+        return _debug(args)
 
     if args.command == "rehydrate":
         pmap = PseudonymMap(args.map)

@@ -34,6 +34,7 @@ python -m pii strip scan.png --image -o scan.clean.png
 python -m pii strip statement.pdf --pdf -o statement.clean.pdf
 python -m pii analyze document.txt            # show detections, change nothing
 python -m pii rehydrate cloud_answer.txt --map statement.pii_map.json
+python -m pii debug ocr statement.pdf --format overlay -o ocr.png  # inspect OCR
 ```
 
 `strip`/`analyze` accept `-` for stdin. The pseudonym map is
@@ -80,6 +81,23 @@ than by scrubbing. Placeholders are consistent across the document's
 pages; processing is lossless end-to-end with a JPEG embed only at the
 final step (~0.2 MB/page at 300 DPI). Progress is reported per page on
 stderr; `--report` prefixes detections with their page number.
+
+## OCR inspection (debug)
+
+`pii debug ocr <image|pdf>` OCRs the page(s) and dumps the **perceived structure** — blocks,
+lines, reading order — for inspecting what the OCR/layout stage produced (no PII detection, no
+painting). `--format json` (round-trippable), `text` (human summary), or `overlay` (annotated
+raster) — the overlay outlines each line, and each block labelled with its reading-order index
+and kind (blue = detected layout block, amber + "synthetic" tag = fabricated). `--ocr-backend
+ppstructure` (default; PP-StructureV3 layout blocks + reading order) or a paddle line-only tier
+(`paddle`, `paddle:v6_medium`, `paddle:v5_server`).
+
+For PDFs, **all pages** are processed by default (`--page N` selects one; `--dpi` sets the
+render resolution). `overlay` output follows the `-o` extension: `-o out.pdf` reconstructs a
+fresh image-only PDF with every page annotated (same reassembly as `--pdf` strip — no source
+structure survives), `-o out.png` annotates a single page. **The overlay PDF is not redacted** —
+it shows the original text with boxes drawn on top, so it (and any json/text dump) is near-PII:
+keep it local, like the map file.
 
 ## Checksum-invalid identifiers
 

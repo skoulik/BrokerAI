@@ -949,6 +949,62 @@ the move; new completed tasks append to the matching section with their records.
       `tests/pii/core/test_gliner2_floors.py` (checksum keeps/demotions, demote-off wiring,
       digit caps, licence/passport structure); fast suite 189, model suite 8 incl. tier-1
       gate — all green.)*
+- [x] **OCR perception layer + PP-StructureV3 backend + `debug ocr` diagnostics** *(2026-07-24 —
+      design + rationale in ARCHITECTURE.md "OCR perception layer"). A rethink-the-problem
+      session with Sergei: the flat `OcrResult` is too thin to reason about grouping, so the OCR
+      output became a typed engine-neutral hierarchy `OcrPage → OcrBlock → OcrLine → OcrWord`
+      (+ `OcrFrame`), with the linearization/offset concern split out into `RecognizerInput` /
+      `linearize`. Brainstorm decisions as they settled: standard OCR hierarchy (not a
+      paddle-specific shape); perception carries no char offsets (an offset is a (page, assembly)
+      property — we intend multiple trial linearizations, "feed the recognizer per block" the
+      leading hypothesis); block mandatory / `block_id` total (orphan lines → own synthetic
+      block, never dropped = never leak); `region_box` per-word; names — `OcrBlock` (not
+      `OcrRegion`, which already means "line" in the paddle code), `origin: detected|synthetic`,
+      `conf_scope` dropped in favour of `conf: float|None`. Presidio's tokenizer vs our word
+      split confirmed orthogonal (geometry vs the lemma context enhancer).
+
+      **PP-StructureV3 adopted** (interactive install session): the stack was mostly present
+      (paddleocr 3.7, paddlex 3.7.2, paddlepaddle-gpu 3.3.1); it needed the `paddlex[ocr]` extra
+      — installed the 9 missing benign deps explicitly (einops/ftfy/latex2mathml/lxml/openpyxl/
+      premailer/scikit-learn/scipy/tiktoken; dry-run confirmed additive — nothing touched
+      paddle/torch/opencv). First construction failed because scipy (new in the tree) does
+      `issubclass(x, torch.Tensor)` and the `_stub_torch` `Tensor` was an `_Anything` instance,
+      not a class → fixed the stub to present `Tensor` as a real empty class. Layout models
+      (`PP-DocLayout_plus-L`, `PP-DocBlockLayout`) downloaded into `models/paddlex`; the stale
+      5.3 GB `~/.paddlex` from Oct-2025 experiments is untouched/reclaimable. Config: lean
+      (table/formula/seal/chart/orientation off), OCR sub-models pinned to v6_medium.
+
+      **Key measured finding — no line→block linkage.** On the ANZ policy page (9 OCR lines, 4
+      layout blocks) PP-Structure's parsing blocks carry only `content` + `bbox` + a
+      `num_of_lines` count; `child_blocks` is empty for text blocks. So line→block is
+      reconstructed by geometric containment — which reproduced the reported `num_of_lines`
+      exactly (2, 2, 4, 1) with no orphans on that page. `child_blocks` (table cells) matters
+      only if table-structure recognition is enabled, which we don't — tables come through as
+      normal OCR lines under a `kind="table"` block (revisit later).
+
+      **Transport:** chose to *not* special-case debug in-process; `get_ocr_page` mirrors
+      `get_ocr` (wheel-selected — worker on GPU, in-process on CPU) so debug and the future strip
+      migration share one implementation and debug exercises the release transport. Worker
+      generalized to a spec dispatch (`_resolve`: bare tier → OcrResult, `page:<tier>` /
+      `structure` → OcrPage), `worker_page` added, pool shared; the strip `OcrResult` path is
+      untouched. Live end-to-end validated: parent stays torch-free, PP-Structure runs in the
+      worker, pickled `OcrPage` back with the right block structure; `pii debug ocr` text and
+      overlay run end-to-end on the ANZ page (overlay 1241×1754).
+
+      Modules added: `ocr_page.py`, `linearization.py`, `ocr_ppstructure.py`, `ocr_debug.py`,
+      and `paint.py` (the `Segment`/`paint_segments`/fill/frame drawing toolkit extracted from
+      `image_mode` so the OCR-only debug path doesn't pull the analysis stack — `image_mode`
+      re-exports the names, strip/eval untouched); `ocr_paddle.py` / `ocr_worker.py` / `ocr.py`
+      / `pdf_mode.py` (`rebuild_pdf`) / `cli` extended. `debug ocr` does PDFs end-to-end: all
+      pages by default, `overlay` to a `.pdf` reconstructs a fresh image-only PDF via
+      `rebuild_pdf` (strip's reassembly, not redacted — near-PII). Verified live on real
+      statements (`sensitive/statements/1/`): PP-Structure clusters PII into coherent blocks
+      (a whole address block, a BSB/account/names block), tags the balance summary `table`, and
+      splits the ANZ legal line into `footer` — real support for per-block feeding. Tests (all
+      model-free): `test_linearization.py`, `test_ocr_ppstructure.py`, `test_ocr_debug.py`,
+      `test_pdf_mode.py::rebuild_pdf`, `TestResultToPage` / `TestGetOcrPage`, debug-CLI guards;
+      fast suite 241 green (was 216). Strip migration onto `OcrPage` / `RecognizerInput` and the
+      per-block feeding experiment are in TODO.)*
 
 ## Evaluation
 

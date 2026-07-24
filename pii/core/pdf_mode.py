@@ -140,3 +140,39 @@ def strip_pdf(
     out_doc.save(out_path, garbage=4, deflate=True)
     out_doc.close()
     return PdfStripResult(pages=pages)
+
+
+def rebuild_pdf(
+    src_path: str | Path,
+    out_path: str | Path,
+    transform: Callable[[int, Image.Image], Image.Image],
+    dpi: int = DEFAULT_DPI,
+    pages: set[int] | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> None:
+    """Render each source page to `dpi`, run `transform(page_number, image)`
+    -> RGB image, and embed the result into a fresh image-only PDF at the
+    source page's physical size.
+
+    Same fresh-document discipline as strip_pdf — no text layer, annotations
+    or metadata from the source survive — but generic in the per-page image
+    transform, so the debug overlay (and any other page-image annotation)
+    reassembles a PDF through one code path. `pages` (a set of 1-based page
+    numbers, None = all) selects which pages to include."""
+    out_doc = pymupdf.open()
+    with pymupdf.open(src_path) as doc:
+        for number, page in enumerate(doc, 1):
+            if pages is not None and number not in pages:
+                continue
+            if progress:
+                progress(number, doc.page_count)
+            annotated = transform(number, _render_page(page, dpi)).convert("RGB")
+            buf = io.BytesIO()
+            annotated.save(buf, "JPEG", quality=_JPEG_QUALITY)
+            out_page = out_doc.new_page(
+                width=page.rect.width, height=page.rect.height
+            )
+            out_page.insert_image(out_page.rect, stream=buf.getvalue())
+    out_doc.set_metadata({})
+    out_doc.save(out_path, garbage=4, deflate=True)
+    out_doc.close()

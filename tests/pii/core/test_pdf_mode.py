@@ -44,6 +44,40 @@ def test_pdf_to_images_pages_carry_content(tmp_path):
         assert len(colors) > 1  # ...and drawn text
 
 
+def test_rebuild_pdf_reassembles_all_pages_clean(tmp_path):
+    # The debug-overlay PDF path: render every page, run a per-page image
+    # transform, reassemble a fresh image-only PDF (no text layer, no source
+    # metadata) — same discipline as strip_pdf, exercised with an identity
+    # transform (no OCR).
+    src = tmp_path / "src.pdf"
+    _make_pdf(src, pages=3)
+    seen = []
+
+    def transform(number, image):
+        seen.append((number, image.size))
+        return image
+
+    out = tmp_path / "out.pdf"
+    pdf_mode.rebuild_pdf(src, out, transform, dpi=96)
+    assert [n for n, _ in seen] == [1, 2, 3]
+    doc = pymupdf.open(out)
+    assert doc.page_count == 3
+    assert doc[0].get_text().strip() == ""  # image-only: no text layer
+    assert not doc.metadata.get("title") and not doc.metadata.get("author")
+
+
+def test_rebuild_pdf_page_filter(tmp_path):
+    src = tmp_path / "src.pdf"
+    _make_pdf(src, pages=4)
+    seen = []
+    pdf_mode.rebuild_pdf(
+        src, tmp_path / "out.pdf",
+        lambda n, im: (seen.append(n) or im), dpi=72, pages={2, 4},
+    )
+    assert seen == [2, 4]
+    assert pymupdf.open(tmp_path / "out.pdf").page_count == 2
+
+
 def test_pdf_page_count(tmp_path):
     pdf = tmp_path / "doc.pdf"
     _make_pdf(pdf, pages=4)

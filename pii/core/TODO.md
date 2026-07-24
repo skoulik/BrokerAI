@@ -99,6 +99,39 @@ experiment (future session; owns the next engine-shaped decision).
       presidio-image-redactor chain in DONE.md). Preprocessed image feeds OCR only; painting
       stays on original pixels. Needs the eval degradation tier to measure.
 
+## OCR perception / linearization (2026-07-24)
+
+The OcrPage / linearization / PP-StructureV3 backend / `debug ocr` layer shipped (record in
+DONE.md; design in ARCHITECTURE.md "OCR perception layer"); it runs alongside the untouched
+`OcrResult` strip path. Open follow-ups:
+
+- [ ] **Confirm per-block recognizer feeding** (Sergei's leading hypothesis, 2026-07-24): feed
+      the recognizer each block's lines rather than one page-wide string. Use the `debug ocr`
+      overlay to judge block quality on real docs first, then run an experiment vs today's
+      whole-page assembly on the leak gate. This is the open linearization question — don't
+      over-invest in concatenation/merging until it's decided.
+- [ ] **Migrate the strip pipeline onto `OcrPage`/`RecognizerInput`** and retire
+      `OcrResult`/`assemble`: `strip_from_ocr` / `image_mode` / `pdf_mode` move to
+      `get_ocr_page` + `linearize`; the worker's strip path switches to the `page:`/`structure`
+      spec. Deferred until per-block feeding is settled (it decides how strip linearizes). Also
+      fold the eval harness (`ocr_report`, `score_image`/`score_pdf`) onto the new types.
+- [ ] **Font traceback** (diagnostics-only): fill `OcrLine.font` / `OcrBlock.font` from the PDF
+      text layer (pymupdf `get_text("dict")` spans matched to line boxes) — `None` from any OCR
+      engine. Must never feed the strip decision (we deliberately distrust the text layer).
+- [ ] **PP-Structure `kind="table"` blocks** (parked 2026-07-24): with table-structure
+      recognition off, table text arrives as ordinary lines under a `table` block — verify
+      that's enough for PII on real table-heavy statements (interacts with the "statement
+      tables" item above); only reach for `child_blocks`/cell structure if it isn't. Observed
+      on the real ANZ statement (2026-07-24): the balance-summary `table` block was detected
+      cleanly, but its lines interleave label/value in reading order (a stray `$0.00` mid-run)
+      — within-table line ordering may need work if per-block feeding relies on it.
+- [ ] **CPU-wheel PP-Structure**: `_structure_engine` sets `device="cpu"` off the GPU wheel but
+      is untested there; check the paddle 3.3.x oneDNN PIR-executor crash (the `enable_mkldnn`
+      lever plain PaddleOCR needs) doesn't bite PP-Structure.
+- [ ] **`use_region_detection`** defaults on (downloads `PP-DocBlockLayout`); evaluate whether
+      the coarser region grouping helps reading order on multi-column statements or can be
+      dropped to save a model.
+
 ## Detection pipeline
 
 - [ ] **User-editable keep-list ("do not strip") mechanism** (Sergei, 2026-07-18): a

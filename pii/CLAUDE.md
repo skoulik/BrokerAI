@@ -62,6 +62,18 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   not in `DEFAULT_STRIP_ENTITIES`, the placeholder map, or the recognizer's supported entities.
   The ADDRESS passes still strip full addresses and suburb-postcode lines. Rationale in
   [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
+- **The OCR perception layer (`OcrPage`) carries no character offsets.** Offsets live only in
+  the linearization source map (`RecognizerInput` / `linearize`) — an offset is a
+  (page, assembly) property and we run multiple trial linearizations; baking one onto a line
+  ties perception to one assembly. Keep the anti-silent-leak rule (record `(start,end,box)` at
+  construction, never re-derive from lengths) on the source map.
+- **An OCR line is never dropped.** `OcrLine.block_id` is total: line-only backends synthesize
+  one block per line; a layout model's orphan line gets its own synthetic block. A dropped line
+  is unredacted PII.
+- **PP-StructureV3 needs the `paddlex[ocr]` extras and the `_stub_torch` `Tensor`-as-class
+  shim** (scipy, pulled in by `paddlex[ocr]`, probes `issubclass(x, torch.Tensor)`). Its models
+  live under `models/paddlex`. Reach OCR that yields an `OcrPage` only through `get_ocr_page`
+  (worker on the GPU wheel, in-process on CPU) — never import torch into a paddle-GPU process.
 - **Edge cases get dual coverage (2026-07-15).** Every newly identified corner case or fail
   mode gets BOTH a pytest test (model-free via the fake-model/stub patterns where possible,
   `model`-marked otherwise) AND a pii_eval corpus probe (distinct truth type per the

@@ -31,3 +31,15 @@ Completed CLI work. The engineering records for the underlying engine features l
 - [x] `cli.py` → `pii/cli/__init__.py`; added `pii/cli/__main__.py`. `python -m pii` preserved
       as the canonical entry; CLI now imports the engine via the `pii.core` public API. Details
       in the umbrella [../DONE.md](../DONE.md).
+
+## OCR debug command *(2026-07-24)*
+
+- [x] `debug ocr <image|pdf>` — OCR the page(s) into `OcrPage`(s) and dump them: `--format` json
+      (round-trippable) / text (human summary) / overlay (annotated raster). PDFs process **all
+      pages by default** (`--page N` selects one; `--dpi` sets render resolution); overlay output
+      follows the `-o` extension — `.pdf` reconstructs a fresh image-only PDF with every page
+      annotated (via `pdf_mode.rebuild_pdf`, same fresh-document reassembly as `--pdf` strip),
+      `.png` annotates a single page. Renderers live in `pii.core.ocr_debug` (drawing reuses the
+      shared `pii.core.paint` toolkit); the CLI is arg-parsing + renderer selection only (no
+      detection). Note: the overlay PDF is **not** redacted (original text with boxes on top) —
+      a near-PII local artifact. Engine record in [../core/DONE.md](../core/DONE.md).

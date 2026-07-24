@@ -12,26 +12,28 @@ drawn into it, so the stripped image stays analyzable by a cloud model
 and its answers can be rehydrated. A span crossing lines paints one box
 per line, each carrying the placeholder — self-describing over compact.
 
+The drawing toolkit itself (`Segment` / `paint_segments` / fill / frame)
+lives in `pii.core.paint`, shared with the OCR-debug overlay; the names used
+by callers and the eval harness are re-exported here for backward compat.
+
 The OcrResult in the returned ImageStripResult contains the recognized
 plaintext INCLUDING the PII — like the pseudonym map, it is a local-only
 artifact.
 """
 
-import warnings
 from dataclasses import dataclass
-from functools import lru_cache
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 from pii.core.mapping import PseudonymMap
-from pii.core.ocr import Box, OcrResult, _background_color, get_ocr
+from pii.core.ocr import OcrResult, get_ocr
+from pii.core.paint import Segment, paint_segments
 from pii.core.pipeline import InvalidFinding, PiiPipeline
 
-# Painted boxes are grown by this many pixels per side: word boxes are
-# glyph-tight and antialiased edges would survive as a readable fringe.
-_MARGIN = 2
-
-_MIN_FONT = 8
+# The drawing toolkit moved to pii.core.paint (2026-07-24); re-exported so
+# existing imports keep working — tests use `_grow` / `_FRAME_COLOR`, the eval
+# harness uses `Segment` / `paint_segments`.
+from pii.core.paint import _FRAME_COLOR, _grow  # noqa: F401
 
 
 @dataclass
@@ -40,65 +42,6 @@ class ImageStripResult:
     ocr: OcrResult  # recognized text + word boxes — near-PII, local-only
     spans: list  # applied detections; offsets into ocr.text
     invalid: list[InvalidFinding]
-
-
-@dataclass(frozen=True)
-class Segment:
-    """One painted placeholder: the label and the pixel boxes it covers
-    (one box per text line for a line-crossing span). The seam between
-    detection and painting — the pipeline produces segments from merged
-    spans, and the eval harness produces them straight from ground-truth
-    markup, so both paint through the identical code path."""
-
-    label: str
-    boxes: list[Box]
-
-
-def paint_segments(
-    image: Image.Image,
-    segments: list[Segment],
-    margin: int = _MARGIN,
-    style: str = "fill",
-) -> Image.Image:
-    """Paint every segment onto a copy of the image. The input image is
-    not mutated.
-
-    style="fill" (production): each box is filled with the page
-    background color and the label drawn into it — the content is gone.
-    style="frame" (review): each box gets an outline rectangle with the
-    label on a chip above it — the content stays readable underneath.
-    The ground-truth renderer uses this to make markup auditable."""
-    if style not in ("fill", "frame"):
-        raise ValueError(f"unknown paint style: {style!r}")
-    out = image.convert("RGB")
-    fill = _background_color(out)
-    ink = (0, 0, 0) if _luminance(fill) > 127 else (255, 255, 255)
-    for seg in segments:
-        for box in seg.boxes:
-            grown = _grow(box, margin, out)
-            if grown.width <= 0 or grown.height <= 0:
-                # A degenerate box paints nothing; skip it rather than let
-                # Image.new reject a negative dimension and abort the whole
-                # page. painted_boxes_for_span guards its own geometry, so
-                # this is a belt-and-suspenders backstop for any future OCR
-                # pathology that yields an empty/inverted box. It must NOT
-                # pass unnoticed: an unpainted box means PII pixels may have
-                # survived, so warn with the geometry to make it diagnosable
-                # (this fired for real once — see test_ocr regression cases).
-                warnings.warn(
-                    f"skipping degenerate paint box for {seg.label!r}: "
-                    f"raw={box} grown={grown} on {out.width}x{out.height} "
-                    "image — PII pixels for this span may survive; check "
-                    "OcrResult.painted_boxes_for_span geometry",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                continue
-            if style == "fill":
-                _paint(out, grown, seg.label, fill, ink)
-            else:
-                _frame(out, grown, seg.label)
-    return out
 
 
 def strip_image(
@@ -131,70 +74,3 @@ def strip_from_ocr(
     ]
     out = paint_segments(image, segments)
     return ImageStripResult(image=out, ocr=ocr, spans=spans, invalid=invalid)
-
-
-def _grow(box: Box, margin: int, image: Image.Image) -> Box:
-    left = max(box.left - margin, 0)
-    top = max(box.top - margin, 0)
-    return Box(
-        left=left,
-        top=top,
-        width=min(box.right + margin, image.width) - left,
-        height=min(box.bottom + margin, image.height) - top,
-    )
-
-
-def _paint(image, box: Box, label: str, fill, ink) -> None:
-    """Fill the box and draw the label into it, shrinking the font to fit
-    the width. Drawn on a box-sized layer, so an oversized label clips at
-    the box edge instead of overpainting neighboring text."""
-    layer = Image.new("RGB", (box.width, box.height), fill)
-    draw = ImageDraw.Draw(layer)
-    size = max(int(box.height * 0.8), _MIN_FONT)
-    font = _font(size)
-    while size > _MIN_FONT and draw.textlength(label, font=font) > box.width - 2:
-        size -= 1
-        font = _font(size)
-    draw.text((1, box.height // 2), label, font=font, fill=ink, anchor="lm")
-    image.paste(layer, (box.left, box.top))
-
-
-_FRAME_COLOR = (220, 30, 30)
-
-
-def _frame(image, box: Box, label: str) -> None:
-    """Outline the box and write the label on a chip above it (inside
-    the top edge when there is no room above)."""
-    draw = ImageDraw.Draw(image)
-    draw.rectangle(
-        (box.left, box.top, box.right - 1, box.bottom - 1),
-        outline=_FRAME_COLOR,
-        width=3,
-    )
-    size = min(max(int(box.height * 0.45), 14), 30)
-    font = _font(size)
-    chip_w = int(draw.textlength(label, font=font)) + 6
-    chip_h = size + 4
-    top = box.top - chip_h if box.top >= chip_h else box.top
-    left = max(min(box.left, image.width - chip_w), 0)
-    draw.rectangle((left, top, left + chip_w, top + chip_h), fill=_FRAME_COLOR)
-    draw.text(
-        (left + 3, top + chip_h // 2),
-        label,
-        font=font,
-        fill=(255, 255, 255),
-        anchor="lm",
-    )
-
-
-@lru_cache(maxsize=None)
-def _font(size: int):
-    try:
-        return ImageFont.truetype("arial.ttf", size)
-    except OSError:
-        return ImageFont.load_default(size)
-
-
-def _luminance(color) -> float:
-    r, g, b = color[:3]
-    return 0.299 * r + 0.587 * g + 0.114 * b

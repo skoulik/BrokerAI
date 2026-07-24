@@ -4,8 +4,10 @@ line->word normalization without paddle installed or imported."""
 
 import pytest
 
-from pii.core.ocr import get_ocr
-from pii.core.ocr_paddle import result_to_ocr
+from pii.core.linearization import linearize
+from pii.core.ocr import get_ocr, get_ocr_page
+from pii.core.ocr_page import OcrFrame
+from pii.core.ocr_paddle import result_to_ocr, result_to_page
 
 
 def _result(texts, boxes, scores, words=None, word_boxes=None):
@@ -39,6 +41,28 @@ class TestGetOcr:
     def test_unknown_backend_raises(self):
         with pytest.raises(ValueError):
             get_ocr("tessseract")
+
+
+class TestGetOcrPage:
+    """get_ocr_page resolves a backend to an (image) -> OcrPage callable
+    without loading any engine (wheel-selected transport; engine loads only
+    when the callable is invoked)."""
+
+    def test_default_is_ppstructure(self):
+        assert callable(get_ocr_page())
+
+    def test_families_resolve(self):
+        for backend in ("ppstructure", "paddle", "paddle:v6_medium",
+                        "paddle:v5_server"):
+            assert callable(get_ocr_page(backend))
+
+    def test_unknown_family_raises(self):
+        with pytest.raises(ValueError):
+            get_ocr_page("surya")
+
+    def test_unknown_paddle_tier_raises(self):
+        with pytest.raises(ValueError):
+            get_ocr_page("paddle:v7_giga")
 
 
 class TestResultToOcr:
@@ -173,3 +197,71 @@ class TestResultToOcr:
         boxes = ocr.boxes_for_span(start, start + len("123 456"))
         assert len(boxes) == 1  # same line unions into one box
         assert boxes[0].right <= 320
+
+
+class TestResultToPage:
+    """Line-only OcrPage adapter: same region extraction as result_to_ocr,
+    but each line wrapped in its own synthetic block (paddle has no layout
+    model). Model-free — fake result dicts, no engine."""
+
+    @staticmethod
+    def _page(result):
+        return result_to_page(
+            result,
+            OcrFrame(width=1000, height=1000, page=1,
+                     backend="paddle", tier="v6_medium"),
+        )
+
+    def test_lines_and_synthetic_blocks(self):
+        page = self._page(_result(
+            texts=["TFN 123", "BSB 999"],
+            boxes=[[20, 10, 120, 30], [20, 60, 120, 80]],
+            scores=[0.94, 0.5],
+        ))
+        assert [ln.text for ln in page.lines] == ["TFN 123", "BSB 999"]
+        assert [round(ln.conf) for ln in page.lines] == [94, 50]
+        assert [ln.block_id for ln in page.lines] == [0, 1]
+        # one synthetic block per line, in reading order
+        assert len(page.blocks) == 2
+        assert all(b.origin == "synthetic" and b.kind == "unassigned"
+                   for b in page.blocks)
+        assert [b.reading_order for b in page.blocks] == [0, 1]
+        # block_id is total; page reachable transitively through the block
+        for ln in page.lines:
+            assert page.block_of(ln).page_id == page.frame.page
+
+    def test_words_carry_geometry(self):
+        page = self._page(_result(
+            texts=["TFN 123 456"], boxes=[[20, 10, 320, 30]], scores=[0.9],
+        ))
+        (line,) = page.lines
+        assert [w.text for w in line.words] == ["TFN", "123", "456"]
+        assert line.box.left == 20 and line.box.right <= 320
+
+    def test_linearize_parity_with_ocrresult(self):
+        # build_page + linearize must reproduce result_to_ocr's text exactly,
+        # including geometric row re-ordering (right-region-first input).
+        for result in [
+            _result(texts=["AMOUNT", "DATE PARTICULARS"],
+                    boxes=[[400, 10, 500, 30], [20, 10, 250, 30]],
+                    scores=[0.9, 0.9]),
+            _result(texts=["second", "first"],
+                    boxes=[[20, 60, 120, 80], [20, 10, 120, 30]],
+                    scores=[0.9, 0.9]),
+            _result(texts=["01 APR PAYMENT", "2,148.74", "377,970.04"],
+                    boxes=[[20, 10, 300, 40], [360, 10, 520, 40],
+                           [560, 10, 720, 40]],
+                    scores=[0.9, 0.9, 0.9]),
+        ]:
+            page = self._page(result)
+            assert linearize(page).text == result_to_ocr(result).text
+
+    def test_frame_carried(self):
+        page = self._page(_result(
+            texts=["hi"], boxes=[[0, 0, 10, 10]], scores=[1.0]))
+        assert page.frame.width == 1000
+        assert page.frame.backend == "paddle" and page.frame.tier == "v6_medium"
+
+    def test_empty_result(self):
+        page = self._page({"rec_texts": [], "rec_scores": []})
+        assert page.lines == () and page.blocks == ()

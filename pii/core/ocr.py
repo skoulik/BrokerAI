@@ -46,6 +46,44 @@ def get_ocr(backend: str = "paddle"):
     raise ValueError(f"unknown OCR backend: {backend!r}")
 
 
+# Backends producing the OcrPage perception (get_ocr_page): "ppstructure"
+# (PP-StructureV3, typed blocks + reading order) and the paddle line-only
+# tiers (synthetic per-line blocks).
+OCR_PAGE_BACKENDS = (
+    "ppstructure", "paddle", "paddle:v5_server", "paddle:v6_medium",
+)
+
+
+def get_ocr_page(backend: str = "ppstructure"):
+    """Resolve a backend to an `(image, lang=...) -> OcrPage` callable, worker
+    vs in-process by wheel (mirrors get_ocr). "ppstructure" -> PP-StructureV3
+    (typed blocks + reading order); the "paddle" family -> line-only
+    perception (one synthetic block per line). Imports are deferred so the
+    engine loads only when used."""
+    family = backend.split(":", 1)[0]
+    if family not in ("paddle", "ppstructure"):
+        raise ValueError(f"unknown OCR page backend: {backend!r}")
+    from pii.core.ocr_paddle import DEFAULT_TIER, MODEL_TIERS, _gpu_wheel
+
+    tier = backend.partition(":")[2] or DEFAULT_TIER
+    if family == "paddle" and tier not in MODEL_TIERS:
+        raise ValueError(f"unknown paddle model tier: {tier!r}")
+    if _gpu_wheel():
+        from pii.core.ocr_worker import worker_page
+
+        spec = "structure" if family == "ppstructure" else f"page:{tier}"
+        return lambda image, lang="eng": worker_page(spec, image)
+    if family == "ppstructure":
+        from pii.core.ocr_ppstructure import ppstructure_page
+
+        return lambda image, lang="eng": ppstructure_page(image)
+    from functools import partial
+
+    from pii.core.ocr_paddle import ocr_page_paddle
+
+    return partial(ocr_page_paddle, tier=tier)
+
+
 class Box(NamedTuple):
     """Axis-aligned pixel rectangle in original-image coordinates."""
 

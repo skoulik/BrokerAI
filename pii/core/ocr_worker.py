@@ -38,6 +38,7 @@ import threading
 from PIL import Image
 
 from pii.core.ocr import OcrResult
+from pii.core.ocr_page import OcrPage
 
 # Frame: 1 status byte + 4-byte big-endian length + payload.
 _OK = 0
@@ -112,17 +113,38 @@ def _binary_stdio() -> tuple:
         os.fdopen(proto_fd, "wb")
 
 
+def _resolve(spec: str):
+    """Resolve a worker spec to a warmed-up `ocr_fn(image) -> OcrResult|OcrPage`.
+
+    - bare tier ("v6_medium"): PaddleOCR -> OcrResult (the strip path).
+    - "page:<tier>": PaddleOCR line-only -> OcrPage.
+    - "structure": PP-StructureV3 (layout) -> OcrPage.
+
+    The engine loads here so a load failure surfaces before READY. All
+    paddle/PP-Structure imports stay inside this function: the module is
+    imported by the torch-holding parent, which must never load paddle."""
+    from functools import partial
+
+    if spec == "structure" or spec.startswith("structure:"):
+        from pii.core.ocr_ppstructure import _structure_engine, ppstructure_page
+        _structure_engine()
+        return ppstructure_page
+    if spec.startswith("page:"):
+        from pii.core.ocr_paddle import _engine, ocr_page_paddle
+        tier = spec.partition(":")[2]
+        _engine(tier)
+        return partial(ocr_page_paddle, tier=tier)
+    from pii.core.ocr_paddle import _engine, ocr_image_paddle
+    _engine(spec)
+    return partial(ocr_image_paddle, tier=spec)
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    tier = argv[0]
+    spec = argv[0]
     read_stream, write_stream = _binary_stdio()
     try:
-        from functools import partial
-
-        from pii.core.ocr_paddle import _engine, ocr_image_paddle
-
-        _engine(tier)  # load once; surfaces a load failure before READY
-        ocr_fn = partial(ocr_image_paddle, tier=tier)
+        ocr_fn = _resolve(spec)  # loads the engine; a failure surfaces < READY
     except Exception:
         import traceback
         _write_frame(write_stream, _ERR,
@@ -214,16 +236,29 @@ _pool: dict[str, PaddleWorker] = {}
 _pool_lock = threading.Lock()
 
 
-def worker_ocr(tier: str, image: Image.Image) -> OcrResult:
-    """OCR one image through the persistent worker for `tier`, spawning it
-    on first use. A worker that died between calls is replaced (a fresh
-    document gets a fresh attempt); a death mid-call surfaces from ocr()."""
+def _worker_for(spec: str) -> PaddleWorker:
+    """The persistent worker for `spec`, spawned on first use; one that died
+    between calls is replaced (a fresh document gets a fresh attempt). The
+    pool lock is held only for lookup/spawn — the OCR call runs unlocked, so
+    workers for different specs run concurrently."""
     with _pool_lock:
-        worker = _pool.get(tier)
+        worker = _pool.get(spec)
         if worker is None or not worker.alive():
-            worker = PaddleWorker(tier)
-            _pool[tier] = worker
-    return worker.ocr(image)
+            worker = PaddleWorker(spec)
+            _pool[spec] = worker
+        return worker
+
+
+def worker_ocr(tier: str, image: Image.Image) -> OcrResult:
+    """OCR one image through the worker for a bare paddle `tier` -> OcrResult
+    (the strip path). A death mid-call surfaces from ocr()."""
+    return _worker_for(tier).ocr(image)
+
+
+def worker_page(spec: str, image: Image.Image) -> OcrPage:
+    """OCR one image through the worker for `spec` -> OcrPage. `spec` is
+    "structure" (PP-StructureV3) or "page:<tier>" (paddle line-only)."""
+    return _worker_for(spec).ocr(image)
 
 
 @atexit.register

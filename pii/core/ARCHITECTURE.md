@@ -560,6 +560,68 @@ stdio protocol. Design decisions and their rationale:
   inference. `worker_ocr` replaces a worker that died between documents (fresh attempt) while
   a mid-call death still raises.
 
+### OCR perception layer: OcrPage / linearization / PP-StructureV3 (2026-07-24)
+
+A ground-up rework of the OCR *output* into a strongly-typed, engine-neutral **perception
+hierarchy**, plus a layout-aware PP-StructureV3 backend and a diagnostics command. Motivated by
+rethinking the PII problem more abstractly: the flat `OcrResult` (assembled text + word list) is
+fine for the current strip path but too thin to reason about grouping. The strip pipeline still
+runs on `OcrResult`/`assemble` — this layer is built *alongside* it and drives the new
+diagnostics; migrating strip onto it is a recorded TODO.
+
+- **The hierarchy (`ocr_page.py`).** `OcrPage` → `OcrBlock` → `OcrLine` → `OcrWord`, plus an
+  `OcrFrame` (raster size, dpi, source, page, backend/tier). This is the standard OCR document
+  hierarchy every serious engine speaks (page → block → line → word), so any backend normalizes
+  into it — not a paddle-specific shape. `OcrBlock` carries `kind` (text/title/table/footer/…)
+  and `origin` (`detected`|`synthetic`). Perception holds geometry only — **no character
+  offsets** (see linearization).
+- **Block is mandatory; a line is never dropped.** Every `OcrLine.block_id` resolves (`block_id`
+  is *total*): a layout-less backend synthesizes one block per line (`origin="synthetic"`), a
+  layout backend fills real typed blocks (`origin="detected"`), and a line a layout model leaves
+  unassigned becomes its own synthetic block. A page is thus reachable transitively from any
+  line, and — the load-bearing reason — **a dropped OCR line is unredacted PII**, so orphans are
+  bucketed, never discarded. `region_box` stays *per-word* (a visual row can merge several
+  detection regions, each with its own line box — the paint geometry depends on it).
+- **Linearization is a separate layer (`linearization.py`).** The recognizer runs on one flat
+  string; `linearize(OcrPage) -> RecognizerInput` produces it plus a **source map** (each char
+  range → the OCR geometry it came from). Character offsets are born *here*, per linearization —
+  an offset is a property of the (page, assembly) pair, not of a line, because we intend to try
+  several assemblies (combine lines differently; feed the recognizer per block). The
+  anti-silent-leak rule (record `(start, end, box)` at construction, never re-derive from
+  lengths — the presidio-image-redactor leak class) moves down intact: it now lives on the
+  source map. `linearize` v1 reproduces the historical `assemble` byte-for-byte; smarter trial
+  linearizations grow behind the seam without touching perception or painting.
+- **`get_ocr_page(backend)` — wheel-selected transport, one implementation.** Mirrors `get_ocr`:
+  worker subprocess on the GPU wheel, in-process on the CPU wheel. The debug command and the
+  eventual strip migration both go through it, so there is *no debug-only OCR path* and the
+  diagnostics exercise exactly the transport release will use. The worker (`ocr_worker.py`) was
+  generalized to a **spec dispatch** — a bare tier still returns `OcrResult` (the untouched
+  strip path), `page:<tier>` returns a line-only `OcrPage`, `structure` returns a PP-Structure
+  `OcrPage` — over the same framed stdio protocol.
+- **PP-StructureV3 backend (`ocr_ppstructure.py`).** Lean config: layout detection + reading
+  order + OCR only (table/formula/seal/chart/orientation all off — financial-doc PII needs
+  text + boxes, not cell structure), OCR sub-models pinned to `PP-OCRv6_medium`. Blocks come
+  from `parsing_res_list` (typed `label`, `bbox`, `order_index`); lines from `overall_ocr_res`.
+  PP-Structure exposes **no line→block linkage** (measured: `child_blocks` is empty for text
+  blocks — a block gives only its concatenated content, bbox and a `num_of_lines` count), so the
+  linkage is reconstructed by **geometric containment** of each line box in a block box,
+  cross-checked against `num_of_lines`. Operational: needs the `paddlex[ocr]` extras, and
+  `_stub_torch` now presents `torch.Tensor` as a real class because scipy (pulled in by
+  `paddlex[ocr]`) probes `issubclass(x, torch.Tensor)`. Models land under `models/paddlex`
+  (`PP-DocLayout_plus-L`, `PP-DocBlockLayout`). Full install/adoption record in DONE.md.
+- **Diagnostics (`ocr_debug.py`, `pii debug ocr`).** Renderers over an `OcrPage`: round-trippable
+  JSON, a human text summary, and an annotated **overlay** raster (lines + blocks + reading
+  order; detected blocks blue, synthetic amber-tagged). Drawing reuses the shared toolkit —
+  `Segment`/`paint_segments`/fill/frame were extracted from `image_mode` into `pii.core.paint`
+  (2026-07-24) so the OCR-only debug path doesn't drag in the analysis stack (`image_mode`
+  imports the pipeline); `image_mode` re-exports the names, strip/eval untouched. PDFs process
+  **all pages** by default; an `overlay` to a `.pdf` reconstructs a fresh image-only PDF via
+  `pdf_mode.rebuild_pdf` — strip's reassembly discipline (nothing structural survives), but *not*
+  redacted (original text + boxes), a near-PII local artifact. OCR-only, so a debug run stays
+  light and torch-free. On a line-only page every block is synthetic, so the overlay draws the
+  `_rows()` grouping — the intended lens for judging the open **per-block recognizer feeding**
+  question (TODO).
+
 ### Tesseract retired (2026-07-17)
 
 Tesseract was the first OCR backend; the round-1 fidelity bake-off retired it (Sergei's

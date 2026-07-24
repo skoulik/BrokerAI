@@ -62,6 +62,7 @@ from pii.core.ocr import (
     _union,
     assemble,
 )
+from pii.core.ocr_page import OcrFrame, OcrPage, build_page
 
 CACHE_DIR = "models/paddlex"
 # Two tiers from the bake-off (Sergei, 2026-07-17): v5's top tier is
@@ -131,6 +132,12 @@ def _stub_torch() -> None:
     stub.__pii_stub__ = True
     stub.__version__ = "2.0.0+pii.stub"
     stub.__path__ = []
+    # scipy/sklearn (pulled in by paddlex[ocr] for PP-StructureV3) probe
+    # `issubclass(x, torch.Tensor)`; the __getattr__ sink returns an
+    # _Anything instance, not a class -> TypeError. Present Tensor as a real
+    # empty class so the check cleanly returns False (no tensors live in a
+    # torch-stubbed process). Verified 2026-07-24.
+    stub.Tensor = type("Tensor", (), {})
     dist = _sub("torch.distributed")
     dist.is_available = lambda: False
     dist.is_initialized = lambda: False
@@ -201,24 +208,44 @@ def make_paddle_ocr(tier: str = DEFAULT_TIER):
     return partial(ocr_image_paddle, tier=tier)
 
 
-def ocr_image_paddle(
-    image: Image.Image, lang: str = "eng", tier: str = DEFAULT_TIER
-) -> OcrResult:
-    """OCR a PIL image with PaddleOCR into an OcrResult.
+def _predict(image: Image.Image, tier: str) -> dict:
+    """Run the engine on one image; return the raw PaddleOCR page dict.
 
-    `lang` is accepted for call-site parity with the OCR seam signature
-    and ignored: PaddleOCR selects languages via its model choice, and
-    the pinned models cover Latin text.
-    """
+    `lang` is not a parameter: PaddleOCR selects languages via its model
+    choice, and the pinned models cover Latin text — callers accept `lang`
+    only for OCR-seam signature parity and ignore it."""
     import numpy as np
 
     bgr = np.asarray(image.convert("RGB"))[:, :, ::-1]
-    results = _engine(tier).predict(bgr, return_word_box=True)
-    return result_to_ocr(dict(results[0]))
+    return dict(_engine(tier).predict(bgr, return_word_box=True)[0])
 
 
-def result_to_ocr(result: dict) -> OcrResult:
-    """Pure conversion of one PaddleOCR page result into OcrResult."""
+def ocr_image_paddle(
+    image: Image.Image, lang: str = "eng", tier: str = DEFAULT_TIER
+) -> OcrResult:
+    """OCR a PIL image with PaddleOCR into an OcrResult (retiring path)."""
+    return result_to_ocr(_predict(image, tier))
+
+
+def ocr_page_paddle(
+    image: Image.Image, lang: str = "eng", tier: str = DEFAULT_TIER
+) -> OcrPage:
+    """OCR a PIL image with PaddleOCR into an OcrPage — line-only perception
+    (one synthetic block per line). Same engine call as ocr_image_paddle;
+    the frame records the raster size and which model produced it."""
+    frame = OcrFrame(
+        width=image.width, height=image.height, page=1,
+        backend="paddle", tier=tier,
+    )
+    return result_to_page(_predict(image, tier), frame)
+
+
+def _result_to_rows(result: dict):
+    """Shared paddle-result -> assembled visual rows: the region extraction
+    and y-center banding. Both result_to_ocr (-> OcrResult, retiring) and
+    result_to_page (-> OcrPage) consume it, so the line/word normalization
+    lives in exactly one place. Each word carries its region (line) box: the
+    fragment boxes are inset from the glyphs, so painting grows out to it."""
     texts = result.get("rec_texts") or []
     scores = result.get("rec_scores") or []
     boxes = result.get("rec_boxes")
@@ -240,12 +267,21 @@ def result_to_ocr(result: dict) -> OcrResult:
             else None
         )
         words = _region_words(text, line_box, frags)
-        # Carry the region (line) box alongside each word: the fragment
-        # boxes are inset from the glyphs, so painting grows out to it
-        # (OcrWord.region_box / OcrResult.painted_boxes_for_span).
         regions.append((line_box, [(w, b, conf, line_box) for w, b in words]))
 
-    return assemble(_rows(regions))
+    return _rows(regions)
+
+
+def result_to_ocr(result: dict) -> OcrResult:
+    """Pure conversion of one PaddleOCR page result into OcrResult."""
+    return assemble(_result_to_rows(result))
+
+
+def result_to_page(result: dict, frame: OcrFrame) -> OcrPage:
+    """Pure conversion of one PaddleOCR page result into an OcrPage — the
+    line-only perception: one synthetic block per line (paddle has no layout
+    model). `frame` supplies the raster/provenance the raw result lacks."""
+    return build_page(_result_to_rows(result), frame)
 
 
 def _region_words(text, line_box, frags):

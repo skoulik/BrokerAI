@@ -14,6 +14,7 @@ Three subcommands (`pii/cli/__init__.py`, `main()`):
 | `strip` | Replace PII with placeholders; extends the pseudonym map. Modes: text (default), `--csv` (per-cell), `--image` (OCR → paint), `--pdf` (render → OCR → paint → reassemble). |
 | `analyze` | Report detections on stdout, change nothing. |
 | `rehydrate` | Restore original values in a cloud answer from the map (`--map` required). |
+| `debug ocr` | OCR one page and dump the perceived `OcrPage` — blocks, lines, reading order — as `--format` json/text/overlay. Diagnostics only, no detection. |
 
 `strip`/`analyze` accept `-` for stdin; `strip` writes stdout or `-o FILE`. Flags cover
 threshold, `--strip-orgs`, `--report`, CSV column selection, `--dpi` (PDF render
@@ -63,3 +64,9 @@ not imported from here — `cli` and `gui` never depend on each other.
 - **PDF mode reporting.** `--report` prefixes each detection with its page (`p3`), and a
   `page N/M ...` heartbeat goes to stderr — OCR + NER make multi-page documents slow enough
   to want one.
+- **`debug` is a diagnostics namespace (2026-07-24).** `debug ocr` calls `get_ocr_page` and the
+  `pii.core.ocr_debug` renderers (json/text/overlay) — the CLI only parses args, loads the page
+  (`_load_debug_page`: PDF page render or image), and picks the renderer; all OcrPage logic
+  lives in core, so a future GUI reuses it. `--format overlay` requires `-o`, guarded before the
+  engine loads. Room for further `debug <what>` dumps later. Engine design in
+  [../core/ARCHITECTURE.md](../core/ARCHITECTURE.md) "OCR perception layer".
