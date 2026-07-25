@@ -12,6 +12,28 @@ done — see DONE.md and reports/; round 2 evaluated and retired Surya 2 same-da
 dropped unevaluated): demo on the reference documents → degradation tier → one-pass VLM
 experiment (future session; owns the next engine-shaped decision).
 
+## Session plan — set by Sergei 2026-07-25, in this order
+
+After eyeballing the whole sensitive corpus on the new `doclayout:v3` default ("almost there
+in terms of layout understanding"). Each step below has a fuller entry further down; this is
+the running order, and it is deliberately layout-first-then-back-to-e2e:
+
+1. **Root-cause the remaining orphans.** ~20 orphan lines corpus-wide, and a few look
+   suspicious on inspection. Understand *why* each one falls outside every detected block
+   before touching anything — the answer decides whether the fix is a detection knob, the
+   orphan-clustering item below, or nothing at all.
+2. **Back to e2e: teach the GLiNER feeder about blocks — feed lines per block.** Promotes
+   "Confirm per-block recognizer feeding" from a question to the work: the recognizer input
+   becomes a block's lines rather than one page-wide string. This is the payoff the whole
+   perception layer was built for.
+3. **Multiple trial linearizations with overlaps.** Several assemblies of the same page,
+   windows overlapping so an entity split across a boundary is caught by at least one trial —
+   the reason offsets live per-linearization in the source map, never on perception.
+4. **Table structure and other heuristics.** Cell/row/column structure for the 45 detected
+   `table` blocks (`TableCellsDetection` first — non-generative geometry — with SLANeXt
+   structure only if logical spans/headers turn out to be needed), plus the remaining
+   statement-row heuristics.
+
 ## Next up — image/PDF path
 
 - [ ] Belt-and-braces text-layer scan (*decide later*, split out of the PDF mode task when it
@@ -129,11 +151,34 @@ The OcrPage / linearization / PP-StructureV3 backend / `debug ocr` layer shipped
 DONE.md; design in ARCHITECTURE.md "OCR perception layer"); it runs alongside the untouched
 `OcrResult` strip path. Open follow-ups:
 
-- [ ] **Confirm per-block recognizer feeding** (Sergei's leading hypothesis, 2026-07-24): feed
-      the recognizer each block's lines rather than one page-wide string. Use the `debug ocr`
-      overlay to judge block quality on real docs first, then run an experiment vs today's
-      whole-page assembly on the leak gate. This is the open linearization question — don't
-      over-invest in concatenation/merging until it's decided.
+- [ ] **Root-cause the remaining orphan lines** (Sergei, 2026-07-25 — step 1 of the session
+      plan; he eyeballed the whole sensitive corpus on `doclayout:v3` and some orphans "look
+      suspicious"): 20 orphan lines survive corpus-wide (down from 117 under `ppstructure`).
+      An orphan means PP-DocLayoutV3 emitted no block covering that line — `_assign` already
+      falls back to largest-overlap, so it is never a linkage bug. Per-page counts from the
+      bake-off: d02.p5 6, d11.p4 4, d02.p4 3, d03.p1 2, d09.p2 2, then singles on d02.p2,
+      d03.p2, d10.p1. Classify each before fixing: page furniture the model deliberately
+      ignores vs a real detection miss vs a line whose box straddles two blocks. Candidate
+      fixes, in increasing order of commitment — the orphan-clustering item below (adapter-side,
+      no model change), a threshold nudge (0.2 halves orphans to 2 corpus-wide but merges
+      blocks larger — sweep in reports/2026-07-25-layout-bakeoff-doclayoutv3.md), or nothing if
+      they are all furniture. Note orphans are *not* a leak by themselves (every line still
+      reaches the recognizer in its own synthetic block) — they are a structure-quality signal,
+      and they matter more once feeding is per-block (step 2), because an orphan then becomes a
+      one-line context-free window.
+- [ ] **Per-block recognizer feeding** (Sergei's hypothesis 2026-07-24; **promoted to the work
+      itself 2026-07-25, step 2 of the session plan** — block quality was the precondition and
+      `doclayout:v3` cleared it): feed the recognizer each block's lines rather than one
+      page-wide string, i.e. teach the GLiNER feeder which block its text came from. Score it
+      against today's whole-page assembly on the leak gate. Interacts with step 3 (overlapping
+      trial linearizations) — a block boundary is just another boundary an entity can straddle,
+      so the two are one design: which units get fed, and how they overlap.
+    - [ ] **Multiple trial linearizations with overlaps** (Sergei, 2026-07-25 — step 3): run
+          several assemblies of the same page and union the findings, with the windows
+          overlapping so an entity broken by one trial's boundary is intact in another. This is
+          what the source map was designed for (offsets per linearization, never on
+          perception); relates to the existing GLiNER2 cell-isolation windows and
+          person-fragment coalescing, which are the same problem at a smaller scale.
 - [ ] **Migrate the strip pipeline onto `OcrPage`/`RecognizerInput`** and retire
       `OcrResult`/`assemble`: `strip_from_ocr` / `image_mode` / `pdf_mode` move to
       `get_ocr_page` + `linearize`; the worker's strip path switches to the
@@ -155,6 +200,28 @@ DONE.md; design in ARCHITECTURE.md "OCR perception layer"); it runs alongside th
       mid-run) — within-table line ordering may need work if per-block feeding relies on it.
       Re-check on V3's blocks, whose table boxes are larger (the BSB/account label-value panel
       is now one `table` block, so the interleaving question applies to it too).
+
+      **Model inventory for internal table structure** (researched 2026-07-25, nothing built —
+      step 4 of the session plan). PP-DocLayoutV3 itself gives none of this: its 25 classes
+      include exactly one table-related label (`table`), no cell/row/column/header. paddlex
+      ships it as three separate models, all reachable standalone the way `LayoutDetection` is:
+      `TableClassification` (`PP-LCNet_x1_0_table_cls`, wired vs wireless router),
+      **`TableCellsDetection`** (`RT-DETR-L_wired_table_cell_det` / `…_wireless_…`) → per-cell
+      BOXES, non-generative — the one to try first, since cell geometry alone gives
+      line→(row, column) by the same containment discipline we already own; and
+      `TableStructureRecognition` (`SLANet`, `SLANet_plus`, `SLANeXt_wired`, `SLANeXt_wireless`)
+      → an HTML token sequence with `<thead>`/`colspan`/`rowspan` plus per-token boxes, i.e.
+      logical spans and header/body, but *generated* (hallucination/truncation risk on the long
+      many-row tables statements are full of, and its training distribution is scientific
+      tables). `TableRecognitionPipelineV2` orchestrates all three and exposes `cell_box_list`,
+      `pred_html`, `table_ocr_pred` (OCR split per cell) and `split_ocr_bboxes_by_table_cells`
+      (splits a line box spanning ≥k cells — exactly the statement-row operation). **Consume it
+      ourselves, not via PP-Structure**: the 2026-07-25 finding that table recognition "would
+      not change blocks" was about switching it on *inside* PP-StructureV3, which only writes
+      `block.content = pred_html` (never read by our adapter) and blinds the `num_of_lines`
+      cross-check. Open design question it forces: cells need a level between block and line
+      (or a parent/child relation on `OcrBlock`) — a perception-hierarchy change, and per-block
+      feeding then becomes per-*cell* feeding.
 - [ ] **Decide the layout `text` threshold** — *moot on the default path since 2026-07-25*,
       kept for the `ppstructure` backend only. PaddleX's shipped per-class cut drops
       label/value header panels whole, so their lines arrive as one-line synthetic blocks —
