@@ -1006,6 +1006,65 @@ the move; new completed tasks append to the matching section with their records.
       fast suite 241 green (was 216). Strip migration onto `OcrPage` / `RecognizerInput` and the
       per-block feeding experiment are in TODO.)*
 
+- [x] Root-cause orphaned OCR lines under PP-StructureV3 *(2026-07-25: investigation only — the
+      knob was found, measured and deliberately **not** adopted; `_layout_thresholds` in
+      `ocr_ppstructure.py` is the documented seam, overriding nothing. Trigger: the whole
+      right-hand summary panel of a real Bank of Melbourne statement
+      (`AmplifyBusiness-…-24Sep2023.pdf` p1) arrived as 22 one-line synthetic blocks.
+
+      **Not our linkage.** `_assign` already falls back from centre-containment to
+      largest-overlap, so an orphan means the line overlaps *no* block at all: PP-DocLayout
+      emitted nothing over that panel. Re-running detection at a low cut showed it had, in
+      fact, seen it — `text` 0.383 (top group), `text` 0.336 (shaded group), `table` 0.334
+      (panel only), `table` 0.394 (whole header band) — all discarded.
+
+      **The cut is per-CLASS, not the flat 0.5 the float knob implies.**
+      `paddlex/configs/pipelines/PP-StructureV3.yaml` ships
+      `threshold: {paragraph_title: 0.3, text: 0.4, seal: 0.45, rest: 0.5}` plus
+      `layout_nms: True`, `layout_unclip_ratio: [1.0, 1.0]` and a per-class
+      `layout_merge_bboxes_mode`. That dict predicts every survivor and casualty on the page
+      (`text` 0.408/0.433/0.495 kept, `text` 0.383 dropped by 0.017, `table` 0.404 and 0.394
+      dropped, `footer` 0.443 dropped) — confirmed in effect. Nothing rescales the score:
+      `nms()` only drops boxes, so the low confidence is the model's own opinion, plausibly
+      because `PP-DocLayout_plus-L` resizes every page to 800×800 with `keep_ratio: false`
+      (a 1653×2337 page is squeezed ×0.48 wide but ×0.34 tall, so 25px key/value rows land at
+      ~8px). Raising render DPI therefore cannot help.
+
+      **Head-to-head, 31 pages of `sensitive/statements/`** (orphan lines / detected blocks —
+      block count is the coarsening guard): shipped **59 / 393**; `text` 0.33 **19 / 398**;
+      `text` 0.30 17 / 394; `text` 0.33 + `table` 0.40 18 / 388. Relaxing `text` alone removes
+      68% of orphans while block count goes *up* — no page loses half its blocks. The flat
+      float is the trap: it replaces all 20 classes at once (lowering `table` while *raising*
+      `paragraph_title` from 0.3), which is why a flat sweep reads non-monotonically —
+      0.5→0.35→0.3 gave 24→27→12 blocks on p1, the 12 being a band-wide `table` swallowing the
+      address block and the whole payment slip merged into one 33-line `table`. Merge modes
+      and `layout_unclip_ratio` move nothing on their own (unclip 1.5/2.0 left 19/18 orphans);
+      `layout_merge_bboxes_mode` is however *non-monotone* — admitting a box can delete an
+      existing one — and `thr 0.3 + "small"` recovers the tight panel-only `table` (16 lines)
+      instead of the band. With `text` 0.33 the panel becomes two ordinary `text` blocks and
+      p1 orphans go 22 → 2 (`MR SERGEI KULIK`, a footer code), verified end-to-end through
+      `pii debug ocr`.
+
+      **Upstream (checked 2026-07-25, paddlex 3.7.2 = latest, paddleocr 3.7.0):**
+      `PP-StructureV3.yaml` on `develop` is identical to ours, and the linkage code is
+      unchanged — OCR→layout conversion is still guarded by `if len(layout_det_res["boxes"])
+      == 0`, so there is still **no per-line orphan rescue** upstream (the nearby loop is the
+      reverse case: a *block* with no matched OCR gets cropped and re-recognized). Our
+      synthetic-block net stays load-bearing. Correction to the 2026-07-24 note above:
+      `child_blocks` is not unused — it is populated by
+      `update_{doc_title,paragraph_title,vision,region}_child_blocks` for title↔body and
+      region grouping, never line↔block, and `get_child_blocks()` *clears* the list when read.
+      Geometric containment remains the only route to line→block.
+
+      **Table structure recognition would not change blocks** (asked 2026-07-25): the table
+      pipeline is called with `use_layout_detection=False` and is handed `layout_det_res`
+      (`pipeline_v2.py`), blocks are still built one-per-detection, and it receives a
+      `deepcopy` of `overall_ocr_res`, so neither our blocks nor our lines move. Its only
+      effect is `block.content = pred_html` for `table` blocks — which our adapter never reads
+      — and it *skips* `update_text_content`, leaving `num_of_lines` at its `__init__` default
+      of 1 and thus blinding our containment cross-check on exactly those blocks. Four extra
+      models for a net negative; stays off.)*
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

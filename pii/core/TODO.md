@@ -125,6 +125,15 @@ DONE.md; design in ARCHITECTURE.md "OCR perception layer"); it runs alongside th
       on the real ANZ statement (2026-07-24): the balance-summary `table` block was detected
       cleanly, but its lines interleave label/value in reading order (a stray `$0.00` mid-run)
       — within-table line ordering may need work if per-block feeding relies on it.
+- [ ] **Decide the layout `text` threshold** (root-caused 2026-07-25, not adopted): PaddleX's
+      shipped per-class cut drops label/value header panels whole, so their lines arrive as
+      one-line synthetic blocks — 59 orphan lines over the 31-page real corpus, 22 on one
+      statement page. `_layout_thresholds({"text": 0.33})` cuts that to 19 while *raising* the
+      block count (393 → 398), and turns the panel into two ordinary `text` blocks. Held back
+      because per-block feeding decides how much block quality is worth; revisit with that
+      experiment (a one-line change, full record in DONE.md). Residual orphans need the
+      adapter side: cluster adjacent orphan lines into one synthetic block and insert them in
+      reading order by geometry, rather than one-per-line appended after every detected block.
 - [ ] **CPU-wheel PP-Structure**: `_structure_engine` sets `device="cpu"` off the GPU wheel but
       is untested there; check the paddle 3.3.x oneDNN PIR-executor crash (the `enable_mkldnn`
       lever plain PaddleOCR needs) doesn't bite PP-Structure.

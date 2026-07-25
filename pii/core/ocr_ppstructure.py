@@ -143,13 +143,99 @@ def ppstructure_result_to_page(result: dict, frame: OcrFrame) -> OcrPage:
 # get_ocr_page picks worker vs in-process by wheel.
 # --------------------------------------------------------------------------
 
+def _paddlex_pipeline_config() -> dict | None:
+    """PaddleX's shipped PP-StructureV3 pipeline config as a plain dict.
+
+    Located with `find_spec` and read as data — deliberately NOT via `import
+    paddlex`, so this stays callable from the torch-free half of the process."""
+    import importlib.util
+    from pathlib import Path
+
+    import yaml
+
+    spec = importlib.util.find_spec("paddlex")
+    locations = list(getattr(spec, "submodule_search_locations", None) or [])
+    if not locations:
+        return None
+    path = Path(locations[0]) / "configs" / "pipelines" / "PP-StructureV3.yaml"
+    if not path.is_file():
+        return None
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _layout_labels(model_name: str) -> list | None:
+    """The layout model's ordered class list, from its cached inference.yml."""
+    from pathlib import Path
+
+    import yaml
+
+    from pii.core.ocr_paddle import CACHE_DIR
+
+    path = Path(CACHE_DIR) / "official_models" / model_name / "inference.yml"
+    if not path.is_file():
+        return None
+    with open(path, encoding="utf-8") as f:
+        return (yaml.safe_load(f) or {}).get("label_list")
+
+
+def _layout_thresholds(overrides: dict | None = None) -> dict | None:
+    """PaddleX's shipped per-class layout thresholds with `overrides` applied
+    — keyed by LABEL name, e.g. `{"text": 0.33}`. None means "leave the shipped
+    config alone", which is what an empty `overrides` yields.
+
+    **We currently override nothing.** This is the seam for tuning layout
+    recall, not a tuning: to relax a class, pass it from `_structure_engine`,
+
+        PPStructureV3(..., layout_threshold=_layout_thresholds({"text": 0.33}))
+
+    and nothing else changes. Why you might want to: PaddleX ships a PER-CLASS
+    threshold dict (text 0.4, table 0.5, paragraph_title 0.3, seal 0.45, rest
+    0.5) — NOT the flat 0.5 the API's float knob implies. Label/value header
+    panels on real statements score just under the `text` cut, so the panel is
+    detected as nothing and every line in it arrives orphaned. Measurements and
+    the alternatives (flat float, table class, merge modes) are in DONE.md.
+
+    Three rules make the result safe to hand back to paddlex:
+
+    - **Prefer this over the float knob.** Passing `layout_threshold` as a
+      float REPLACES the whole per-class dict — it would silently raise
+      `paragraph_title` from 0.3 to the float as well as lowering what you meant
+      to lower. A dict keeps every other class untouched.
+    - **The dict must be COMPLETE.** paddlex resolves a class as
+      `threshold.get(cat_id, 0.5)`, so a partial dict silently resets every
+      unlisted class to 0.5. We therefore start from the shipped dict and edit
+      only the named entries.
+    - **Class indices are resolved from the model's own `label_list`**, never
+      hardcoded, so a reordered label list on a paddlex upgrade cannot retarget
+      an override onto some other class.
+
+    Anything missing (config, model dir, an unknown label) returns None rather
+    than guessing: shipped behaviour, orphans and all, beats silently
+    thresholding the wrong class. A None is skipped by paddleocr's config merge
+    (`_pipelines/utils.py`), so it genuinely means "leave it alone"."""
+    if not overrides:
+        return None
+    config = _paddlex_pipeline_config() or {}
+    layout = (config.get("SubModules") or {}).get("LayoutDetection") or {}
+    shipped, model_name = layout.get("threshold"), layout.get("model_name")
+    if not isinstance(shipped, dict) or not model_name:
+        return None
+    labels = _layout_labels(model_name) or []
+    if not all(label in labels for label in overrides):
+        return None
+    return {**shipped,
+            **{labels.index(label): value for label, value in overrides.items()}}
+
 
 @lru_cache(maxsize=None)
 def _structure_engine():
     """Construct a lean PPStructureV3: layout detection + reading order + OCR
     only (table/formula/seal/chart/orientation all off — financial-doc PII
     needs text+boxes, not cell structure). OCR sub-models pinned to the paddle
-    default tier so they reuse the already-cached OCR models.
+    default tier so they reuse the already-cached OCR models. Layout thresholds
+    are PaddleX's shipped per-class defaults — `_layout_thresholds` documents
+    the seam for relaxing one, and why the float knob is the wrong way in.
 
     Mirrors ocr_paddle._engine's wheel/DLL dance: on the GPU wheel paddle's
     DLLs load first, then a torch stub (with the Tensor shim) so paddlex,
@@ -188,6 +274,7 @@ def _structure_engine():
     det_model, rec_model = MODEL_TIERS[DEFAULT_TIER]
     return PPStructureV3(
         device=device,
+        layout_threshold=_layout_thresholds(),
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,

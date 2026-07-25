@@ -605,7 +605,13 @@ diagnostics; migrating strip onto it is a recorded TODO.
   PP-Structure exposes **no line→block linkage** (measured: `child_blocks` is empty for text
   blocks — a block gives only its concatenated content, bbox and a `num_of_lines` count), so the
   linkage is reconstructed by **geometric containment** of each line box in a block box,
-  cross-checked against `num_of_lines`. Operational: needs the `paddlex[ocr]` extras, and
+  cross-checked against `num_of_lines`. **Layout thresholds are PaddleX's shipped per-class
+  dict** (`text` 0.4, `table` 0.5, `paragraph_title` 0.3, rest 0.5 — not the flat 0.5 the API's
+  float knob implies; passing a float replaces all 20 classes at once). We override nothing:
+  `_layout_thresholds(overrides)` is the seam, keyed by label name and resolved through the
+  model's own `label_list`. Relaxing `text` to ~0.33 is the measured cure for orphaned
+  label/value header panels (2026-07-25, numbers and trade-offs in DONE.md) — deliberately not
+  adopted pending the linearization rework. Operational: needs the `paddlex[ocr]` extras, and
   `_stub_torch` now presents `torch.Tensor` as a real class because scipy (pulled in by
   `paddlex[ocr]`) probes `issubclass(x, torch.Tensor)`. Models land under `models/paddlex`
   (`PP-DocLayout_plus-L`, `PP-DocBlockLayout`). Full install/adoption record in DONE.md.

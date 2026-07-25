@@ -8,6 +8,7 @@ fragments (has_text_word was False)."""
 
 from collections import Counter
 
+from pii.core import ocr_ppstructure
 from pii.core.linearization import linearize
 from pii.core.ocr_page import OcrFrame
 from pii.core.ocr_ppstructure import ppstructure_result_to_page
@@ -125,3 +126,74 @@ def test_orphan_line_gets_own_synthetic_block():
 def test_empty_result():
     page = ppstructure_result_to_page({}, _FRAME)
     assert page.lines == () and page.blocks == ()
+
+
+# --- layout threshold resolution (model-free; paddle never constructed) ------
+
+_SHIPPED = {0: 0.3, 1: 0.5, 2: 0.4, 7: 0.3, 8: 0.5}
+_LABELS = ["paragraph_title", "image", "text", "number", "abstract",
+           "content", "figure_title", "formula", "table"]
+
+
+def _patch(monkeypatch, config, labels):
+    monkeypatch.setattr(ocr_ppstructure, "_paddlex_pipeline_config",
+                        lambda: config)
+    monkeypatch.setattr(ocr_ppstructure, "_layout_labels", lambda name: labels)
+
+
+def _config(threshold=_SHIPPED, model_name="PP-DocLayout_plus-L"):
+    return {"SubModules": {"LayoutDetection": {
+        "threshold": threshold, "model_name": model_name}}}
+
+
+def test_no_override_by_default(monkeypatch):
+    # We ship PaddleX's own thresholds. None is what paddleocr's config merge
+    # skips, so it genuinely means "leave the shipped config alone".
+    _patch(monkeypatch, _config(), _LABELS)
+    assert ocr_ppstructure._layout_thresholds() is None
+    assert ocr_ppstructure._layout_thresholds({}) is None
+
+
+def test_override_moves_only_the_named_class(monkeypatch):
+    _patch(monkeypatch, _config(), _LABELS)
+    thresholds = ocr_ppstructure._layout_thresholds({"text": 0.33})
+    assert thresholds[2] == 0.33  # `text` is class 2 in this label list
+    assert {k: v for k, v in thresholds.items() if k != 2} == {
+        k: v for k, v in _SHIPPED.items() if k != 2
+    }
+
+
+def test_override_keeps_every_shipped_class(monkeypatch):
+    # The dict must be COMPLETE: paddlex does threshold.get(cat_id, 0.5), so a
+    # dropped key silently re-raises that class to 0.5 (paragraph_title's 0.3
+    # is the one that would regress).
+    _patch(monkeypatch, _config(), _LABELS)
+    thresholds = ocr_ppstructure._layout_thresholds({"text": 0.33})
+    assert set(thresholds) == set(_SHIPPED)
+    assert thresholds[0] == 0.3
+
+
+def test_override_follows_relabelled_model(monkeypatch):
+    # A paddlex upgrade that reorders label_list must not retarget an override
+    # at another class.
+    _patch(monkeypatch, _config(), ["text", "image", "paragraph_title"])
+    assert ocr_ppstructure._layout_thresholds({"text": 0.33})[0] == 0.33
+
+
+def test_override_multiple_classes(monkeypatch):
+    _patch(monkeypatch, _config(), _LABELS)
+    thresholds = ocr_ppstructure._layout_thresholds({"text": 0.33,
+                                                     "table": 0.4})
+    assert (thresholds[2], thresholds[8]) == (0.33, 0.4)
+
+
+def test_override_none_when_unresolvable(monkeypatch):
+    # Never guess a class index — fall back to shipped behaviour instead.
+    _patch(monkeypatch, _config(), ["image", "table"])  # no `text` label
+    assert ocr_ppstructure._layout_thresholds({"text": 0.33}) is None
+    _patch(monkeypatch, _config(), None)  # model dir missing
+    assert ocr_ppstructure._layout_thresholds({"text": 0.33}) is None
+    _patch(monkeypatch, _config(threshold=None), _LABELS)  # flat/absent config
+    assert ocr_ppstructure._layout_thresholds({"text": 0.33}) is None
+    _patch(monkeypatch, {}, _LABELS)  # config not found at all
+    assert ocr_ppstructure._layout_thresholds({"text": 0.33}) is None
