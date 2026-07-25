@@ -46,28 +46,51 @@ def get_ocr(backend: str = "paddle"):
     raise ValueError(f"unknown OCR backend: {backend!r}")
 
 
-# Backends producing the OcrPage perception (get_ocr_page): "ppstructure"
-# (PP-StructureV3, typed blocks + reading order) and the paddle line-only
-# tiers (synthetic per-line blocks).
+# Backends producing the OcrPage perception (get_ocr_page): two layout-aware
+# ones — "doclayout:v3" (standalone PP-DocLayoutV3 + a direct PaddleOCR call,
+# the DEFAULT since the 2026-07-25 bake-off: 2x the table blocks and ~6x fewer
+# orphaned lines than the alternative) and "ppstructure" (the PP-StructureV3
+# pipeline, layout submodule PP-DocLayout_plus-L) — plus the paddle line-only
+# tiers (synthetic per-line blocks). Lines come from the same pinned PP-OCR
+# tier in all three, so the choice moves blocks and reading order, never
+# characters.
 OCR_PAGE_BACKENDS = (
-    "ppstructure", "paddle", "paddle:v5_server", "paddle:v6_medium",
+    "doclayout", "doclayout:v3", "ppstructure",
+    "paddle", "paddle:v5_server", "paddle:v6_medium",
 )
 
 
-def get_ocr_page(backend: str = "ppstructure"):
+def get_ocr_page(backend: str = "doclayout:v3"):
     """Resolve a backend to an `(image, lang=...) -> OcrPage` callable, worker
-    vs in-process by wheel (mirrors get_ocr). "ppstructure" -> PP-StructureV3
-    (typed blocks + reading order); the "paddle" family -> line-only
-    perception (one synthetic block per line). Imports are deferred so the
-    engine loads only when used."""
-    family = backend.split(":", 1)[0]
-    if family not in ("paddle", "ppstructure"):
+    vs in-process by wheel (mirrors get_ocr). "doclayout[:<model>]" (default)
+    -> PP-DocLayoutV3 blocks + model-predicted reading order; "ppstructure" ->
+    PP-StructureV3 (typed blocks + pipeline reading order); the "paddle" family
+    -> line-only perception (one synthetic block per line). Imports are
+    deferred so the engine loads only when used."""
+    family, _, selector = backend.partition(":")
+    if family not in ("paddle", "ppstructure", "doclayout"):
         raise ValueError(f"unknown OCR page backend: {backend!r}")
     from pii.core.ocr_paddle import DEFAULT_TIER, MODEL_TIERS, _gpu_wheel
 
-    tier = backend.partition(":")[2] or DEFAULT_TIER
-    if family == "paddle" and tier not in MODEL_TIERS:
-        raise ValueError(f"unknown paddle model tier: {tier!r}")
+    if family == "paddle" and (selector or DEFAULT_TIER) not in MODEL_TIERS:
+        raise ValueError(f"unknown paddle model tier: {selector!r}")
+    if family == "doclayout":
+        from pii.core.ocr_doclayout import DEFAULT_LAYOUT, LAYOUT_MODELS
+
+        layout = selector or DEFAULT_LAYOUT
+        if layout not in LAYOUT_MODELS:
+            raise ValueError(f"unknown layout model: {layout!r}")
+        if _gpu_wheel():
+            from pii.core.ocr_worker import worker_page
+
+            return lambda image, lang="eng": worker_page(
+                f"doclayout:{layout}", image)
+        from functools import partial
+
+        from pii.core.ocr_doclayout import doclayout_page
+
+        return partial(doclayout_page, layout=layout)
+    tier = selector or DEFAULT_TIER
     if _gpu_wheel():
         from pii.core.ocr_worker import worker_page
 

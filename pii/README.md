@@ -89,7 +89,8 @@ lines, reading order — for inspecting what the OCR/layout stage produced (no P
 painting). `--format json` (round-trippable), `text` (human summary), or `overlay` (annotated
 raster) — the overlay outlines each line, and each block labelled with its reading-order index
 and kind (blue = detected layout block, amber + "synthetic" tag = fabricated). `--ocr-backend
-ppstructure` (default; PP-StructureV3 layout blocks + reading order) or a paddle line-only tier
+doclayout:v3` (default; PP-DocLayoutV3 layout blocks + model-predicted reading order),
+`ppstructure` (PP-StructureV3 blocks + pipeline reading order) or a paddle line-only tier
 (`paddle`, `paddle:v6_medium`, `paddle:v5_server`).
 
 For PDFs, **all pages** are processed by default (`--page N` selects one; `--dpi` sets the

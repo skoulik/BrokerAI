@@ -628,6 +628,65 @@ diagnostics; migrating strip onto it is a recorded TODO.
   `_rows()` grouping — the intended lens for judging the open **per-block recognizer feeding**
   question (TODO).
 
+### Second layout backend: PP-DocLayoutV3 (`doclayout:v3`, 2026-07-25)
+
+A second layout-aware `OcrPage` backend, built to answer one question (Sergei): does a newer
+layout **model** see statement tables better than the one PP-StructureV3 ships with? Full
+numbers in [reports/2026-07-25-layout-bakeoff-doclayoutv3.md](reports/2026-07-25-layout-bakeoff-doclayoutv3.md).
+
+- **The two backends differ only in where blocks come from.** `ppstructure` runs the
+  PP-StructureV3 *pipeline* (layout submodule PP-DocLayout_plus-L, an RT-DETR detector: boxes
+  and labels, reading order computed afterwards by the pipeline's xycut pass). `doclayout:v3`
+  runs **PP-DocLayoutV3 standalone** (`paddleocr.LayoutDetection`) and pairs it with a direct
+  `PaddleOCR` call for lines. V3 is a transformer with a **reading-order head**, so the order
+  is the model's own. Pipeline vs model is the distinction to keep straight: PP-StructureV3 is
+  a pipeline whose layout stage is a model; PP-DocLayoutV3 is that stage, one generation on.
+- **Lines come from the same pinned PP-OCR tier either way**, so switching backends cannot
+  change recognized characters — CER, the leak gate and every fidelity number are held constant
+  by construction, isolating the structure question. (Measured caveat: PP-Structure's internal
+  OCR feed *fragments* a handful of lines — `'Pa'` + `'Page 1 of'` where the direct call reads
+  `'Page 1 of 1'` — so the line sources are near-identical, not identical, and the difference
+  favours the direct call.)
+- **Result: V3 dominates.** Over the 31-page real corpus: table blocks 24 → **45**, orphan
+  lines 117 (6.2%) → **20 (1.1%)**, at 4.5 s/page vs 4.7 (the layout model is ~0.1 s/page;
+  PP-OCR dominates both). The BSB/account label-value panel that motivated the
+  `_layout_thresholds` seam comes back as a `table` block, so that pending threshold decision
+  is moot on this path.
+- **`draw_threshold` is not an operating point — the trap that inverted the first run.**
+  Standalone `LayoutDetection` with no explicit threshold falls back to `draw_threshold: 0.5`
+  from the model's exported `inference.yml`: a *visualization* default stamped into every
+  PaddleDetection export. At 0.5, V3 detects nothing on whole pages (20.4% orphan lines) — it
+  looked worse than plus-L, which PP-StructureV3 hands a tuned per-class dict. Every shipped
+  pipeline overrides the default; `_shipped_knobs` therefore lifts the operating point
+  (`threshold` 0.3, `layout_nms`, `layout_unclip_ratio`, `layout_merge_bboxes_mode`) out of the
+  pipeline config that **names our model**, newest first. Matching by model name is what makes
+  the index-keyed dicts inside it safe: they are keyed by *that* model's taxonomy — the exact
+  retargeting hazard `_layout_thresholds` warns about when borrowing plus-L's dict. Nothing
+  matched → `{}` → shipped defaults, never a guess. Sweep: 0.1/0.2 reach ~0.1% orphans and more
+  tables but merge blocks larger; the recall cliff is between 0.3 and 0.4; **shipped 0.3 kept**,
+  since judging over-merge needs block ground truth we do not have.
+- **Reading order is list position, not the `order` field.** paddlex sorts the result list by
+  the model's reading-order column, then `update_order_index` numbers 1..N over it while
+  blanking every label in `SKIP_ORDER_LABELS` — `table`, `image`, `header`, `footer` among them.
+  Ranking by that field (the way PP-Structure's `order_index` is ranked) would push every
+  statement table to the end of the page. Regression-tested.
+- **The line→block linkage is now shared** (`ocr_page.build_layout_page`): every layout engine
+  refuses to say which lines belong to which block, so the reconstruction — containment, orphans
+  into their own synthetic blocks, `(block reading order, top, left)` emission — lives in one
+  place for both backends, as does the "never drop a line" invariant. Paddle-result → lines is
+  likewise one function (`ocr_paddle._result_lines`), used by the line-only path (banded into
+  visual rows), PP-Structure (`overall_ocr_res`) and this backend (unbanded — a layout model's
+  blocks already group the lines, so re-banding by y-centre would fight it).
+- **Adopted as the default** (Sergei, on these numbers, 2026-07-25): `get_ocr_page` and
+  `--ocr-backend` default to `doclayout:v3`; `ppstructure` stays selectable, unchanged, as the
+  comparison baseline (worker spec `doclayout:<model>` alongside `structure`). The strip path
+  is untouched — it still runs `get_ocr`/`OcrResult`, so this moves diagnostics and whatever
+  the strip migration inherits. `OcrBlock.conf` now carries the detector's score for V3 blocks;
+  V3's per-block
+  `polygon_points` are deliberately not stored (nothing consumes block polygons and
+  `ocr_debug.page_to_dict` does not serialize them — filling the field would silently break the
+  JSON round-trip; it is the lever for skewed scans).
+
 ### Tesseract retired (2026-07-17)
 
 Tesseract was the first OCR backend; the round-1 fidelity bake-off retired it (Sergei's

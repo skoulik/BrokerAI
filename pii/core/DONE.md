@@ -1065,6 +1065,53 @@ the move; new completed tasks append to the matching section with their records.
       of 1 and thus blinding our containment cross-check on exactly those blocks. Four extra
       models for a net negative; stays off.)*
 
+- [x] **Second layout backend `doclayout:v3` (PP-DocLayoutV3) + layout bake-off** *(2026-07-25 —
+      design in ARCHITECTURE.md "Second layout backend"; numbers in
+      [reports/2026-07-25-layout-bakeoff-doclayoutv3.md](reports/2026-07-25-layout-bakeoff-doclayoutv3.md)).
+      Sergei's question: does a newer layout model detect statement tables better than the one
+      PP-StructureV3 ships with? Answer on the 31-page real corpus: yes, decisively — table
+      blocks 24 → 45, orphan lines 117 (6.2%) → 20 (1.1%), 4.5 vs 4.7 s/page.
+
+      **Built:** `pii/core/ocr_doclayout.py` (PP-DocLayoutV3 blocks via
+      `paddleocr.LayoutDetection` + lines via a direct `PaddleOCR` call), wired through
+      `get_ocr_page`, `OCR_PAGE_BACKENDS`, the worker spec `doclayout:<model>` and
+      `--ocr-backend`. **Adopted as the default** on these numbers (Sergei, same day);
+      `ppstructure` stays selectable as the baseline, and strip — still on
+      `get_ocr`/`OcrResult` — is untouched by the switch. Two shared
+      extractions came out of it: `ocr_page.build_layout_page` (line→block containment, orphan
+      synthetic blocks, emission order — the "never drop a line" invariant now in ONE place for
+      both layout backends) and `ocr_paddle._result_lines` (paddle result → lines, used by the
+      line-only path via `_result_to_rows`, by PP-Structure's `overall_ocr_res`, and here).
+
+      **The measurement trap, worth remembering:** the first run had V3 *losing* (383 orphan
+      lines; zero blocks on four `d11` pages). Root cause — standalone `LayoutDetection` with no
+      threshold falls back to `draw_threshold: 0.5` out of the exported `inference.yml`
+      (`layout_analysis/predictor.py:164`), a *visualization* default, while PP-StructureV3
+      hands plus-L a tuned per-class dict. Tuned-vs-untuned. Fixed by `_shipped_knobs`, which
+      lifts `threshold`/`layout_nms`/`layout_unclip_ratio`/`layout_merge_bboxes_mode` from the
+      pipeline config that NAMES the model (newest first, `PaddleOCR-VL*.yaml` → V3 gets 0.3 +
+      NMS + unclip + merge modes). Matching by model name is also what makes the index-keyed
+      dicts safe to reuse — they are keyed by that model's own class list.
+
+      **Threshold sweep** (V3, other knobs shipped): 0.1 → 447 blocks/54 tables/2 orphans;
+      0.2 → 501/48/2; **0.3 → 537/45/20**; 0.4 → 484/35/205; 0.5 → 403/29/385. Block count is
+      non-monotonic — below 0.3 more candidates survive to be merged by NMS + `union`/`large`
+      modes, so blocks grow bigger and fewer while coverage improves. Recall cliff between 0.3
+      and 0.4; shipped 0.3 kept (judging over-merge needs block ground truth we lack).
+
+      **Other findings:** reading order is the result list's ORDER, not the `order` field —
+      paddlex sorts by the model's reading-order column then blanks `order` for every
+      `SKIP_ORDER_LABELS` entry (`table`, `image`, `header`, `footer`), so ranking by it would
+      sort every statement table last (regression-tested). Line counts differ by 6 across the
+      corpus: PP-Structure's internal OCR feed fragments lines (`'Pa'` + `'Page 1 of'` vs
+      `'Page 1 of 1'` on d08.p1), every difference favouring the direct call. V3 also emits
+      per-block `polygon_points` (not stored — `page_to_dict` doesn't serialize block polygons,
+      so filling the field would break the JSON round-trip) and per-block scores (stored as
+      `OcrBlock.conf`). Model `PP-DocLayoutV3` downloads into `models/paddlex`; it is a
+      dynamic-graph safetensors model, ~0.1 s/page on the 2080 Ti, torch-free (paddlex's own
+      transformers port) so the worker isolation is unchanged. 13 new tests (model-free
+      fixture captured off the same ANZ page as the PP-Structure fixture).)*
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

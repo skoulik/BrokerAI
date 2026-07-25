@@ -119,12 +119,18 @@ def _resolve(spec: str):
     - bare tier ("v6_medium"): PaddleOCR -> OcrResult (the strip path).
     - "page:<tier>": PaddleOCR line-only -> OcrPage.
     - "structure": PP-StructureV3 (layout) -> OcrPage.
+    - "doclayout:<model>": PP-DocLayoutV3 blocks + PaddleOCR lines -> OcrPage.
 
     The engine loads here so a load failure surfaces before READY. All
     paddle/PP-Structure imports stay inside this function: the module is
     imported by the torch-holding parent, which must never load paddle."""
     from functools import partial
 
+    if spec.startswith("doclayout:"):
+        from pii.core.ocr_doclayout import _layout_engine, doclayout_page
+        layout = spec.partition(":")[2]
+        _layout_engine(layout)  # also builds the OCR engine
+        return partial(doclayout_page, layout=layout)
     if spec == "structure" or spec.startswith("structure:"):
         from pii.core.ocr_ppstructure import _structure_engine, ppstructure_page
         _structure_engine()
@@ -257,7 +263,8 @@ def worker_ocr(tier: str, image: Image.Image) -> OcrResult:
 
 def worker_page(spec: str, image: Image.Image) -> OcrPage:
     """OCR one image through the worker for `spec` -> OcrPage. `spec` is
-    "structure" (PP-StructureV3) or "page:<tier>" (paddle line-only)."""
+    "structure" (PP-StructureV3), "doclayout:<model>" (PP-DocLayoutV3 blocks +
+    PaddleOCR lines) or "page:<tier>" (paddle line-only)."""
     return _worker_for(spec).ocr(image)
 
 

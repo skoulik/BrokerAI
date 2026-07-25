@@ -48,12 +48,20 @@ class TestGetOcrPage:
     without loading any engine (wheel-selected transport; engine loads only
     when the callable is invoked)."""
 
-    def test_default_is_ppstructure(self):
+    def test_default_is_doclayout_v3(self):
+        # The 2026-07-25 layout bake-off verdict; ppstructure stays selectable.
+        assert get_ocr_page.__defaults__ == ("doclayout:v3",)
         assert callable(get_ocr_page())
 
     def test_families_resolve(self):
-        for backend in ("ppstructure", "paddle", "paddle:v6_medium",
-                        "paddle:v5_server"):
+        for backend in ("ppstructure", "doclayout", "doclayout:v3", "paddle",
+                        "paddle:v6_medium", "paddle:v5_server"):
+            assert callable(get_ocr_page(backend))
+
+    def test_every_advertised_backend_resolves(self):
+        from pii.core.ocr import OCR_PAGE_BACKENDS
+
+        for backend in OCR_PAGE_BACKENDS:
             assert callable(get_ocr_page(backend))
 
     def test_unknown_family_raises(self):
@@ -63,6 +71,44 @@ class TestGetOcrPage:
     def test_unknown_paddle_tier_raises(self):
         with pytest.raises(ValueError):
             get_ocr_page("paddle:v7_giga")
+
+    def test_unknown_layout_model_raises(self):
+        with pytest.raises(ValueError):
+            get_ocr_page("doclayout:v9")
+
+    @pytest.mark.parametrize("backend,spec", [
+        ("doclayout", "doclayout:v3"),
+        ("doclayout:v3", "doclayout:v3"),
+        ("ppstructure", "structure"),
+        ("paddle:v5_server", "page:v5_server"),
+    ])
+    def test_gpu_wheel_routes_to_the_right_worker_spec(
+        self, backend, spec, monkeypatch
+    ):
+        """The spec strings are a stringly-typed contract between get_ocr_page
+        and the worker's _resolve — a typo would surface only under a real
+        engine, so pin them here."""
+        from pii.core import ocr_paddle, ocr_worker
+
+        monkeypatch.setattr(ocr_paddle, "_gpu_wheel", lambda: True)
+        seen = []
+        monkeypatch.setattr(ocr_worker, "worker_page",
+                            lambda spec, image: seen.append(spec))
+        get_ocr_page(backend)(object())
+        assert seen == [spec]
+
+    def test_worker_resolve_handles_the_doclayout_spec(self, monkeypatch):
+        """The other side of that contract: _resolve binds the right callable
+        AND warms the engine (so a load failure surfaces before READY, not on
+        the first page)."""
+        from pii.core import ocr_doclayout, ocr_worker
+
+        warmed = []
+        monkeypatch.setattr(ocr_doclayout, "_layout_engine", warmed.append)
+        ocr_fn = ocr_worker._resolve("doclayout:v3")
+        assert warmed == ["v3"]
+        assert ocr_fn.func is ocr_doclayout.doclayout_page
+        assert ocr_fn.keywords == {"layout": "v3"}
 
 
 class TestResultToOcr:

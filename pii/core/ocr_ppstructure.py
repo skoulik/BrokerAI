@@ -15,7 +15,9 @@ its concatenated content + bbox + a line COUNT). So we reconstruct the
 linkage ourselves by geometric containment of each line box in a block box
 — cross-checked against ``num_of_lines`` (a count, not identities). A line
 that lands in no block becomes its own synthetic block (never dropped: a
-lost line is unredacted PII).
+lost line is unredacted PII). That reconstruction is not PP-Structure-
+specific and lives in ``ocr_page.build_layout_page``, shared with the
+PP-DocLayoutV3 backend.
 
 This module owns the PURE conversion (``ppstructure_result_to_page``), given
 a NORMALIZED plain-dict result (the engine entry flattens LayoutBlock
@@ -25,9 +27,9 @@ separate entry with a lazy paddle import.
 
 from functools import lru_cache
 
-from pii.core.ocr import Box, _to_box, _union
-from pii.core.ocr_page import OcrBlock, OcrFrame, OcrLine, OcrPage, OcrWord
-from pii.core.ocr_paddle import _region_words
+from pii.core.ocr import _to_box
+from pii.core.ocr_page import OcrBlock, OcrFrame, OcrPage, build_layout_page
+from pii.core.ocr_paddle import _result_lines
 
 
 def _block_rank(block: dict) -> tuple:
@@ -38,101 +40,22 @@ def _block_rank(block: dict) -> tuple:
             block.get("index") or 0)
 
 
-def _assign(line_box: Box, block_boxes: list[Box]) -> int | None:
-    """Index of the block whose bbox contains the line's centre; failing
-    that, the block with the largest overlap area; None if the line overlaps
-    no block at all (an orphan → its own synthetic block)."""
-    cx = line_box.left + line_box.width / 2
-    cy = line_box.top + line_box.height / 2
-    for j, bb in enumerate(block_boxes):
-        if bb.left <= cx <= bb.right and bb.top <= cy <= bb.bottom:
-            return j
-    best, best_area = None, 0
-    for j, bb in enumerate(block_boxes):
-        ox = max(0, min(line_box.right, bb.right) - max(line_box.left, bb.left))
-        oy = max(0, min(line_box.bottom, bb.bottom) - max(line_box.top, bb.top))
-        if ox * oy > best_area:
-            best, best_area = j, ox * oy
-    return best
-
-
 def ppstructure_result_to_page(result: dict, frame: OcrFrame) -> OcrPage:
     """Convert a normalized PP-StructureV3 result into an OcrPage.
 
     Blocks come from parsing_res_list (sorted into reading order); lines come
-    from overall_ocr_res and are assigned to a containing block by geometry;
-    orphan lines get one synthetic block each. Lines are emitted in
-    (block reading order, top, left) order — the layout model's reading order
-    replacing the geometric row-banding of the line-only path."""
-    ocr = result.get("overall_ocr_res") or {}
-    texts = ocr.get("rec_texts") or []
-    scores = ocr.get("rec_scores") or []
-    rec_boxes = ocr.get("rec_boxes")
-    polys = ocr.get("rec_polys")
-    frag_texts = ocr.get("text_word") or []
-    frag_boxes = ocr.get("text_word_boxes") or []
-
+    from overall_ocr_res. The line->block linkage, orphan handling and line
+    emission order are the shared `build_layout_page` discipline."""
     # Detected blocks in PP-Structure reading order.
     raw = sorted(result.get("parsing_res_list") or [], key=_block_rank)
-    det_boxes = [_to_box(b["bbox"]) for b in raw]
-    det_kinds = [b.get("label") or "text" for b in raw]
-
-    # Each OCR line: word geometry (shared paddle normalization) + its
-    # containing detected block (or None -> orphan).
-    lines_data = []  # (line_box, words[(word, box)], conf, det_index_or_None)
-    for i, text in enumerate(texts):
-        if not text.strip():
-            continue
-        src = (rec_boxes[i]
-               if rec_boxes is not None and len(rec_boxes) > i else polys[i])
-        line_box = _to_box(src)
-        conf = float(scores[i]) * 100 if len(scores) > i else 0.0
-        frags = (
-            list(zip(frag_texts[i], frag_boxes[i]))
-            if len(frag_texts) > i and len(frag_boxes) > i
-            else None
-        )
-        words = _region_words(text, line_box, frags)
-        lines_data.append((line_box, words, conf, _assign(line_box, det_boxes)))
-
-    # Blocks: detected first (reading_order = sorted rank), then one synthetic
-    # block per orphan line, appended after the detected run.
     blocks = [
-        OcrBlock(id=r, kind=det_kinds[r], origin="detected", box=box,
-                 reading_order=r, page_id=frame.page)
-        for r, box in enumerate(det_boxes)
+        OcrBlock(id=r, kind=b.get("label") or "text", origin="detected",
+                 box=_to_box(b["bbox"]), reading_order=r, page_id=frame.page)
+        for r, b in enumerate(raw)
     ]
-    line_block = []
-    next_ro = len(det_boxes)
-    for line_box, _words, _conf, det in lines_data:
-        if det is not None:
-            line_block.append(det)
-        else:
-            blocks.append(OcrBlock(
-                id=len(blocks), kind="unassigned", origin="synthetic",
-                box=line_box, reading_order=next_ro, page_id=frame.page))
-            line_block.append(len(blocks) - 1)
-            next_ro += 1
-
-    # Emit lines in (block reading order, top, left) order.
-    order = sorted(
-        range(len(lines_data)),
-        key=lambda k: (blocks[line_block[k]].reading_order,
-                       lines_data[k][0].top, lines_data[k][0].left),
+    return build_layout_page(
+        blocks, _result_lines(result.get("overall_ocr_res") or {}), frame
     )
-    lines = []
-    for k in order:
-        line_box, words, conf, _ = lines_data[k]
-        lines.append(OcrLine(
-            text=" ".join(w for w, _b in words),
-            box=_union([b for _w, b in words]) if words else line_box,
-            words=tuple(
-                OcrWord(text=w, box=b, region_box=line_box) for w, b in words
-            ),
-            block_id=line_block[k],
-            conf=conf,
-        ))
-    return OcrPage(frame=frame, blocks=tuple(blocks), lines=tuple(lines))
 
 
 # --------------------------------------------------------------------------

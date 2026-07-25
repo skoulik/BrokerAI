@@ -240,12 +240,17 @@ def ocr_page_paddle(
     return result_to_page(_predict(image, tier), frame)
 
 
-def _result_to_rows(result: dict):
-    """Shared paddle-result -> assembled visual rows: the region extraction
-    and y-center banding. Both result_to_ocr (-> OcrResult, retiring) and
-    result_to_page (-> OcrPage) consume it, so the line/word normalization
-    lives in exactly one place. Each word carries its region (line) box: the
-    fragment boxes are inset from the glyphs, so painting grows out to it."""
+def _result_lines(result: dict):
+    """Paddle OCR result -> flat `(line_box, words[(word, box)], conf)` list,
+    one entry per recognized region, in the engine's own order.
+
+    The line/word normalization (`_region_words`) in exactly one place. Every
+    consumer of a paddle-shaped OCR result goes through here: the line-only
+    path bands these into visual rows (`_result_to_rows`), and the layout
+    backends hand them to `build_layout_page` unbanded — a layout model's
+    blocks already group the lines, so re-banding them by y-centre would
+    fight it. PP-Structure's `overall_ocr_res` has the same shape, so it
+    shares this too (ocr_ppstructure.py)."""
     texts = result.get("rec_texts") or []
     scores = result.get("rec_scores") or []
     boxes = result.get("rec_boxes")
@@ -253,7 +258,7 @@ def _result_to_rows(result: dict):
     frag_texts = result.get("text_word") or []
     frag_boxes = result.get("text_word_boxes") or []
 
-    regions = []
+    lines = []
     for i, text in enumerate(texts):
         if not text.strip():
             continue
@@ -266,10 +271,20 @@ def _result_to_rows(result: dict):
             if len(frag_texts) > i and len(frag_boxes) > i
             else None
         )
-        words = _region_words(text, line_box, frags)
-        regions.append((line_box, [(w, b, conf, line_box) for w, b in words]))
+        lines.append((line_box, _region_words(text, line_box, frags), conf))
+    return lines
 
-    return _rows(regions)
+
+def _result_to_rows(result: dict):
+    """Shared paddle-result -> assembled visual rows: `_result_lines` plus
+    y-center banding. Both result_to_ocr (-> OcrResult, retiring) and
+    result_to_page (-> OcrPage) consume it. Each word carries its region
+    (line) box: the fragment boxes are inset from the glyphs, so painting
+    grows out to it."""
+    return _rows([
+        (line_box, [(w, b, conf, line_box) for w, b in words])
+        for line_box, words, conf in _result_lines(result)
+    ])
 
 
 def result_to_ocr(result: dict) -> OcrResult:

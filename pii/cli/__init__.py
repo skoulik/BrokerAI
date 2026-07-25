@@ -269,10 +269,12 @@ def main(argv=None) -> int:
              "overlay (annotated raster; requires -o) (default json)",
     )
     p_debug_ocr.add_argument(
-        "--ocr-backend", choices=list(OCR_PAGE_BACKENDS), default="ppstructure",
-        help="OcrPage backend: ppstructure (PP-StructureV3 — typed blocks + "
-             "reading order) or the paddle line-only tiers (default "
-             "ppstructure)",
+        "--ocr-backend", choices=list(OCR_PAGE_BACKENDS),
+        default="doclayout:v3",
+        help="OcrPage backend: doclayout:v3 (PP-DocLayoutV3 blocks + model "
+             "reading order), ppstructure (PP-StructureV3 — typed blocks + "
+             "pipeline reading order) or the paddle line-only tiers (default "
+             "doclayout:v3)",
     )
     p_debug_ocr.add_argument(
         "--page", type=int, default=None,

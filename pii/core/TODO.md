@@ -83,6 +83,30 @@ experiment (future session; owns the next engine-shaped decision).
       adapter; model sizes 8B+ want the Mac M1 Max (64 GB unified, up to ~48 GB usable as
       VRAM — Sergei 2026-07-17). Absorbs the layer-3 audit-pass question when picked up
       (a one-pass detector and an audit pass are the same model wearing different prompts).
+- [ ] **PaddleOCR-VL as an OCR backend** (researched 2026-07-25, *postponed* — Sergei: layout
+      model first, no VLM for now). The 0.9B VLM ships in the installed `paddleocr` 3.7.0 as
+      the `PaddleOCRVL` pipeline (v1.6 default, `vl_rec_backend: native` = paddle, so torch-free
+      and worker-compatible; on sm_75 it would run fp32, no bf16). Two modes, only one usable:
+      - Default **layout mode** returns `{block_bbox, block_label, block_content, block_order}`
+        — block-level geometry ONLY, no line or word boxes. Unusable for painting: hiding one
+        account number would mean painting a whole paragraph.
+      - **Spotting mode** (`use_layout_detection=False, prompt_label="spotting"`, needs ≥1.5)
+        emits text interleaved with `<LOC_n>` quads, post-processed into
+        `{"rec_polys", "rec_texts"}` — the SAME keys `_result_lines` already consumes, so the
+        adapter would be small. Per-page quantization is 1/1000 of the page (~2.3 px vertically
+        on a 300 dpi A4).
+      Better idea than either, if picked up (Sergei's, 2026-07-25): run spotting **per detected
+      block** using the layout blocks we now have — quantization becomes 1/1000 of the crop,
+      sub-1500px crops get a free 2× upscale before the encoder (attacking the vision-token
+      starvation that killed Surya), generations stay short (page-wide runs risk
+      `truncate_repetitive_content` silently dropping repeated statement lines), and the
+      line→block linkage becomes exact instead of reconstructed. The pipeline will not do this
+      itself — prompt choice is hardcoded per block label — so we would crop and batch the
+      crops through `predict([...])` ourselves. Two risks to design for: text outside every
+      detected block never gets read (mitigate with a det-only PP-OCR coverage sweep), and
+      glyphs flush against a crop edge read worse (pad crops; painting stays on original
+      pixels). Keep the Surya round-2 lessons in view — silent omission is the VLM failure mode
+      that matters for redaction.
 - [ ] Watch for **a PP-OCRv6 server tier** (none in paddlex 3.7.2 — tiny/small/medium only);
       if released, benchmark it with the ocr-report sweep against v6_medium — v6_medium
       already dominates, a v6_server should only strengthen it. Add it to `MODEL_TIERS`.
@@ -112,28 +136,36 @@ DONE.md; design in ARCHITECTURE.md "OCR perception layer"); it runs alongside th
       over-invest in concatenation/merging until it's decided.
 - [ ] **Migrate the strip pipeline onto `OcrPage`/`RecognizerInput`** and retire
       `OcrResult`/`assemble`: `strip_from_ocr` / `image_mode` / `pdf_mode` move to
-      `get_ocr_page` + `linearize`; the worker's strip path switches to the `page:`/`structure`
-      spec. Deferred until per-block feeding is settled (it decides how strip linearizes). Also
-      fold the eval harness (`ocr_report`, `score_image`/`score_pdf`) onto the new types.
+      `get_ocr_page` + `linearize`; the worker's strip path switches to the
+      `page:`/`structure`/`doclayout:` spec. Deferred until per-block feeding is settled (it
+      decides how strip linearizes). Also fold the eval harness (`ocr_report`,
+      `score_image`/`score_pdf`) onto the new types. Note the eval harness still resolves
+      backends through `get_ocr` (`OCR_BACKENDS`, line-only), so the `doclayout:v3` default
+      change does NOT reach it — fidelity numbers are unaffected until this migration.
 - [ ] **Font traceback** (diagnostics-only): fill `OcrLine.font` / `OcrBlock.font` from the PDF
       text layer (pymupdf `get_text("dict")` spans matched to line boxes) — `None` from any OCR
       engine. Must never feed the strip decision (we deliberately distrust the text layer).
-- [ ] **PP-Structure `kind="table"` blocks** (parked 2026-07-24): with table-structure
-      recognition off, table text arrives as ordinary lines under a `table` block — verify
-      that's enough for PII on real table-heavy statements (interacts with the "statement
-      tables" item above); only reach for `child_blocks`/cell structure if it isn't. Observed
-      on the real ANZ statement (2026-07-24): the balance-summary `table` block was detected
-      cleanly, but its lines interleave label/value in reading order (a stray `$0.00` mid-run)
-      — within-table line ordering may need work if per-block feeding relies on it.
-- [ ] **Decide the layout `text` threshold** (root-caused 2026-07-25, not adopted): PaddleX's
-      shipped per-class cut drops label/value header panels whole, so their lines arrive as
-      one-line synthetic blocks — 59 orphan lines over the 31-page real corpus, 22 on one
-      statement page. `_layout_thresholds({"text": 0.33})` cuts that to 19 while *raising* the
-      block count (393 → 398), and turns the panel into two ordinary `text` blocks. Held back
-      because per-block feeding decides how much block quality is worth; revisit with that
-      experiment (a one-line change, full record in DONE.md). Residual orphans need the
-      adapter side: cluster adjacent orphan lines into one synthetic block and insert them in
-      reading order by geometry, rather than one-per-line appended after every detected block.
+- [ ] **`kind="table"` blocks** (parked 2026-07-24; more urgent since 2026-07-25 — the
+      `doclayout:v3` default returns ~2× as many table blocks, 45 vs 24 corpus-wide): with
+      table-structure recognition off, table text arrives as ordinary lines under a `table`
+      block — verify that's enough for PII on real table-heavy statements (interacts with the
+      "statement tables" item above); only reach for `child_blocks`/cell structure if it isn't.
+      Observed on the real ANZ statement (2026-07-24): the balance-summary `table` block was
+      detected cleanly, but its lines interleave label/value in reading order (a stray `$0.00`
+      mid-run) — within-table line ordering may need work if per-block feeding relies on it.
+      Re-check on V3's blocks, whose table boxes are larger (the BSB/account label-value panel
+      is now one `table` block, so the interleaving question applies to it too).
+- [ ] **Decide the layout `text` threshold** — *moot on the default path since 2026-07-25*,
+      kept for the `ppstructure` backend only. PaddleX's shipped per-class cut drops
+      label/value header panels whole, so their lines arrive as one-line synthetic blocks —
+      59 orphan lines over the 31-page real corpus, 22 on one statement page.
+      `_layout_thresholds({"text": 0.33})` cuts that to 19 while *raising* the block count
+      (393 → 398), and turns the panel into two ordinary `text` blocks. The `doclayout:v3`
+      backend (now default) returns that panel as a detected `table` block with no tuning at
+      all — 20 orphan lines corpus-wide — so this only matters if `ppstructure` is revived.
+      Still open on the adapter side, and it applies to BOTH backends: cluster adjacent orphan
+      lines into one synthetic block and insert them in reading order by geometry, rather than
+      one-per-line appended after every detected block.
 - [ ] **CPU-wheel PP-Structure**: `_structure_engine` sets `device="cpu"` off the GPU wheel but
       is untested there; check the paddle 3.3.x oneDNN PIR-executor crash (the `enable_mkldnn`
       lever plain PaddleOCR needs) doesn't bite PP-Structure.
