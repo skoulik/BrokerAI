@@ -2,9 +2,12 @@
 
 Rendering tests are pure geometry (no OCR). The strip_pdf tests are
 model-free like the image-mode suite: real presidio pipeline (stubbed
-NER) + a fake OCR engine injected at the pii.core.pdf_mode.get_ocr seam,
-so what is asserted is the reassembly contract — page count/size, no
-text layer, painted pixels, clean metadata, per-page results."""
+NER) + a fake OCR engine injected at the pii.core.pdf_mode.get_ocr /
+get_ocr_page seams, so what is asserted is the reassembly contract — page
+count/size, no text layer, painted pixels, clean metadata, per-page
+results — plus the routing between the two OCR seams. The reassembly
+tests pin the flat path explicitly (ocr_backend="paddle", feed="page");
+the default is the OcrPage path."""
 
 import pymupdf
 
@@ -129,6 +132,7 @@ def test_strip_pdf_reassembles_clean_pdf(tmp_path, pipeline, monkeypatch):
     pmap = PseudonymMap()
     seen = []
     result = strip_pdf(src, pipeline, pmap, out, dpi=72,
+                       ocr_backend="paddle", feed="page",
                        progress=lambda n, c: seen.append((n, c)))
 
     assert seen == [(1, 2), (2, 2)]
@@ -163,7 +167,8 @@ def test_strip_pdf_paints_over_pii_pixels(tmp_path, pipeline, monkeypatch):
     src = tmp_path / "doc.pdf"
     out = tmp_path / "doc.clean.pdf"
     _make_marked_pdf(src, pages=1)
-    strip_pdf(src, pipeline, PseudonymMap(), out, dpi=72)
+    strip_pdf(src, pipeline, PseudonymMap(), out, dpi=72,
+              ocr_backend="paddle", feed="page")
 
     page_image = next(pdf_to_images(out, dpi=72))
     # JPEG blurs edges; sample the box interior, which was solid red.
@@ -175,3 +180,94 @@ def test_strip_pdf_paints_over_pii_pixels(tmp_path, pipeline, monkeypatch):
 
 def _near_red(colors):
     return any(r > 200 and g < 100 and b < 100 for r, g, b in colors)
+
+
+# --- the OcrPage path: strip_pdf with a layout backend + per-block feed ---
+
+
+def _fake_ocr_page(image, lang="eng"):
+    """Two detected blocks: a greeting, then the line carrying the email."""
+    from pii.core.ocr_page import OcrBlock, OcrFrame, build_layout_page
+
+    def block(id, top, height):
+        return OcrBlock(id=id, kind="text", origin="detected",
+                        box=Box(0, top, image.width, height),
+                        reading_order=id, page_id=1)
+
+    lines = [
+        (Box(20, 20, 60, 20), [("Hello", Box(20, 20, 60, 20))], 90.0),
+        (Box(20, EMAIL_BOX.top, EMAIL_BOX.right - 20, 20),
+         [("Contact", Box(20, EMAIL_BOX.top, 60, 20)),
+          ("olga@example.com", EMAIL_BOX)], 90.0),
+    ]
+    return build_layout_page(
+        [block(0, 0, 60), block(1, 60, image.height - 60)],
+        lines,
+        OcrFrame(width=image.width, height=image.height, page=1),
+    )
+
+
+def test_strip_pdf_blocks_feed_paints_and_reports(tmp_path, pipeline,
+                                                  monkeypatch):
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr_page)
+    src = tmp_path / "doc.pdf"
+    out = tmp_path / "doc.clean.pdf"
+    _make_marked_pdf(src, pages=2)
+    pmap = PseudonymMap()
+    result = strip_pdf(src, pipeline, pmap, out, dpi=72,
+                       ocr_backend="doclayout:v3", feed="blocks")
+
+    assert len(result.pages) == 2
+    for page_result in result.pages:
+        assert [r.entity_type for r in page_result.spans] == ["EMAIL_ADDRESS"]
+        span = page_result.spans[0]
+        # Page-global offsets into the rebased page text.
+        assert page_result.ocr.text[span.start : span.end] == "olga@example.com"
+    assert len(pmap) == 1
+
+    page_image = next(pdf_to_images(out, dpi=72))
+    inner = Box(EMAIL_BOX.left + 6, EMAIL_BOX.top + 6,
+                EMAIL_BOX.width - 12, EMAIL_BOX.height - 12)
+    assert not _near_red(_colors(page_image, inner))
+
+
+def test_strip_pdf_page_feed_on_a_layout_backend(tmp_path, pipeline,
+                                                 monkeypatch):
+    # feed="page" over the OcrPage path: same perception, one recognizer
+    # call for the whole page (the control config for the feed comparison).
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr_page)
+    src = tmp_path / "doc.pdf"
+    _make_marked_pdf(src, pages=1)
+    result = strip_pdf(src, pipeline, PseudonymMap(), tmp_path / "out.pdf",
+                       dpi=72, ocr_backend="doclayout:v3", feed="page")
+    (page_result,) = result.pages
+    assert page_result.ocr.text == "Hello\nContact olga@example.com"
+    assert [r.entity_type for r in page_result.spans] == ["EMAIL_ADDRESS"]
+
+
+def test_strip_pdf_default_is_layout_blocks(tmp_path, pipeline, monkeypatch):
+    # The default (doclayout:v3 + feed="blocks") runs the OcrPage path and
+    # must not touch the flat get_ocr seam at all.
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr_page)
+    monkeypatch.setattr(pdf_mode, "get_ocr", _unreachable)
+    src = tmp_path / "doc.pdf"
+    _make_marked_pdf(src, pages=1)
+    result = strip_pdf(src, pipeline, PseudonymMap(), tmp_path / "out.pdf",
+                       dpi=72)
+    assert [r.entity_type for r in result.pages[0].spans] == ["EMAIL_ADDRESS"]
+
+
+def test_strip_pdf_flat_path_still_reachable(tmp_path, pipeline, monkeypatch):
+    # The historical OcrResult path stays available behind the explicit
+    # line-only backend + page feed, and never reaches get_ocr_page.
+    monkeypatch.setattr(pdf_mode, "get_ocr", lambda backend: _fake_ocr)
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", _unreachable)
+    src = tmp_path / "doc.pdf"
+    _make_marked_pdf(src, pages=1)
+    result = strip_pdf(src, pipeline, PseudonymMap(), tmp_path / "out.pdf",
+                       dpi=72, ocr_backend="paddle", feed="page")
+    assert [r.entity_type for r in result.pages[0].spans] == ["EMAIL_ADDRESS"]
+
+
+def _unreachable(*args, **kwargs):
+    raise AssertionError("this path must not resolve the other OCR seam")

@@ -179,6 +179,17 @@ Summary tables (shared with the image tier) split strip/keep rows by
 each entity's `strip_expected`, so a type may appear in both tables —
 real corpora have ORGANIZATION/PHONE_NUMBER on both sides.
 
+`--ocr-backend` and `--feed` (2026-07-27) vary the *strip* side of the
+`image`/`pdf` runs; they default to the product defaults
+(`doclayout:v3` + `blocks` — one recognizer pass per layout block), so the
+harness measures what ships. Pass `--ocr-backend paddle --feed page` for the
+flat line-only path, or `ppstructure` for the other layout model. The **re-read**
+of stripped output always uses the flat default tier
+(`score_image.reread_engine`), so the measuring instrument stays constant
+across such a comparison. Both scorers keep writing to the same
+`<corpus>/stripped/` folder, so move it aside between configs if you want
+to keep each run's output.
+
 ## OCR-fidelity sweep (`ocr-report`, 2026-07-16)
 
 Measures OCR fidelity directly (not PII leaks): renders every corpus doc

@@ -18,21 +18,29 @@ After eyeballing the whole sensitive corpus on the new `doclayout:v3` default ("
 in terms of layout understanding"). Each step below has a fuller entry further down; this is
 the running order, and it is deliberately layout-first-then-back-to-e2e:
 
-1. **Root-cause the remaining orphans.** ~20 orphan lines corpus-wide, and a few look
-   suspicious on inspection. Understand *why* each one falls outside every detected block
-   before touching anything — the answer decides whether the fix is a detection knob, the
-   orphan-clustering item below, or nothing at all.
-2. **Back to e2e: teach the GLiNER feeder about blocks — feed lines per block.** Promotes
-   "Confirm per-block recognizer feeding" from a question to the work: the recognizer input
-   becomes a block's lines rather than one page-wide string. This is the payoff the whole
-   perception layer was built for.
+1. ~~**Root-cause the remaining orphans.**~~ First cluster classified 2026-07-27 (record kept
+   in the orphan item below); the rest is folded into steps 3/4.
+2. ~~**Back to e2e: teach the GLiNER feeder about blocks — feed lines per block.**~~ **DONE
+   2026-07-27** (`--feed blocks`; record in DONE.md, evidence in
+   reports/2026-07-27-per-block-feed-bakeoff.md). −4 critical leaks against its own backend
+   control at no time cost. It also moved step 4 to the front of the queue: see below.
 3. **Multiple trial linearizations with overlaps.** Several assemblies of the same page,
    windows overlapping so an entity split across a boundary is caught by at least one trial —
-   the reason offsets live per-linearization in the source map, never on perception.
-4. **Table structure and other heuristics.** Cell/row/column structure for the 45 detected
-   `table` blocks (`TableCellsDetection` first — non-generative geometry — with SLANeXt
-   structure only if logical spans/headers turn out to be needed), plus the remaining
-   statement-row heuristics.
+   the reason offsets live per-linearization in the source map, never on perception. Now also
+   the mitigation for the per-block feed's known cost (a label in one block can no longer
+   promote a value in the next): a whole-page trial unioned with the per-block trial gets both.
+   Needs a merge rule for spans living in different offset spaces — union in *word* space via
+   the source maps, not in character space.
+4. **Table structure and other heuristics — now the top item, and it carries a known leak.**
+   Cell/row/column structure for the 45 detected `table` blocks (`TableCellsDetection` first —
+   non-generative geometry — with SLANeXt structure only if logical spans/headers turn out to
+   be needed), plus the remaining statement-row heuristics. Promoted because the 2026-07-27
+   feed bake-off traced a real leak to it: lines inside a block are emitted in `(top, left)`
+   order, so a multi-column header panel emits a value before its own label and context
+   promotion never fires (`d11.p2`'s account number, evidence in the report). That leak is
+   **live in the shipping default** since `doclayout:v3` + `--feed blocks` was adopted — it
+   was accepted knowingly (net 8 leaks vs the old default's 9), and this item is the repayment.
+   Same defect as issue #8a below.
 
 ## Next up — image/PDF path
 
@@ -165,7 +173,10 @@ DONE.md; design in ARCHITECTURE.md "OCR perception layer"); it runs alongside th
       they are all furniture. Note orphans are *not* a leak by themselves (every line still
       reaches the recognizer in its own synthetic block) — they are a structure-quality signal,
       and they matter more once feeding is per-block (step 2), because an orphan then becomes a
-      one-line context-free window.
+      one-line context-free window. **Since 2026-07-27 that "once" is now** — under
+      `--feed blocks` an orphan line IS a one-line analyzer call with no context whatsoever,
+      which is exactly the regime the `BSB`-alone unit test shows detects nothing. Orphan
+      clustering therefore stopped being a tidiness item and became a recall item.
 
       **First cluster classified (2026-07-27, `Statements - 1114.pdf` p2 at 200 dpi — a real
       detection miss, not furniture):** 16 of 53 lines orphan, and they are exactly the top
@@ -191,27 +202,28 @@ DONE.md; design in ARCHITECTURE.md "OCR perception layer"); it runs alongside th
       `ppstructure` reports 0 orphans on this page only because it emits 2 blocks total, one
       `table [0,67,1587,931]` swallowing the panel *and* the transaction table — no structure to
       be orphaned from.)
-- [ ] **Per-block recognizer feeding** (Sergei's hypothesis 2026-07-24; **promoted to the work
-      itself 2026-07-25, step 2 of the session plan** — block quality was the precondition and
-      `doclayout:v3` cleared it): feed the recognizer each block's lines rather than one
-      page-wide string, i.e. teach the GLiNER feeder which block its text came from. Score it
-      against today's whole-page assembly on the leak gate. Interacts with step 3 (overlapping
-      trial linearizations) — a block boundary is just another boundary an entity can straddle,
-      so the two are one design: which units get fed, and how they overlap.
-    - [ ] **Multiple trial linearizations with overlaps** (Sergei, 2026-07-25 — step 3): run
-          several assemblies of the same page and union the findings, with the windows
-          overlapping so an entity broken by one trial's boundary is intact in another. This is
-          what the source map was designed for (offsets per linearization, never on
-          perception); relates to the existing GLiNER2 cell-isolation windows and
-          person-fragment coalescing, which are the same problem at a smaller scale.
-- [ ] **Migrate the strip pipeline onto `OcrPage`/`RecognizerInput`** and retire
-      `OcrResult`/`assemble`: `strip_from_ocr` / `image_mode` / `pdf_mode` move to
-      `get_ocr_page` + `linearize`; the worker's strip path switches to the
-      `page:`/`structure`/`doclayout:` spec. Deferred until per-block feeding is settled (it
-      decides how strip linearizes). Also fold the eval harness (`ocr_report`,
-      `score_image`/`score_pdf`) onto the new types. Note the eval harness still resolves
-      backends through `get_ocr` (`OCR_BACKENDS`, line-only), so the `doclayout:v3` default
-      change does NOT reach it — fidelity numbers are unaffected until this migration.
+- [ ] **Multiple trial linearizations with overlaps** (Sergei, 2026-07-25 — step 3 of the
+      session plan): run several assemblies of the same page and union the findings, with the
+      windows overlapping so an entity broken by one trial's boundary is intact in another.
+      This is what the source map was designed for (offsets per linearization, never on
+      perception); relates to the existing GLiNER2 cell-isolation windows and person-fragment
+      coalescing, which are the same problem at a smaller scale. Since the per-block feed
+      landed (2026-07-27) this is also its safety net — a whole-page trial recovers the
+      cross-block context per-block feeding gives up. Open design question: spans from two
+      trials live in different offset spaces, so the union has to happen in *word* space
+      through the source maps.
+- [ ] **Finish the strip migration onto `OcrPage`/`RecognizerInput`** and retire
+      `OcrResult`/`assemble`. Landed 2026-07-27: `image_mode.strip_from_page` +
+      `strip_image`/`strip_pdf` routing, so both feeds run over `OcrPage` today. Remaining:
+      make it the *only* path — the `OcrPage` path is the default since 2026-07-27, but the
+      flat `OcrResult` path stays reachable (`--ocr-backend paddle --feed page`) and is worth
+      keeping until intra-block column structure repays the `d11` regression (step 4), since
+      it is the only configuration that still bands columns into visual rows; the worker's
+      strip path still speaks the bare-tier spec; and the harness still resolves through
+      `get_ocr`
+      (`OCR_BACKENDS`, line-only) in `ocr_report` and in the scorers' *read-back*
+      (`score_image.reread_engine` — deliberately pinned there, so a backend/feed comparison
+      measures with a constant instrument; only `ocr_report` is a real migration debt).
 - [ ] **Font traceback** (diagnostics-only): fill `OcrLine.font` / `OcrBlock.font` from the PDF
       text layer (pymupdf `get_text("dict")` spans matched to line boxes) — `None` from any OCR
       engine. Must never feed the strip decision (we deliberately distrust the text layer).
@@ -225,6 +237,15 @@ DONE.md; design in ARCHITECTURE.md "OCR perception layer"); it runs alongside th
       mid-run) — within-table line ordering may need work if per-block feeding relies on it.
       Re-check on V3's blocks, whose table boxes are larger (the BSB/account label-value panel
       is now one `table` block, so the interleaving question applies to it too).
+
+      **Measured cost, 2026-07-27 (feed bake-off): a leak that is live in the shipping
+      default.** Lines inside a block sort by `(top, left)`, so a
+      three-column header panel interleaves — `d11.p2` emits `': 162-097111-4'` *before*
+      `'THE DIRECTOR'` and `'Account Number'`, all 15 lines inside one correctly detected
+      `table` block — and the account number's context promotion never fires, leaking it under
+      both feeds (the flat `paddle` path survives only because `_rows` bands side-by-side
+      regions into one visual line). Cell geometry gives line→(row, column), which is the
+      fix; it is the same defect as issue #8a in the Detection pipeline section below.
 
       **Model inventory for internal table structure** (researched 2026-07-25, nothing built —
       step 4 of the session plan). PP-DocLayoutV3 itself gives none of this: its 25 classes

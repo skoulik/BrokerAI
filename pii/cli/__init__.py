@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
-from pii.core.ocr import OCR_BACKENDS, OCR_PAGE_BACKENDS
+from pii.core.ocr import OCR_PAGE_BACKENDS
 
 
 def _read(source: str) -> str:
@@ -196,12 +196,24 @@ def main(argv=None) -> int:
         help="page render resolution for --pdf mode (default 300)",
     )
     p_strip.add_argument(
-        "--ocr-backend", choices=list(OCR_BACKENDS), default="paddle",
-        help="OCR engine for --image/--pdf modes (PaddleOCR; default paddle "
-             "= the v6_medium tier). Variants name a model tier, downloaded "
-             "to models/paddlex on first use. On the GPU paddle wheel the "
-             "engine runs in a worker subprocess (it cannot share a process "
-             "with the NER model); the CPU wheel runs it in-process.",
+        "--ocr-backend", choices=list(OCR_PAGE_BACKENDS),
+        default="doclayout:v3",
+        help="OCR engine for --image/--pdf modes (PaddleOCR; default "
+             "doclayout:v3 = PP-DocLayoutV3 layout blocks + PP-OCRv6_medium "
+             "lines). ppstructure is the other layout backend; the paddle "
+             "tiers are line-only (paddle = v6_medium). Models download to "
+             "models/paddlex on first use. On the GPU paddle wheel the engine "
+             "runs in a worker subprocess (it cannot share a process with the "
+             "NER model); the CPU wheel runs it in-process.",
+    )
+    p_strip.add_argument(
+        "--feed", choices=["page", "blocks"], default="blocks",
+        help="what the recognizer is fed in --image/--pdf modes: blocks "
+             "(default; one recognizer call per detected layout block — no "
+             "pattern, context word or NER window reaches across a block "
+             "boundary) or page (the whole page as one string). A line-only "
+             "backend has one block per line, so pair blocks with a layout "
+             "backend",
     )
     p_strip.add_argument(
         "--columns",
@@ -343,7 +355,7 @@ def main(argv=None) -> int:
 
         pmap = PseudonymMap(args.map)
         result = strip_image(Image.open(args.input), pipeline, pmap,
-                             ocr_backend=args.ocr_backend)
+                             ocr_backend=args.ocr_backend, feed=args.feed)
         result.image.save(args.output)
         pmap.save()
         if args.report:
@@ -363,6 +375,7 @@ def main(argv=None) -> int:
         result = strip_pdf(args.input, pipeline, pmap, args.output,
                            dpi=args.dpi or DEFAULT_DPI,
                            ocr_backend=args.ocr_backend,
+                           feed=args.feed,
                            progress=progress)
         pmap.save()
         if args.report:

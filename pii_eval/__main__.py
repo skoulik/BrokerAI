@@ -1,7 +1,7 @@
 import argparse
 import sys
 
-from pii.core.ocr import OCR_BACKENDS
+from pii.core.ocr import OCR_BACKENDS, OCR_PAGE_BACKENDS
 
 # Canonical home of every generated corpus (gitignored): one folder per
 # modality (text/, image/), one subfolder per seed.
@@ -103,10 +103,18 @@ def main() -> int:
                     choices=["ignore", "all", "likely", "context"],
                     default="likely",
                     help="collection tier for checksum-invalid candidates")
-    sc.add_argument("--ocr-backend", choices=list(OCR_BACKENDS),
-                    default="paddle",
-                    help="OCR engine for --modality image/pdf "
-                         "(default: paddle)")
+    sc.add_argument("--ocr-backend", choices=list(OCR_PAGE_BACKENDS),
+                    default="doclayout:v3",
+                    help="OCR engine for --modality image/pdf (default: "
+                         "doclayout:v3, the product default; ppstructure is "
+                         "the other layout backend, the paddle tiers are "
+                         "line-only). The re-read of stripped output always "
+                         "uses the flat default tier, so the read-back is "
+                         "constant across backends")
+    sc.add_argument("--feed", choices=["page", "blocks"], default="blocks",
+                    help="what the recognizer is fed per page: blocks "
+                         "(default; one call per layout block — full "
+                         "per-block isolation) or page (one string)")
 
     args = parser.parse_args()
     if args.command == "generate":
@@ -157,7 +165,8 @@ def main() -> int:
         return score_image(args.corpus or _default_corpus(args.seed, "image"),
                            threshold=args.threshold,
                            invalid_identifiers=args.invalid_identifiers,
-                           ocr_backend=args.ocr_backend)
+                           ocr_backend=args.ocr_backend,
+                           feed=args.feed)
     if args.modality == "pdf":
         if not args.corpus:
             parser.error("--modality pdf requires -c (a real corpus folder, "
@@ -167,7 +176,8 @@ def main() -> int:
         return score_pdf(args.corpus,
                          threshold=args.threshold,
                          invalid_identifiers=args.invalid_identifiers,
-                         ocr_backend=args.ocr_backend)
+                         ocr_backend=args.ocr_backend,
+                         feed=args.feed)
     from pii_eval.score import score
 
     return score(args.corpus or _default_corpus(args.seed),

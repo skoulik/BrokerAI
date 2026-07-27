@@ -38,7 +38,7 @@ import pymupdf
 from PIL import Image
 
 from pii.core.mapping import PseudonymMap
-from pii.core.ocr import OcrResult, get_ocr
+from pii.core.ocr import OCR_BACKENDS, get_ocr, get_ocr_page
 
 # 300 DPI is the scanning-industry default for OCR of small print;
 # statements ship 7-9pt body text, which at the synthetic tier's 150 DPI
@@ -79,7 +79,7 @@ class PdfPageResult:
     the recognized plaintext INCLUDING the PII — local-only artifact."""
 
     number: int  # 1-based page number
-    ocr: OcrResult
+    ocr: object  # OcrResult (flat path) or RecognizerInput (OcrPage path)
     spans: list  # applied detections; offsets into ocr.text
     invalid: list
 
@@ -95,7 +95,8 @@ def strip_pdf(
     pmap: PseudonymMap,
     out_path: str | Path,
     dpi: int = DEFAULT_DPI,
-    ocr_backend: str = "paddle",
+    ocr_backend: str = "doclayout:v3",
+    feed: str = "blocks",
     progress: Callable[[int, int], None] | None = None,
 ) -> PdfStripResult:
     """Strip a PDF page by page and write a fresh, image-only PDF.
@@ -106,12 +107,21 @@ def strip_pdf(
     through one pipeline/OCR engine and one shared `pmap`, so memory
     stays flat and placeholders are consistent across the document.
 
+    `feed` selects the recognizer's unit — "page" (the whole page as one
+    string) or "blocks" (one call per layout block; needs an OcrPage
+    backend, see image_mode.strip_from_page).
+
     `progress(page_number, page_count)` is called before each page is
     processed (OCR + NER make pages slow enough to want a heartbeat).
     """
-    from pii.core.image_mode import strip_from_ocr  # heavy: analysis stack
+    # heavy: the analysis stack
+    from pii.core.image_mode import strip_from_ocr, strip_from_page
 
-    ocr_engine = get_ocr(ocr_backend)
+    flat = feed == "page" and ocr_backend in OCR_BACKENDS
+    if flat:
+        ocr_engine = get_ocr(ocr_backend)
+    else:
+        page_engine = get_ocr_page(ocr_backend)
     pages: list[PdfPageResult] = []
     out_doc = pymupdf.open()
     with pymupdf.open(path) as doc:
@@ -119,7 +129,12 @@ def strip_pdf(
             if progress:
                 progress(number, doc.page_count)
             image = _render_page(page, dpi)
-            result = strip_from_ocr(image, ocr_engine(image), pipeline, pmap)
+            if flat:
+                result = strip_from_ocr(image, ocr_engine(image), pipeline, pmap)
+            else:
+                result = strip_from_page(
+                    image, page_engine(image), pipeline, pmap, feed=feed
+                )
             buf = io.BytesIO()
             result.image.save(buf, "JPEG", quality=_JPEG_QUALITY)
             out_page = out_doc.new_page(

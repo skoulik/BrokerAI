@@ -60,13 +60,31 @@ rehydratable, not blacked out. Detection never sees pixels; painting
 happens on the original image (`pii/core/ocr.py` for the engine seam and
 span→box mapping, `pii/core/image_mode.py` for the painting).
 
-The OCR engine is **PaddleOCR**. `--ocr-backend` selects the model tier:
-`paddle` (default = `paddle:v6_medium`), `paddle:v5_server`,
-`paddle:v6_medium`; models auto-download to `models/paddlex` on first use.
-With the GPU paddle
-wheel the engine and the NER model cannot share a Windows process, so the
-pipeline drives OCR through a persistent worker subprocess
+The OCR engine is **PaddleOCR**. `--ocr-backend` selects it: `doclayout:v3`
+(default) and `ppstructure` are **layout-aware** — they detect layout blocks
+(the structure `debug ocr` shows) on top of the recognized lines — while
+`paddle` (= `paddle:v6_medium`), `paddle:v6_medium` and `paddle:v5_server`
+are line-only model tiers. All of them read lines with the same pinned
+PP-OCR tier, so the choice moves structure, not characters. Models
+auto-download to `models/paddlex` on first use. With the GPU paddle wheel
+the engine and the NER model cannot share a Windows process, so the pipeline
+drives OCR through a persistent worker subprocess
 (`pii/core/ocr_worker.py`); the CPU wheel runs it in-process.
+
+`--feed` chooses what the recognizer is fed per page:
+
+- `--feed blocks` (default) — one recognizer pass **per layout block**, so
+  no pattern, context word or NER window reaches across a block boundary.
+  Detection is more focused (a header panel no longer shares an attention
+  window with 40 transaction rows) but strictly local: a label in one block
+  can no longer promote a value in the next. With a line-only backend every
+  line is its own block, which makes the feed per-line.
+- `--feed page` — the whole page as one string. With a line-only backend
+  (`--ocr-backend paddle --feed page`) this is the original flat path.
+
+Defaults: `--ocr-backend doclayout:v3 --feed blocks`; the numbers behind that
+choice are in
+[core/reports/2026-07-27-per-block-feed-bakeoff.md](core/reports/2026-07-27-per-block-feed-bakeoff.md).
 
 ## PDFs
 

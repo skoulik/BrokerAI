@@ -1163,6 +1163,81 @@ the move; new completed tasks append to the matching section with their records.
       (`w.region_box == line.box or w.region_box is not None`) and now asserts the real
       equality.
 
+- [x] **Per-block recognizer feeding (`--feed blocks`) + the strip path onto `OcrPage`**
+      *(2026-07-27 — step 2 of Sergei's session plan; design in ARCHITECTURE.md "Per-block
+      recognizer feeding", full evidence in
+      [reports/2026-07-27-per-block-feed-bakeoff.md](reports/2026-07-27-per-block-feed-bakeoff.md)).*
+
+      **Sergei's calls before implementation:** measure **full** isolation (separate analyzer
+      calls per block, not the cheaper `RECORD_SEPARATOR` sentinel, which would leave
+      Presidio's context enhancer reaching across boundaries); wiring the strip path onto
+      `OcrPage` is in scope; and keep it **dumb** — every block is a unit, no grouping
+      heuristics, "we'll start from plain per-block and see".
+
+      **Built:** `linearization.linearize_blocks(page)` (one `RecognizerInput` per block,
+      block-local offsets, blocks in first-line-appearance order) and
+      `linearization.rebase(inputs)` (concatenate + report each part's offset;
+      `rebase(linearize_blocks(page))` is byte-identical to `linearize(page)`, asserted).
+      `RecognizerInput` gained `block_id`; the placing loop became `_assemble`, shared by both
+      linearizations. `image_mode.strip_from_page(image, page, …, feed=)` is the new strip
+      seam over `OcrPage` — detect per part, rebase spans *and* invalid findings into
+      page-global offsets, then one painting pass, so placeholder numbering and every
+      downstream consumer are indifferent to the feed. `strip_image`/`strip_pdf` take `feed`
+      and route flat-vs-page; CLI `strip --feed {page,blocks}` with `--ocr-backend` widened to
+      the `OcrPage` backends; `pii_eval score --feed` likewise, with `score_image.reread_engine`
+      pinning the *read-back* to the flat default tier so the measuring instrument stays
+      constant while the strip side varies. A block with no recognized characters is skipped
+      as an analyzer call but still occupies its place in the rebase.
+
+      **Measured on the real corpus** (11 docs / 31 pages / 172 authored truth entities,
+      `score --modality pdf`), three configs — the middle one exists to separate perception
+      from feed:
+
+      | | backend / feed | critical leaks | wall |
+      |---|---|---|---|
+      | a | `paddle` / page (today's default) | 9 | 301 s |
+      | b | `doclayout:v3` / page | 12 | 401 s |
+      | c | `doclayout:v3` / **blocks** | **8** | 402 s |
+
+      **The feed is worth −4 leaks against its own control at zero time cost** (AU_BSB recall
+      67 → 100%, ADDRESS 95 → 100%, PERSON_JOINT 43 → 71%, LOCATION 0 → 50%; +1 institutional
+      AU_ABN over-strip, the known keep-list gap). Wall time is flat despite ~17× more
+      analyzer calls per page: OCR dominates, and a quadratic-attention encoder is roughly
+      indifferent between one long window and many short ones. The predicted cost of isolation
+      — a label in one block no longer promoting a value in the next — is real and pinned by a
+      unit test (`BSB` + `014-936` in separate blocks detect nothing; one page detects both),
+      but did not bite on the corpus: V3 puts those panels inside one `table` block, while the
+      interference the feed removes (a header panel sharing an attention window with 40
+      transaction rows — the documented GLiNER2 word-order interference) is everywhere.
+
+      **Perception alone regresses (a → b, +3 leaks), and that decided the default.** Lines
+      inside a block are emitted in `(top, left)` order, so a multi-column header panel
+      interleaves: on `d11.p2` the account value is emitted *before* its own label
+      (`': 162-097111-4' / 'THE DIRECTOR' / 'Account Number' / '23JUN22' / …` — all 15 lines in
+      one correctly-detected `table` block), so `AuAccountNumberRecognizer`'s context promotion
+      never fires. The flat path only gets this right because `_rows` bands side-by-side
+      detection regions into one visual line. Same defect as review issue #8a from the other
+      side.
+
+      **Default flipped to `doclayout:v3` + `--feed blocks` the same day** (Sergei's call on
+      these numbers, after the recommendation had been to hold): `strip --image`/`--pdf`, the
+      `strip_image`/`strip_pdf` signatures and both eval scorers, so the harness measures what
+      ships. Net against the previous default that is 8 critical leaks vs 9 — the `d11`
+      account leak and 2 extra ORGANIZATION over-strips are accepted knowingly as
+      perception-level debt, to be repaid by intra-block column structure rather than by
+      reverting the feed. The flat `OcrResult` path stays reachable behind an explicit
+      `--ocr-backend paddle --feed page`, and the two reassembly-contract tests in
+      `test_pdf_mode.py` pin it there. **Verified after the flip** by re-running both tiers
+      with no flags: the PDF tier reproduces config `c` byte-for-byte, and the synthetic image
+      tier is a wash on leaks (6 → 6, composition shifted) with CONTEXTUAL_ID 25 → 50%,
+      LOCATION/LOCATION_SHORT 75 → 100% and invalid-identifier noise 2 → 0 — single-column
+      renders give layout structure little to bite on, as expected.
+
+      15 new tests (`test_linearization.py` block/rebase contract incl. page-global line
+      numbers and empty-block handling; `test_image_mode.py` `strip_from_page` under both
+      feeds incl. the isolation-cost pin; `test_pdf_mode.py` the routing, both feeds and a
+      guard that the default never reaches `get_ocr_page`). Fast suite 291 green.
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

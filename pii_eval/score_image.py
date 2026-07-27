@@ -185,10 +185,24 @@ def summarize(all_entities, all_invalid, noise,
     return 0
 
 
+def reread_engine(ocr_backend: str):
+    """The flat OCR engine that re-reads stripped output pixels.
+
+    A layout backend ("doclayout:v3") is not a flat engine, and every
+    backend takes its lines from the same pinned PP-OCR tier anyway — so the
+    read-back falls back to the default tier. That keeps the scorer's
+    measuring instrument constant while the strip side varies backend/feed,
+    which is what makes those runs comparable."""
+    from pii.core.ocr import OCR_BACKENDS
+
+    return get_ocr(ocr_backend if ocr_backend in OCR_BACKENDS else "paddle")
+
+
 def score_image(corpus: str, threshold: float = 0.4,
                 invalid_identifiers: str = "likely",
-                ocr_backend: str = "paddle") -> int:
-    ocr = get_ocr(ocr_backend)
+                ocr_backend: str = "doclayout:v3",
+                feed: str = "blocks") -> int:
+    ocr = reread_engine(ocr_backend)
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     source = (corpus_path / manifest["source"]).resolve()
@@ -204,7 +218,8 @@ def score_image(corpus: str, threshold: float = 0.4,
         entities = truth_by_file[doc["source"]]["entities"]
         image = Image.open(corpus_path / doc["file"])
         pmap = PseudonymMap()
-        result = strip_image(image, pipeline, pmap, ocr_backend=ocr_backend)
+        result = strip_image(image, pipeline, pmap,
+                             ocr_backend=ocr_backend, feed=feed)
         reread = ocr(result.image).text
         inv_ents = [e for e in entities if e["type"] in INVALID_ENTITY_TYPES]
         reg_ents = [e for e in entities if e["type"] not in INVALID_ENTITY_TYPES]

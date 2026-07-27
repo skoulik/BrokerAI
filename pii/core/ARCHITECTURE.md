@@ -689,13 +689,67 @@ numbers in [reports/2026-07-25-layout-bakeoff-doclayoutv3.md](reports/2026-07-25
   blocks already group the lines, so re-banding by y-centre would fight it).
 - **Adopted as the default** (Sergei, on these numbers, 2026-07-25): `get_ocr_page` and
   `--ocr-backend` default to `doclayout:v3`; `ppstructure` stays selectable, unchanged, as the
-  comparison baseline (worker spec `doclayout:<model>` alongside `structure`). The strip path
-  is untouched — it still runs `get_ocr`/`OcrResult`, so this moves diagnostics and whatever
-  the strip migration inherits. `OcrBlock.conf` now carries the detector's score for V3 blocks;
+  comparison baseline (worker spec `doclayout:<model>` alongside `structure`). It reached the
+  strip path too on 2026-07-27, with the per-block feed (see below); the flat
+  `get_ocr`/`OcrResult` path is now the opt-in. `OcrBlock.conf` carries the detector's score;
   V3's per-block
   `polygon_points` are deliberately not stored (nothing consumes block polygons and
   `ocr_debug.page_to_dict` does not serialize them — filling the field would silently break the
   JSON round-trip; it is the lever for skewed scans).
+
+### Per-block recognizer feeding (`--feed blocks`, 2026-07-27)
+
+The payoff the perception layer was built for: the recognizer's unit is a **layout block**,
+not a page. `linearize_blocks(page)` cuts the page into one `RecognizerInput` per block
+(offsets local to it), the strip path runs the pipeline **once per block**, and
+`rebase(inputs)` folds the per-block inputs — and the spans found in them — back into one
+page-level view with global offsets. Numbers and the reasoning behind the verdict:
+[reports/2026-07-27-per-block-feed-bakeoff.md](reports/2026-07-27-per-block-feed-bakeoff.md).
+
+- **Full isolation, by separate analyzer calls — not a sentinel.** A `RECORD_SEPARATOR`
+  boundary (the csv_mode idiom) would isolate GLiNER2's attention windows and block layer-1
+  patterns while leaving Presidio's context enhancer free to reach across. Separate calls
+  isolate all three layers, which is the variable Sergei asked to measure. It costs no
+  measurable wall time (31 real pages: 402 s per-block vs 401 s page-wide): OCR dominates the
+  run, and a quadratic-attention encoder is roughly indifferent between one long window and
+  many short ones.
+- **Same characters, different cut.** `rebase(linearize_blocks(page))` is byte-identical to
+  `linearize(page)` — blocks are emitted in the order their first line appears (a layout
+  backend has already sorted lines by block reading order), lines within a block in page
+  order, parts joined by the same newline `_assemble` puts between lines. So the feed changes
+  *only* what the recognizer sees at once; painting, placeholder numbering, reporting and the
+  eval harness are indifferent to it.
+- **Deliberately dumb, on Sergei's instruction (2026-07-27): every block is a unit**, whatever
+  its `kind` or `origin`. No title-glues-to-body, no orphan clustering, no minimum size.
+  Consequences accepted on purpose: on a line-only backend the feed degenerates to per-line,
+  and an orphan line is a context-free one-line window. Heuristics get added only against
+  measured need.
+- **The cost is cross-block context, and it is real but did not bite.** A label in one block
+  can no longer promote a value in the next (pinned by unit test: `BSB` and `014-936` in
+  separate blocks detect *nothing*, where one page detects both). On the real corpus the
+  label/value panels sit inside one `table` block under `doclayout:v3`, while the interference
+  the feed removes — a header panel sharing an attention window with 40 transaction rows — is
+  everywhere. Net **−4 critical leaks** against its own backend control (BSB recall 67 → 100%,
+  ADDRESS 95 → 100%, joint names 43 → 71%).
+- **`doclayout:v3` + `--feed blocks` is the strip default** (Sergei, on these numbers,
+  2026-07-27), for `strip --image`/`--pdf`, the `strip_image`/`strip_pdf` signatures and the
+  eval scorers alike — the harness measures what ships. The flat `OcrResult` path stays
+  reachable behind an explicit `--ocr-backend paddle --feed page`.
+  **One accepted regression rides with it:** switching perception *by itself* costs leaks
+  (12 vs 9 — the feed then wins 4 back for a net 8), because lines inside a block are emitted
+  in `(top, left)` order and a multi-column header panel therefore interleaves — a value is
+  emitted before its own label, so context promotion never fires (`d11`'s account number).
+  The flat path avoids it only because `_rows` bands side-by-side regions into one visual
+  line. The fix is intra-block column structure (the same defect as issue #8a), now the top
+  item on the layout track.
+- **Seams.** `image_mode.strip_from_page(image, page, …, feed=)` is the `OcrPage` strip entry
+  (`strip_from_ocr` keeps the flat `OcrResult` path untouched); `strip_image`/`strip_pdf` take
+  `feed` and route by it; the CLI exposes `--feed {page,blocks}` on `strip`, and the eval
+  harness the same knob on `score`. `ImageStripResult.ocr` is now "an `OcrResult` or a
+  `RecognizerInput`" — both answer `.text`/`.painted_boxes_for_span`, which is the whole
+  contract callers use. The eval scorers always re-read stripped output with the *flat*
+  default tier (`score_image.reread_engine`), so the measuring instrument stays constant while
+  backend and feed vary.
 
 ### Tesseract retired (2026-07-17)
 
