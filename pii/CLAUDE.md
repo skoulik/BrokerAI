@@ -70,6 +70,10 @@ items move to [core/DONE.md](core/DONE.md) with their records.
 - **An OCR line is never dropped.** `OcrLine.block_id` is total: line-only backends synthesize
   one block per line; a layout model's orphan line gets its own synthetic block. A dropped line
   is unredacted PII.
+- **A line box contains its glyph ink.** Build `OcrLine.box` only through
+  `ocr_page._line_box` (word boxes ∪ their region boxes) — engine word boxes are inset from the
+  ink, so a word-box union slices the first and last glyph and makes backends disagree on
+  identical lines.
 - **PP-StructureV3 needs the `paddlex[ocr]` extras and the `_stub_torch` `Tensor`-as-class
   shim** (scipy, pulled in by `paddlex[ocr]`, probes `issubclass(x, torch.Tensor)`). Its models
   live under `models/paddlex`. Reach OCR that yields an `OcrPage` only through `get_ocr_page`

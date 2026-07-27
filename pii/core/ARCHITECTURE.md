@@ -582,6 +582,16 @@ diagnostics; migrating strip onto it is a recorded TODO.
   line, and — the load-bearing reason — **a dropped OCR line is unredacted PII**, so orphans are
   bucketed, never discarded. `region_box` stays *per-word* (a visual row can merge several
   detection regions, each with its own line box — the paint geometry depends on it).
+- **A line box contains its glyph ink (`_line_box`, 2026-07-27).** `OcrLine.box` is the union of
+  the line's word boxes **with their region boxes**, computed in one helper both builders call.
+  Engine word boxes are *inset* from the ink while the detection region box contains it, so a box
+  built from word boxes alone slices the first and last glyph. It is also what made the two layout
+  backends disagree on identical lines: PP-Structure's normalized result carries no word
+  fragments, so its words interpolate across the whole region box and the line box matched the
+  region *by accident*, while `doclayout` asks for fragments (`return_word_box=True`) and got the
+  inset. Union rather than the region alone because paddle occasionally emits a region that does
+  not contain its own words — the same defence `painted_boxes_for_span` applies when growing a
+  paint run, so the box can never end up narrower than the words it holds. Measurements in DONE.md.
 - **Linearization is a separate layer (`linearization.py`).** The recognizer runs on one flat
   string; `linearize(OcrPage) -> RecognizerInput` produces it plus a **source map** (each char
   range → the OCR geometry it came from). Character offsets are born *here*, per linearization —

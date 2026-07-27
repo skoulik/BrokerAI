@@ -284,6 +284,31 @@ class TestResultToPage:
         assert [w.text for w in line.words] == ["TFN", "123", "456"]
         assert line.box.left == 20 and line.box.right <= 320
 
+    def test_line_box_is_the_region_box_with_or_without_fragments(self):
+        # The two layout backends differ ONLY in whether the paddle result
+        # carries word fragments: PP-Structure's normalized result drops them
+        # (words interpolate across the region box), the doclayout path asks
+        # for them (`return_word_box=True`) and gets boxes inset from the ink.
+        # The line box must not move between the two — it spans the region.
+        region = [20, 10, 320, 30]
+        interpolated = self._page(_result(
+            texts=["TFN 123 456"], boxes=[region], scores=[0.9],
+        ))
+        fragmented = self._page(_result(
+            texts=["TFN 123 456"],
+            boxes=[region],
+            scores=[0.9],
+            # inset from the region by 6px left / 4px right, as paddle emits
+            words=[["TFN", "123", "456"]],
+            word_boxes=[[[26, 10, 120, 30], [130, 10, 220, 30],
+                         [230, 10, 316, 30]]],
+        )).lines[0]
+        assert fragmented.box == interpolated.lines[0].box
+        assert (fragmented.box.left, fragmented.box.right) == (20, 320)
+        # the inset fragments still survive as the WORD geometry
+        assert fragmented.words[0].box.left == 26
+        assert fragmented.words[-1].box.right == 316
+
     def test_linearize_parity_with_ocrresult(self):
         # build_page + linearize must reproduce result_to_ocr's text exactly,
         # including geometric row re-ordering (right-region-first input).

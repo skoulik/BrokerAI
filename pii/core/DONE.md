@@ -1112,6 +1112,57 @@ the move; new completed tasks append to the matching section with their records.
       transformers port) so the worker isolation is unchanged. 13 new tests (model-free
       fixture captured off the same ANZ page as the PP-Structure fixture).)*
 
+- [x] **`OcrLine.box` must contain its glyph ink — the two layout backends disagreed**
+      *(2026-07-27, Sergei: "line bounding boxes became too tight after changing the backend".
+      Reproduced on p2 of `Statements - 1114.pdf` at 200 dpi; design now in ARCHITECTURE.md
+      "A line box contains its glyph ink".)*
+
+      **Root cause — a word-box *source* difference, not a layout-model geometry change.**
+      `OcrLine.box` was the union of the line's WORD boxes. Which boxes those are depends on
+      whether the paddle result carries fragments: `ocr_ppstructure._normalize` flattens the
+      pipeline result to `rec_texts/rec_scores/rec_boxes/rec_polys` and drops
+      `text_word`/`text_word_boxes`, so `_region_words` falls back to `_interpolate`, whose
+      words tile the full detection region — the line box equalled the region box *by accident*.
+      The doclayout path goes through `ocr_paddle._predict`, which passes
+      `return_word_box=True`, so real fragment boxes exist and are used — and those are inset
+      from the glyph ink (already documented on `painted_boxes_for_span`, measured 2026-07-21).
+      Switching the default backend therefore surfaced the inset on the `OcrPage` path for the
+      first time; nothing got tighter, the loose box had just been an artefact of interpolation.
+
+      **Measured** (walk outward from each box edge while ink continues, so a neighbouring
+      row can't contaminate — `scratchpad/ink2.py` method), 53 lines on that page:
+
+      | | lines losing ink | mean spill L,T,R,B |
+      |---|---|---|
+      | `doclayout` line box, before | **50 / 53** | 5.2, 0, 3.5, 0 |
+      | `doclayout` word `region_box` | 0 / 53 | 0, 0, 0, 0 |
+      | `ppstructure` line box | 0 / 53 | 0, 0, 0, 0 |
+      | `doclayout` line box, after | **0 / 53** | 0, 0, 0, 0 |
+
+      Purely horizontal (vertically the fragments match the region exactly), up to 8 px — about
+      half a glyph at 200 dpi, so the first and last characters were sliced.
+
+      **Fix:** one helper, `ocr_page._line_box(words)` = union of the word boxes *with* their
+      region boxes, called by both `build_page` and `build_layout_page`, so every backend
+      produces the same rectangle for the same line. Union rather than region-alone because of
+      the ea9e056 case — paddle sometimes emits a region that does not contain its own words
+      (a footer line in `ServletRetrieve (6).pdf`), and `painted_boxes_for_span` already clamps
+      against the word extent for exactly that reason; the line box can now never end up
+      narrower than today's. **Verified end-to-end:** ink loss 50/53 → 0/53, and all 45
+      distinct lines on the page now have byte-identical boxes under `doclayout:v3` and
+      `ppstructure` (before: all 45 differed).
+
+      **Blast radius was diagnostics-only** — painting grows runs out to `region_box`
+      independently, `_assign` is called with the raw detection region box *before* the line
+      box is computed, and strip is still on `get_ocr`/`OcrResult`. But it sits on the seam
+      strip is about to migrate onto. 9 new tests: `tests/pii/core/test_ocr_page.py` (new file
+      for the shared builders — ink containment, banded multi-region rows, glyph-tight
+      backends, the stale-region guard, orphan/synthetic-block agreement) plus a
+      fragments-vs-interpolated equality test in `test_ocr_paddle.py`; the doclayout
+      `test_words_carry_line_region_box` assertion was a tautology
+      (`w.region_box == line.box or w.region_box is not None`) and now asserts the real
+      equality.
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

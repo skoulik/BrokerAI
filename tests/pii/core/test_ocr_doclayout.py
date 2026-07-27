@@ -13,6 +13,7 @@ V3 reports 6 blocks (it splits the body paragraph in two and types the logo
 from collections import Counter
 
 from pii.core.linearization import linearize
+from pii.core.ocr import _to_box
 from pii.core.ocr_doclayout import doclayout_result_to_page
 from pii.core.ocr_page import OcrFrame
 
@@ -109,8 +110,11 @@ def test_words_carry_line_region_box():
     page = _anz()
     line = next(ln for ln in page.lines if ln.text == "MORTGAGE CREDIT")
     assert [w.text for w in line.words] == ["MORTGAGE", "CREDIT"]
-    assert all(w.region_box == line.box or w.region_box is not None
-               for w in line.words)
+    # Every word carries the detection region it came from, and the line box
+    # spans it — word boxes are inset from the glyph ink, so a line box built
+    # from them alone would slice the first and last glyph (ocr_page._line_box).
+    assert all(w.region_box == _to_box(_OCR["rec_boxes"][0]) for w in line.words)
+    assert line.box == _to_box(_OCR["rec_boxes"][0])
 
 
 def test_feeds_linearize():

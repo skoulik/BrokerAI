@@ -166,6 +166,31 @@ DONE.md; design in ARCHITECTURE.md "OCR perception layer"); it runs alongside th
       reaches the recognizer in its own synthetic block) — they are a structure-quality signal,
       and they matter more once feeding is per-block (step 2), because an orphan then becomes a
       one-line context-free window.
+
+      **First cluster classified (2026-07-27, `Statements - 1114.pdf` p2 at 200 dpi — a real
+      detection miss, not furniture):** 16 of 53 lines orphan, and they are exactly the top
+      header panel — the addressee block (`THE DIRECTOR` / `25 OAKLANDS WAY` / `PAKENHAM` /
+      `VIC 3810`) and the account panel (`Account Number : 162-097111-4`, statement period,
+      statement number, page). V3 *does* see the panel: running the model directly on the same
+      raster, it emits `table [6,67,1593,292]` covering the whole thing — at score **0.296**,
+      against the shipped `threshold: 0.3`. It misses by 0.004. The whole page sits on the cut
+      (the seven surviving blocks score 0.38–0.46; at the un-overridden 0.5 default V3 detects
+      *nothing* here). Page-local sweep: 0.3 → 7 blocks, 0.2 → 8 (panel recovered), 0.1 → 8,
+      **0.05 → 2 page-sized blobs** — `layout_merge_bboxes_mode: union` chaining low-score
+      boxes. So the cliff below the useful range is real but is not where a nudge would sit.
+
+      **The cost is reading order, not the orphaning as such.** Orphan blocks are appended
+      *after* the detected run and `linearize` walks lines in emission order, so the address and
+      account number are emitted at the very END of the page string, after the whole transaction
+      table, and interleaved between the two columns in paddle's detection order (`THE DIRECTOR`
+      / `Account Number` / `: 162-097111-4` / `25 OAKLANDS WAY` / …). The multi-line address is
+      shredded. **A threshold nudge alone does not fix this** — the panel comes back as one
+      full-width block and lines within a block sort by `(top, left)`, so the two columns still
+      alternate. Whatever the fix, it has to reach column structure, which points at the
+      orphan-clustering item and step 3 rather than at the threshold. (For contrast,
+      `ppstructure` reports 0 orphans on this page only because it emits 2 blocks total, one
+      `table [0,67,1587,931]` swallowing the panel *and* the transaction table — no structure to
+      be orphaned from.)
 - [ ] **Per-block recognizer feeding** (Sergei's hypothesis 2026-07-24; **promoted to the work
       itself 2026-07-25, step 2 of the session plan** — block quality was the precondition and
       `doclayout:v3` cleared it): feed the recognizer each block's lines rather than one

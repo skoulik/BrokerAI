@@ -46,11 +46,13 @@ class OcrWord:
 
 @dataclass(frozen=True)
 class OcrLine:
-    """One line of recognized text. `box` is the line's bounding box (union
-    of its word boxes). `block_id` indexes into OcrPage.blocks (total —
-    every line has a block). `conf` is the native line confidence (0-100) or
-    None if the engine doesn't score lines. `font` is None from any OCR
-    engine (filled only by PDF-traceback, diagnostics-only)."""
+    """One line of recognized text. `box` is the line's bounding box — see
+    `_line_box`: it CONTAINS the glyph ink, so it is the union of the word
+    boxes with their region boxes, not the word boxes alone. `block_id`
+    indexes into OcrPage.blocks (total — every line has a block). `conf` is
+    the native line confidence (0-100) or None if the engine doesn't score
+    lines. `font` is None from any OCR engine (filled only by PDF-traceback,
+    diagnostics-only)."""
 
     text: str
     box: Box
@@ -108,6 +110,26 @@ class OcrPage:
         return self.blocks[line.block_id]
 
 
+def _line_box(words: list[OcrWord]) -> Box:
+    """A line's bounding box: the union of its words' boxes AND their region
+    boxes. Both builders go through here so every backend produces the same
+    rectangle for the same line.
+
+    Region boxes, not word boxes alone, because an engine word box is inset
+    from the glyph ink while the detection region box contains it — a line box
+    built from word boxes alone slices the first and last glyph (measured
+    2026-07-27: 50 of 53 lines on a real statement page lost up to 8px of ink
+    at 200 dpi). Union rather than the region box alone because paddle
+    occasionally emits a region that does NOT contain its own words (the
+    ea9e056 footer case); unioning keeps the box from ever ending up narrower
+    than the words it holds, the same defence `painted_boxes_for_span` applies
+    when growing a paint run.
+
+    A word with no region geometry reports its own box as `region`, so a
+    glyph-tight backend is unaffected."""
+    return _union([w.box for w in words] + [w.region for w in words])
+
+
 def build_page(rows, frame: OcrFrame) -> OcrPage:
     """Build an OcrPage for a line-only backend from assembled visual rows.
 
@@ -129,7 +151,7 @@ def build_page(rows, frame: OcrFrame) -> OcrPage:
             )
             for item in row
         )
-        line_box = _union([w.box for w in words])
+        line_box = _line_box(words)
         lines.append(
             OcrLine(
                 text=" ".join(w.text for w in words),
@@ -215,12 +237,13 @@ def build_layout_page(blocks: list[OcrBlock], lines, frame: OcrFrame) -> OcrPage
     out_lines = []
     for k in order:
         line_box, words, conf = lines[k]
+        out_words = tuple(
+            OcrWord(text=w, box=b, region_box=line_box) for w, b in words
+        )
         out_lines.append(OcrLine(
             text=" ".join(w for w, _b in words),
-            box=_union([b for _w, b in words]) if words else line_box,
-            words=tuple(
-                OcrWord(text=w, box=b, region_box=line_box) for w, b in words
-            ),
+            box=_line_box(out_words) if out_words else line_box,
+            words=out_words,
             block_id=line_block[k],
             conf=conf,
         ))
