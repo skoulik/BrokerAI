@@ -1284,6 +1284,64 @@ the move; new completed tasks append to the matching section with their records.
       consuming the shared stream — new probes should be additive, or every historical eval
       number becomes incomparable. Widening `CRITICAL` / de-flaking PERSON recall is open work.
 
+- [x] **One-pass VLM: evaluated on the real corpus, and layer 0 shipped opt-in**
+      *(2026-08-08; full record in
+      [reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md),
+      current design distilled into [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0")*. Closes the
+      "One-pass VLM pipeline" TODO item; the follow-ups it spawned are back in
+      [TODO.md](TODO.md).
+
+      **The item's premise was stale.** It assumed a "Qwen-VL class" grounding model; Qwen has
+      since folded vision into the main line, so Qwen3.5 (Feb–Mar 2026) and **Qwen3.6**
+      (Apr 2026, 27B dense + 35B-A3B, Apache 2.0) are natively multimodal. Compatibility was
+      predicted from GGUF headers before downloading 28.6 GB: the mmproj declares
+      `clip.projector_type=qwen3vl_merger` and the model `general.architecture=qwen35`, i.e.
+      Qwen3.6 reuses the Qwen3-VL vision tower — so it loads on any llama.cpp with
+      `clip_graph_qwen3vl`. b9968 has not got it; **b10326 has**. Also surveyed and not pursued:
+      Moondream 3 (MLX-only), Molmo 2 (emits *points*, not boxes).
+
+      **Detection is excellent.** 31 real pages, 445 findings, zero parse failures. It caught
+      the account number that leaks in the shipping default (`d11.p2`, the `(top,left)`
+      line-order defect), the Qantas loyalty ID of issue #7 that no class covers, a card number
+      buried mid-sentence in prose, and a vehicle registration never mentioned in the prompt —
+      while correctly leaving Westpac's ABN, `13 22 66` and AFSL numbers alone. One coherent
+      recall gap: mailing-house control codes under the address block (two banks). Barcodes are
+      *not* a model failure — they are graphics, invisible to a pixels-first reader, and remain
+      the existing barcode TODO.
+
+      **Determinism: the Surya blocker is answered.** Surya 2 was disqualified because three
+      temperature-0 runs gave 6/3/5 leaks, with single-slot serving recorded as untried. With
+      `-np 1`, three runs give byte-identical finding sets on both a 2B and the 27B.
+
+      **Grounding is the weak half, and it decided the architecture.** 64.9% of boxes fully
+      covered at an 8 px pad; the failure is *stochastic* (same value, same layout, correct on
+      p2 and wrong on p4), so padding and calibration cannot fix it, and neither position nor
+      glyph size shows a trend to calibrate against. Asking for boxes additionally costs 7.4% recall
+      corpus-wide. Hence PaddleOCR stays and supplies geometry in production.
+
+      **Prompt tuning mattered more than anything else measured.** v1 (14 classes mirroring
+      `PLACEHOLDER_PREFIXES`, plus a "do not report the issuer" carve-out) missed 3 values on one
+      page; v2 (5 coarse classes, no carve-outs) missed 1; v5 (+ naming "policy, reference and
+      claim numbers", + "identifiers live in headings too") was clean. Three lessons: recall is
+      bounded by the vocabulary you name; coarse classes generalize *better*, not worse; and a
+      structural hint did **not** substitute for a concrete noun — the policy number came back
+      only once `policy numbers` was named explicitly.
+
+      **Measurement caution worth carrying forward.** Six scorer iterations produced confident
+      wrong answers about the model — unanchored match windows (correct boxes scored 3%), PDF
+      font boxes instead of glyph ink (65% on perfect boxes), the wrong occurrence of a repeated
+      value (0% on three correct boxes, reading as "16% catastrophic"), prefix-matching a logo
+      against an unrelated URL, and dot leaders inflating word rects. Five made the model look
+      worse than it is. Confirm any grounding claim by cropping the predicted box and looking at
+      it. Separately: a dense statement's output looked mangled (`Sk Busines`,
+      `Olga and Sergei Kuli L2724656893`) — those strings are **verbatim in the source**, which
+      truncates narrative fields to fixed width.
+
+      **Performance** (M1 Max, Q8_0, mains power): ~176 s/page — ~130 s image ingestion, decode
+      11 tok/s against a ~14 tok/s memory-bound ceiling. `-fa on` and `-ub 2048` gave *no*
+      improvement. Battery throttling doubles everything. OCR is 1.4 s/page warm, so overlapping
+      it with the VLM call would save <1% and was declined.
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

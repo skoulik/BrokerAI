@@ -136,9 +136,15 @@ Three layers, unioned — no single detector catches everything (2026-07-05):
 
 | Layer | Engine | Owns | Status |
 |---|---|---|---|
+| 0 | Local VLM reading the page image (`vlm.py`) | everything, from pixels — an *alternative* to 1+2 on the image/PDF paths, not an addition to them | shipped 2026-08-08, opt-in (`--detector vlm`) |
 | 1 | Presidio patterns + checksums | TFN, Medicare, ABN/ACN, BSB, account, PayID, cards, email, phone, IBAN; invalid-candidate shadows | shipped |
 | 2 | GLiNER2 zero-shot NER | PERSON, ORGANIZATION, ADDRESS, DATE_OF_BIRTH (+ unvalidated guesses of layer-1 types) | shipped |
 | 3 | Local LLM audit (llama-server) | contextual identifiers ("the borrower's wife, a dentist in Wagga Wagga") | planned |
+
+Layer 0 *replaces* 1+2 rather than joining the union: it is selected instead of them, so the
+"three layers, unioned" statement above describes the default `--detector layers` path.
+Combining them — layer 1 refining and validating layer 0's findings — is designed and not yet
+built (TODO.md).
 
 One pipeline (the `--no-ner` patterns-only regime was retired 2026-07-15, decision below):
 GLiNER2 always loads and owns PERSON/ORG/ADDRESS/DOB; `SpacyRecognizer` is removed from the
@@ -504,9 +510,9 @@ matching loop and carries two silent-leak classes. What did transfer into our de
 The engine seam is the word-box interchange dict in `ocr.py`. Tesseract is the first adapter;
 PaddleOCR/Surya/docTR are future adapters normalizing into the same contract (polygons →
 axis-aligned envelopes), so the text pipeline and the paint layer never know which engine ran.
-The exception is a local VLM (Qwen-VL class) doing OCR+PII detection in one pass: that cannot
-be expressed as an OCR adapter feeding the analyze step — if pursued, it becomes an
-*alternative pipeline* whose output joins at the merged-spans level. Bake-off task in TODO.md.
+The exception is a local VLM doing OCR+PII detection in one pass: that cannot be expressed as
+an OCR adapter feeding the analyze step, so it is an *alternative pipeline* joining at the
+merged-spans level — **built 2026-08-08, see "Layer 0" below**.
 
 **Realized 2026-07-17** as `ocr.py::get_ocr(backend) -> (image, lang=...) -> OcrResult`
 (`OCR_BACKENDS`; paddle entries select a model tier, e.g. `paddle:v6_medium`). The PaddleOCR
@@ -765,6 +771,53 @@ and the `tesseract` backend name are removed; `get_ocr`/`--ocr-backend` default 
 (`v6_medium`). The neutral interchange (`OcrResult`/`assemble`/`get_ocr`) is unchanged — it
 was always the seam, not Tesseract-specific. Leak-gate parity confirmed before removal
 (records in DONE.md). The operational-profile section below is kept as **history**.
+
+### Layer 0 — the VLM detector, and where its geometry comes from (2026-08-08)
+
+`vlm.py` is a detector, not an OCR backend: it reads the page image and emits the merged-span
+plan directly, honouring the same contract as `PiiPipeline.detect`, so placeholder allocation,
+overlap merging, painting, PDF rebuild and map handling are shared with the default path.
+Reached with `--detector vlm` on `--image`/`--pdf`. Evidence for every claim below is in
+[reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md).
+
+**Detection and geometry are separate concerns, and only detection is a strength.** The model
+finds PII very well but places boxes *stochastically* badly — 64.9% fully covered at an 8 px
+pad, the same value boxed correctly on one page and wrongly on the next — so no pad or
+calibration repairs it. Geometry therefore has two sources, selected by `--geometry`:
+
+- **`ocr` (production).** The model returns values only; each is located in the OCR text and
+  painted through `painted_boxes_for_span`. OCR word boxes are exact.
+- **`vlm` (comparison only).** The model's own boxes; OCR never runs. Kept in the tool to keep
+  the comparison live, not as a production option.
+
+**Boxes are only requested when they will be used**, because asking for coordinates costs
+7.4% recall corpus-wide — the model spends budget on geometry instead of detection. So the
+safe path is also the more accurate one; there is no trade to make.
+
+**A value that cannot be located is surfaced, never dropped.** `locate()` is tiered — exact,
+then an alphanumeric squash ignoring spacing/hyphens/case — and deliberately goes no fuzzier:
+an edit-distance match risks painting the *wrong* region, which is worse than an honest
+"unlocatable". Unlocatable findings warn and are counted, because a detection we cannot place
+is a detection we cannot redact.
+
+**The class vocabulary is coarse on purpose.** The model emits five classes
+(`PII_NAME`/`PII_ADDRESS`/`PII_COMPANY`/`PII_DOB`/`PII_IDENTIFIER`), cut along one test: *can
+a deterministic recognizer re-derive this class from the string alone?* Identifiers can (regex
++ checksum), and the VLM is measurably unreliable at it — the same value came back
+`CREDIT_CARD` in one run and `AU_BANK_ACCOUNT` in another. Names, addresses, companies and
+dates cannot; only semantics decides, which is the model's strength. Collapsing 14 → 5 cost no
+recall and *gained* generalization (a vehicle registration was caught with no mention of
+vehicles in the prompt). Unrefined identifiers strip under `IDENTIFIER_GENERIC` (`ID_n`) —
+distinct from the `*_INVALID` classes, which mean "matched a pattern and failed its checksum".
+
+**The prompt carries no institutional exclusions.** Over-strip is recoverable by the operator
+keep-list; under-strip is a breach. A prompt is the wrong home for a keep decision: a model
+applies it silently, per page, unauditably. That belongs in a deterministic, logged layer.
+
+**Transport is injectable and stdlib-only** (`urllib`), so `pii.core` gains no dependency and
+the testbench never needs a model server. Determinism requires single-slot serving (`-np 1`);
+llama.cpp's parallel batching makes greedy decode non-reproducible, and a gate that can be
+passed by re-rolling is not a gate.
 
 ### Surya 2 evaluated and retired the same day (2026-07-17)
 

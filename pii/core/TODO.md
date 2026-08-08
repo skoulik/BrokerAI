@@ -12,7 +12,30 @@ done — see DONE.md and reports/; round 2 evaluated and retired Surya 2 same-da
 dropped unevaluated): demo on the reference documents → degradation tier → one-pass VLM
 experiment (future session; owns the next engine-shaped decision).
 
-## Session plan — set by Sergei 2026-07-25, in this order
+## Direction change — 2026-08-08, read before picking anything up below
+
+The one-pass VLM landed and changed what is worth building. On the evidence in
+[reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md), Sergei's
+verdict is that this is "the most promising result so far and the avenue worth developing", and
+the agreed shape is:
+
+- **The layout/perception layer is not needed** — the VLM reads spatial structure natively,
+  which is why it got `d11.p2`'s account number right where the shipping default leaks it. That
+  makes most of the "OCR perception / linearization" section below, the 2026-07-25 session plan,
+  and the whole table-structure programme **expected retirements rather than planned work**.
+- **GLiNER2 (and spaCy with it) are not needed** — beaten on this corpus at things they
+  structurally cannot do. The "Experiments — GLiNER2 tuning" section is in the same position.
+- **Layer-1 validation stays**, narrowed to classifier / checksum / recall floor. Whether that
+  means presidio or our own code is postponed — note it *inverts* the "Stop duplicating
+  Presidio's checksum arithmetic" item below, whose proposed fix is to delegate *to* presidio.
+- **PaddleOCR stays.** VLM boxes are stochastically unreliable, so OCR supplies geometry;
+  `--geometry ocr` is production and `--geometry vlm` is a comparison instrument only.
+
+Nothing is deleted yet, because the VLM path is opt-in and layer-1 refinement is not built —
+if it stalls, the items below are still the plan. Retire them only once the VLM path is the
+default and measured on the leak gate.
+
+## Session plan — set by Sergei 2026-07-25, in this order (SUPERSEDED — see above)
 
 After eyeballing the whole sensitive corpus on the new `doclayout:v3` default ("almost there
 in terms of layout understanding"). Each step below has a fuller entry further down; this is
@@ -98,21 +121,59 @@ the running order, and it is deliberately layout-first-then-back-to-e2e:
       below. Decide on benchmark numbers from real bank statements/scans (needs the image
       eval tier for ground truth). The engine seam is the parallel-lists word-box dict in
       `pii/core/ocr.py` (each backend is an adapter normalizing into it).
-- [ ] **One-pass VLM pipeline** (reframed 2026-07-17, Sergei): prompt a general
-      grounding-capable VLM (Qwen-VL class; they emit absolute bboxes) to detect sensitive
-      identifiers directly from the page image — VLM→inpaint replacing OCR→GLiNER→inpaint.
-      Not an OCR adapter — an *alternative pipeline* joining at the merged-spans level
-      (ARCHITECTURE.md). **GLiNER2 retirement is a named possible outcome**, decided the
-      Tesseract way: score {layer1+VLM} vs {layer1+GLiNER2} vs their union on the leak
-      gate — the image scorer re-OCRs output pixels, so it gates this pipeline unchanged.
-      Expected intermediate: hybrid — VLM detects, layer-1 checksums cross-check its
-      transcriptions (silent omission is the VLM's characteristic failure; box imprecision
-      on small dense text = partial-exposure leaks; transcription errors fork pseudonym
-      identity — all three are the things to measure). Layer-1 checksum recognizers stay
-      regardless. Infra: reuses the llama-server serving/attach pattern from the Surya
-      adapter; model sizes 8B+ want the Mac M1 Max (64 GB unified, up to ~48 GB usable as
-      VRAM — Sergei 2026-07-17). Absorbs the layer-3 audit-pass question when picked up
-      (a one-pass detector and an audit pass are the same model wearing different prompts).
+- [x] ~~**One-pass VLM pipeline**~~ — **DONE 2026-08-08**, shipped as layer 0
+      (`--detector vlm`). Record in [DONE.md](DONE.md), design in
+      [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0", evidence in
+      [reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md).
+      Verdict: detection excellent, grounding stochastically unreliable, so **PaddleOCR stays
+      and supplies geometry**. The follow-ups it spawned are the next three items.
+
+- [ ] **Layer-1 refinement of VLM findings** (step 2, designed 2026-08-08, not built — Sergei
+      paused implementation). Today every VLM-detected identifier strips as
+      `IDENTIFIER_GENERIC` (`ID_n`), so the VLM path forks placeholder identity against the
+      layers path (the same account number is `ACCOUNT_1` under `--detector layers` and `ID_2`
+      under `--detector vlm`) and the `*_INVALID` classes are absent. Layer 1 should run
+      alongside and do three jobs: **refine** (adopt layer 1's precise type where a layer-1
+      span overlaps a VLM span), **validate** (restore the checksum-invalid shadows — the
+      signal a VLM structurally cannot produce), and **union** (add layer-1 findings the VLM
+      missed, as a deterministic recall floor). Needs an overlap rule rather than trusting
+      layer 1 blindly: it classified the AFSL number `237502` as a phone. Production is
+      `--geometry ocr`, so OCR text — and therefore recognizer *context* — is always
+      available, which is why one refinement mechanism suffices.
+
+- [ ] **Serving / llama.cpp tuning job** (scoped 2026-08-08, deferred to its own session).
+      ~176 s/page at Q8_0 is a research profile, not a product one — a 50-page submission
+      bundle is ~2.5 h. Time splits **~130 s prefill (image ingestion, 74%)** and **~45 s
+      decode (11 tok/s against a ~14 tok/s memory-bound ceiling)**, so a lever only matters if
+      it attacks the right half. Already tried and rejected: `-fa on` and `-ub 2048` gave *no*
+      improvement (73 vs 80 tok/s prefill, decode unchanged). Battery throttling halves
+      everything — check `pmset -g ps` before trusting any number.
+
+      Run in this order, each measured against the frozen baseline (**445 findings / 350
+      distinct values over 31 pages**, values mode, which needs no geometry oracle):
+
+      1. **Lower `--image-max-tokens`** (now 16384). Attacks the dominant 74%; roughly 2×. The
+         budget was raised only to fix *box* precision and production takes no boxes, so its
+         justification is gone. Risk — the one that made Sergei decline it earlier: image tokens
+         set the spatial resolution of the whole perception, not just coordinates, so **recall
+         on small print may degrade**. Sweep the budget, watch recall, keep the knee.
+      2. **Q5/Q4 instead of Q8_0** (28.6 GB). Decode is memory-bound, so ~2× on that half, plus
+         faster load. Q8 was chosen deliberately so a negative capability result could not be
+         blamed on quantization; that job is done. Re-score the two hand-verified pages to
+         confirm detection quality holds.
+      3. **Qwen3.6-35B-A3B** (3B active vs 27B). Structurally the biggest lever and a candidate
+         we wanted to try anyway; needs its own capability check, not just a speed check.
+      4. **Multi-slot batching** (`-np > 1`, Sergei's question). Decode should scale near
+         linearly with batch (weights read once for several sequences); prefill should not, being
+         compute-bound — so theory caps the win at ~20–25%. Worth measuring anyway because
+         80 tok/s prefill is suspiciously low for an M1 Max and may have headroom the theory
+         does not predict. **Cost: it breaks determinism** — precisely what disqualified Surya
+         as a gate — so it must be opt-in, with eval/gate runs pinned to `-np 1`. KV cache per
+         slot is affordable if `-c` drops (we use ~9k of 32k).
+
+      Ordering rationale: 1 attacks the biggest slice and costs nothing but a measurement; 2 is
+      cheap and independent; 3 changes the model so it needs a quality re-check; 4 is last
+      because it is the only one that buys speed by giving up a property we rely on.
 - [ ] **PaddleOCR-VL as an OCR backend** (researched 2026-07-25, *postponed* — Sergei: layout
       model first, no VLM for now). The 0.9B VLM ships in the installed `paddleocr` 3.7.0 as
       the `PaddleOCRVL` pipeline (v1.6 default, `vl_rec_backend: native` = paddle, so torch-free
