@@ -1238,6 +1238,52 @@ the move; new completed tasks append to the matching section with their records.
       feeds incl. the isolation-cost pin; `test_pdf_mode.py` the routing, both feeds and a
       guard that the default never reaches `get_ocr_page`). Fast suite 291 green.
 
+- [x] **presidio 2.2.363 → 2.2.364; ABN leading-zero checksum re-sync** *(2026-08-08, prompted
+      by Sergei spotting "Fix AU ABN accepting some invalid leading-zero numbers" in the
+      upstream notes)*. Verified in the shipped wheel, not just the changelog:
+      `AuAbnRecognizer.validate_result` replaced `abn_list[0] = 9 if abn_list[0] == 0 else
+      abn_list[0] - 1` with the plain ABR `abn_list[0] - 1`.
+
+      **The fix does not do what its own upstream comment claims.** That comment asserts a
+      leading 0 "makes the weighted sum non-zero mod 89 and correctly fails". It does not: with
+      −1 in the lead the sum can still land on 0 mod 89. Measured over 400k random leading-zero
+      11-digit values — old 4530 accepted (1.1325%), new 4579 (1.1447%), **overlap 0**. The
+      false-positive class is not removed, it is *replaced* by a disjoint set of nearly equal
+      size. Over 200k non-leading-zero values the two agree exactly (0 differences), so no real
+      ABN is affected — real ABNs cannot lead with 0, and `pii_eval.au.abn` can only emit first
+      digits 1-9 (`need // 10 + 1`, `need` ≤ 88).
+
+      The upgrade's real risk was ours, not upstream's: two copies of the *old* arithmetic
+      (`pii/core/checksums.py:abn_checksum`, feeding `InvalidAuAbnRecognizer`; and its
+      `pii_eval/au.py:abn_valid` mirror, whose comment read "as presidio computes it"). AU_ABN
+      and AU_ABN_INVALID partition the 11-digit space, so leaving them unsynced splits every
+      leading-zero value into one of two buckets — presidio-accepts/we-say-invalid (stripped
+      *and* spuriously reported invalid, benign) or presidio-rejects/we-say-valid (**neither
+      stripped nor collected — a silent leak**, since AU_ABN_INVALID is not in
+      `DEFAULT_STRIP_ENTITIES` and only feeds `InvalidFinding` reporting). Both copies synced to
+      the plain subtract-1.
+
+      Coverage per the dual-coverage rule: `test_abn_checksum_tracks_presidio_exactly` pins our
+      checksum against the live `AuAbnRecognizer` over 4k values plus four discriminating
+      literals (`06700094948`/`00238288185` pass only ≤ 2.2.363; `08737167868`/`01039931582`
+      only ≥ 2.2.364) — it fails on 40 of those inputs under the old logic, so it is not
+      vacuous, and it will catch any future upstream drift rather than a snapshot of one side.
+      Plus an end-to-end seam test and a corpus probe (`au.abn_leading_zero`, 4 per tier-1 run,
+      100% stripped). Full suite 303 green (fast + slow + model); wheel diff showed 26 changed
+      analyzer files (registry loader, `entity_recognizer`, phone/date recognizers) with no
+      fallout, anonymizer effectively untouched.
+
+      **Incidental finding — the tier-1 gate is seed-fragile on PERSON.** The probe initially
+      drew from the shared `pool.rng`, which shifted every downstream draw and re-rolled the
+      whole seed-42 corpus; the gate then failed on a GLiNER2 PERSON miss (1 leaked, 1 partial)
+      unrelated to ABN. On *unmodified* code the gate already fails at seeds 2, 3 and 7 and
+      passes at 42 and 1 — so seed 42 passing is partly luck, and any change that perturbs the
+      draw sequence re-enters the lottery. Also confirmed `CONTEXTUAL_ID` sits at 0% recall at
+      every seed but is not in `build.CRITICAL`, so it never trips the gate. Fixed here by
+      deriving the probe's Random from already-drawn values (`biz.abn ^ acct.number`) instead of
+      consuming the shared stream — new probes should be additive, or every historical eval
+      number becomes incomparable. Widening `CRITICAL` / de-flaking PERSON recall is open work.
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

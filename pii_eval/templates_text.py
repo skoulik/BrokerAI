@@ -144,6 +144,16 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     else:
         doc.pii(biz.abn, "AU_ABN")
     doc.nl()
+    # Leading-zero ABN probe: 11 digits starting with 0 are not a real ABN,
+    # but presidio's mod-89 check accepts some and 2.2.364 changed which —
+    # must strip as AU_ABN rather than fall through both AU_ABN and the
+    # AU_ABN_INVALID shadow (pii/core/checksums.py:abn_checksum). Drawn from
+    # a Random derived from the already-drawn ABN rather than from pool.rng:
+    # consuming the shared stream would shift every downstream draw and
+    # re-roll every existing seed's corpus, making eval runs across the
+    # change incomparable (and the tier-1 gate is seed-fragile on PERSON).
+    zero_rng = random.Random(int(au.digits(biz.abn)) ^ int(au.digits(acct.number)))
+    doc.raw("  Prior ABN:       ").pii(au.abn_leading_zero(zero_rng), "AU_ABN").nl()
     doc.raw("  ACN:             ").pii(biz.acn, "AU_ACN").nl(2)
 
     doc.raw("Salary credit account\n")

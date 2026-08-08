@@ -226,3 +226,40 @@ def test_cli_mask_all_warns_and_logs(tmp_path, capsys, gliner2_stub):
     assert "warning" in err and "analytical utility" in err
     assert "checksum-invalid identifier candidate" in err  # log default yes
     assert "TFN_INVALID_1" in out_file.read_text(encoding="utf-8")
+
+
+def test_abn_checksum_tracks_presidio_exactly():
+    """AU_ABN (presidio) and AU_ABN_INVALID (our shadow) partition the
+    11-digit space, so the two ABN implementations must agree everywhere.
+    Where they disagree a value is either stripped and reported invalid at
+    once, or — the dangerous direction — matched by neither and passed
+    through silently, absent from the output and the invalid report alike.
+    Presidio 2.2.364 replaced the leading-zero special case (0 -> 9) with
+    the plain ABR subtract-1, and the pre/post accepted sets are disjoint;
+    pin the agreement rather than a snapshot of either side.
+    """
+    import random
+
+    from presidio_analyzer.predefined_recognizers import AuAbnRecognizer
+
+    from pii.core.checksums import abn_checksum
+
+    validate = AuAbnRecognizer().validate_result
+    rng = random.Random(0)
+    cands = [str(rng.randrange(10**10, 10**11)) for _ in range(2000)]
+    # Leading zeros are the class 2.2.364 moved and are never drawn above.
+    cands += ["0" + str(rng.randrange(10**9, 10**10)) for _ in range(2000)]
+    # Discriminating literals: the first two pass only under <= 2.2.363,
+    # the last two only under >= 2.2.364.
+    cands += ["06700094948", "00238288185", "08737167868", "01039931582"]
+    for d in cands:
+        assert abn_checksum(d) == validate(d), d
+
+
+def test_leading_zero_abn_is_never_dropped_by_both(make_pipeline):
+    """The seam above, end to end: a leading-zero 11-digit value in an ABN
+    field must be stripped as AU_ABN or collected as AU_ABN_INVALID."""
+    p = make_pipeline(invalid_identifiers="all")
+    for value in ("08737167868", "06700094948"):
+        out, _, findings = p.strip(f"ABN: {value}", PseudonymMap())
+        assert value not in out or "AU_ABN_INVALID" in types(findings), value

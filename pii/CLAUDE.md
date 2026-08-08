@@ -44,7 +44,12 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   entry.
 - **Standalone from the RAG app.** Nothing here may import `rag_tools`, `app.py`, `ingest.py`,
   or other RAG-pipeline code; the PII tool only shares the local model server. Keep it that way.
-- **presidio must be ≥ 2.2.363.** 2.2.362's ACN validator rejects every ACN with check digit 0.
+- **presidio must be ≥ 2.2.364, and `abn_checksum` is version-coupled to it.** 2.2.362's ACN
+  validator rejects every ACN with check digit 0; 2.2.364 changed the ABN validator's
+  leading-zero handling. `pii/core/checksums.py:abn_checksum` and its `pii_eval/au.py:abn_valid`
+  mirror must match presidio's ABN arithmetic exactly — `AU_ABN` and the `AU_ABN_INVALID` shadow
+  partition the 11-digit space, and a mismatch silently drops values from both. Re-check both
+  copies on every presidio upgrade.
 - **AU recognizers need explicit registration.** Presidio ships its Australian entities
   (`AU_TFN`, `AU_MEDICARE`, `AU_ABN`, `AU_ACN`) disabled/absent from the default registry —
   they must be registered explicitly, alongside the custom BSB/account/PayID recognizers in

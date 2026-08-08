@@ -77,3 +77,14 @@ def test_malformed_medicare_breaks_structure_only():
         v = au.malformed_medicare(rng)
         assert v[0] in "01789"
         assert re.fullmatch(r"\d{4} \d{5} \d( \d)?", v)
+
+
+def test_abn_leading_zero_generator():
+    """Leading-zero values are not real ABNs but pass the mod-89 check;
+    the probe exists because presidio 2.2.364 changed which ones do."""
+    for rng in _rngs():
+        for _ in range(N):
+            s = au.abn_leading_zero(rng)
+            d = au.digits(s)
+            assert d[0] == "0" and len(d) == 11
+            assert au.abn_valid(d)

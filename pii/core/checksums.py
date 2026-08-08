@@ -33,12 +33,21 @@ def medicare_checksum(d: str) -> bool:
 
 
 def abn_checksum(d: str) -> bool:
-    """ABN mod-89 over 11 digits."""
+    """ABN mod-89 over 11 digits.
+
+    Must stay bit-identical to presidio's AuAbnRecognizer.validate_result
+    (>= 2.2.364): AU_ABN and the AU_ABN_INVALID shadow partition the
+    11-digit space between them, so any disagreement either drops a value
+    from both (a silent leak) or reports a stripped one as invalid.
+    Presidio 2.2.364 dropped the leading-zero special case (0 -> 9) for the
+    plain ABR subtract-1; the two accept disjoint sets, so an unsynced copy
+    misclassifies every leading-zero value that either side accepts.
+    """
     weights = (10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
     if len(d) != len(weights):
         return False
     nums = [int(x) for x in d]
-    nums[0] = 9 if nums[0] == 0 else nums[0] - 1
+    nums[0] = nums[0] - 1
     return sum(w * x for w, x in zip(weights, nums)) % 89 == 0
 
 

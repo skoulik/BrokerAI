@@ -23,7 +23,7 @@ or the web app; the only planned shared infrastructure is the local llama-server
 
 | Module | Role |
 |---|---|
-| `presidio-analyzer` ≥ 2.2.363 | The orchestrator and layer 1: recognizer registry, pattern/checksum recognizers (including the built-in AU ones), scoring, and the lemma-based context enhancer. **Not** `presidio-image-redactor` — see the orthogonality decision below. |
+| `presidio-analyzer` ≥ 2.2.364 | The orchestrator and layer 1: recognizer registry, pattern/checksum recognizers (including the built-in AU ones), scoring, and the lemma-based context enhancer. **Not** `presidio-image-redactor` — see the orthogonality decision below. |
 | spaCy (`en_core_web_sm`) | Presidio's mandatory **NLP engine** — tokenization and lemmas that feed the context enhancer. Not a detector: `SpacyRecognizer` was retired 2026-07-15 (decision below); spaCy stays loaded solely for the NLP engine. |
 | GLiNER2 (`fastino/gliner2-privacy-filter-PII-multi`, ~1.2 GB) | Layer-2 zero-shot NER — names, addresses, DOB, person-vs-organization. Wrapped as an ordinary Presidio recognizer. |
 | PaddleOCR (`paddleocr` + a `paddlepaddle` wheel) | The OCR engine behind the image path (Tesseract was the first backend, retired 2026-07-17 — decision below). GPU wheel runs in a worker subprocess (torch coexistence). |
@@ -152,7 +152,10 @@ registry, and spaCy serves only as Presidio's NLP engine. Slower than a pattern-
   Luhn are Presidio's own code (verified working); our custom recognizers add BSB, account
   numbers and PayID, and our shadow recognizers invert those validators for the
   invalid-identifier feature. GLiNER2 emits *unvalidated guesses* of these types — layer 1 is
-  what makes them trustworthy.
+  what makes them trustworthy. The shadows *re-implement* rather than call that arithmetic
+  (`pii/core/checksums.py`), so each copy must track Presidio exactly: a valid/invalid pair
+  partitions its digit space, and any disagreement drops values through both sides
+  unreported. Presidio 2.2.364's ABN change proved the risk — see [DONE.md](DONE.md).
 - **The context enhancer needs the NLP engine.** Presidio's lemma-based context boost powers
   the account-number recognizer and the `context` invalid-collection tier; it consumes
   spaCy's tokens/lemmas, so spaCy stays loaded even if every spaCy detector is removed.
@@ -187,8 +190,9 @@ with `enabled: false`; only generic + US recognizers are on by default. Conseque
 silently never run unless registered. `pii/core/pipeline.py` registers the four AU classes
 explicitly. The checksum logic is ordinary local Python in the library
 (`predefined_recognizers/country_specific/australia/`) and verified working: a valid-checksum
-TFN scores 1.00, a digit-swapped one is rejected entirely. Keep presidio ≥ 2.2.363 —
-2.2.362's ACN validator rejects every ACN with check digit 0.
+TFN scores 1.00, a digit-swapped one is rejected entirely. Keep presidio ≥ 2.2.364 —
+2.2.362's ACN validator rejects every ACN with check digit 0, and 2.2.364 changed the ABN
+validator's leading-zero handling, which `pii/core/checksums.py` mirrors.
 
 Phone regions are **AU-only** (issue #11 follow-up, Sergei's option A, 2026-07-22; was
 AU+US+GB): with US in the list, libphonenumber read account+amount digit runs
@@ -855,7 +859,7 @@ filter — useful framing when we define our merge algebra.
 
 - `pii/` keeps its own `requirements.txt`; repo-wide `pyproject.toml` + uv is a Phase 2 item
   (root ROADMAP).
-- presidio ≥ 2.2.363 (see the AU-recognizers decision above).
+- presidio ≥ 2.2.364 (see the AU-recognizers decision above).
 - CUDA torch installed 2026-07-12 for the RTX 2080 Ti — CPU-only NER cost ~1 min/page; with
   CUDA the NER share of an eval run is ~0.7 s.
 - GLiNER2 weights download once into `models/hf-cache/` (gitignored).

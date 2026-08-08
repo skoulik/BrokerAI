@@ -58,6 +58,26 @@ def abn(rng: random.Random) -> str:
     return f"{s[:2]} {s[2:5]} {s[5:8]} {s[8:]}"
 
 
+def abn_leading_zero(rng: random.Random) -> str:
+    """An 11-digit value starting with 0 that still passes the mod-89 check.
+
+    Not a real ABN — the ABR's subtract-1 first step implies a non-zero
+    lead — but presidio accepts ~1.1% of leading-zero values, and 2.2.364
+    swapped which ones (the pre- and post-fix accepted sets are disjoint).
+    The probe pins the seam: such a value must land as AU_ABN, never fall
+    between AU_ABN and the AU_ABN_INVALID shadow. See
+    pii/core/checksums.py:abn_checksum.
+    """
+    tail_weights = (3, 5, 7, 9, 11, 13, 15, 17, 19)
+    while True:
+        tail = _rand_digits(rng, 9)
+        # lead 0 -> -1 contributes -10; solve the second digit for the rest
+        need = (10 - sum(w * x for w, x in zip(tail_weights, tail))) % 89
+        if need < 10:  # only a single digit can close the sum
+            s = "0" + str(need) + "".join(map(str, tail))
+            return f"{s[:2]} {s[2:5]} {s[5:8]} {s[8:]}"
+
+
 def acn(rng: random.Random) -> str:
     weights = (8, 7, 6, 5, 4, 3, 2, 1)
     d = _rand_digits(rng, 8)
@@ -165,7 +185,7 @@ def abn_valid(d: str) -> bool:
         return False
     weights = (10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
     nums = [int(x) for x in d]
-    nums[0] = 9 if nums[0] == 0 else nums[0] - 1  # as presidio computes it
+    nums[0] = nums[0] - 1  # as presidio computes it (>= 2.2.364)
     return sum(w * x for w, x in zip(weights, nums)) % 89 == 0
 
 

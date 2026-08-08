@@ -524,6 +524,24 @@ text tier's record is in [DONE.md](DONE.md).)
       disagreement). Local side-by-side review UI so manual acceptance checks are a quick
       click-through; only declassified findings are reported back.
 
+- [ ] **Stop duplicating Presidio's checksum arithmetic** (2026-08-08, from the 2.2.364 ABN
+      re-sync — record in [DONE.md](DONE.md)). `pii/core/checksums.py` re-implements the AU
+      TFN/Medicare/ABN/ACN rules that Presidio already owns, so every upgrade can silently
+      desync a valid/invalid pair and drop values through both sides. `abn_checksum` is now
+      version-coupled to Presidio ≥ 2.2.364 and *wrong* against 2.2.363. Options: delegate to
+      the recognizers' `validate_result` (they take the matched text, so a thin digits→text
+      adapter is needed, and the GLiNER2 post-validation path wants a plain digit-string API),
+      or keep the copies but generate the coupling test for *all four* types rather than ABN
+      alone. The ABN coupling test is the pattern to extend.
+
+- [ ] **De-flake the tier-1 gate / revisit `build.CRITICAL`** (2026-08-08, incidental finding
+      above). The gate passes at seeds 42 and 1 but fails at 2, 3 and 7 on unmodified code —
+      always a residual GLiNER2 PERSON miss — so a single-seed gate is partly luck and any
+      change perturbing the draw sequence re-enters the lottery. Worth either fixing the PERSON
+      residuals or scoring several seeds and gating on the aggregate. Separately,
+      `CONTEXTUAL_ID` sits at 0% recall at every seed and is excluded from `CRITICAL`; decide
+      whether that exclusion is still intended or is masking a real gap.
+
 ## Nice-to-have
 
 - [ ] "Match original font" for painted placeholders (Sergei, 2026-07-14) —

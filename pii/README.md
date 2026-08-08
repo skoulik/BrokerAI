@@ -192,4 +192,6 @@ entities 100%; PERSON 100%; ADDRESS ~83% (the residual leaks are bare
 ALL-CAPS street lines with no state/postcode context). Contextual
 identifiers ("a dentist in Wagga Wagga") are undetectable by layers 1–2 by
 nature — a target for the planned layer-3 LLM audit. Keep presidio ≥
-2.2.363: 2.2.362's ACN validator rejects every ACN with check digit 0.
+2.2.364: 2.2.362's ACN validator rejects every ACN with check digit 0, and
+2.2.364 changed the ABN validator's leading-zero handling, which the tool's
+own checksum copy mirrors.
