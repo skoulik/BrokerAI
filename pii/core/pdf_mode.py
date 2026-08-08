@@ -30,6 +30,7 @@ this module freely; `strip_pdf` pulls in the analysis stack on call.
 """
 
 import io
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
@@ -79,9 +80,13 @@ class PdfPageResult:
     the recognized plaintext INCLUDING the PII — local-only artifact."""
 
     number: int  # 1-based page number
-    ocr: object  # OcrResult (flat path) or RecognizerInput (OcrPage path)
+    # OcrResult (flat path) or RecognizerInput (OcrPage path); None when the
+    # VLM supplied geometry directly and OCR never ran.
+    ocr: object | None
     spans: list  # applied detections; offsets into ocr.text
     invalid: list
+    # What was painted — the only record on the VLM-geometry path (no spans).
+    segments: list = dataclasses.field(default_factory=list)
 
 
 @dataclass
@@ -98,6 +103,8 @@ def strip_pdf(
     ocr_backend: str = "doclayout:v3",
     feed: str = "blocks",
     progress: Callable[[int, int], None] | None = None,
+    detector=None,
+    geometry: str = "ocr",
 ) -> PdfStripResult:
     """Strip a PDF page by page and write a fresh, image-only PDF.
 
@@ -115,10 +122,14 @@ def strip_pdf(
     processed (OCR + NER make pages slow enough to want a heartbeat).
     """
     # heavy: the analysis stack
-    from pii.core.image_mode import strip_from_ocr, strip_from_page
+    from pii.core.image_mode import strip_from_ocr, strip_from_page, strip_image
 
     flat = feed == "page" and ocr_backend in OCR_BACKENDS
-    if flat:
+    if detector is not None:
+        # The VLM path owns its own OCR decision (none at all under
+        # geometry="vlm"), so engines are resolved per page inside strip_image.
+        flat = False
+    elif flat:
         ocr_engine = get_ocr(ocr_backend)
     else:
         page_engine = get_ocr_page(ocr_backend)
@@ -129,7 +140,14 @@ def strip_pdf(
             if progress:
                 progress(number, doc.page_count)
             image = _render_page(page, dpi)
-            if flat:
+            if detector is not None:
+                result = strip_image(
+                    image, pipeline, pmap,
+                    ocr_backend=ocr_backend,
+                    detector=detector,
+                    geometry=geometry,
+                )
+            elif flat:
                 result = strip_from_ocr(image, ocr_engine(image), pipeline, pmap)
             else:
                 result = strip_from_page(
@@ -147,6 +165,7 @@ def strip_pdf(
                     ocr=result.ocr,
                     spans=result.spans,
                     invalid=result.invalid,
+                    segments=result.segments,
                 )
             )
     # A fresh document carries nothing from the source; empty the

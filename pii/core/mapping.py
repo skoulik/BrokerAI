@@ -38,6 +38,8 @@ PLACEHOLDER_PREFIXES = {
     "ADDRESS": "ADDRESS",
     "DATE_OF_BIRTH": "DOB",
     "ORGANIZATION": "ORG",
+    # A layer-0 (VLM) identifier that no deterministic recognizer classified.
+    "IDENTIFIER_GENERIC": "ID",
 }
 
 _PLACEHOLDER_RE = re.compile(

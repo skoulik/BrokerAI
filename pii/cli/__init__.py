@@ -20,6 +20,8 @@ from pathlib import Path
 
 from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
 from pii.core.ocr import OCR_PAGE_BACKENDS
+# stdlib-only module, so importing it here costs nothing on the default path
+from pii.core.vlm import VlmError
 
 
 def _read(source: str) -> str:
@@ -39,6 +41,33 @@ def _derive_map(input_path: str) -> str:
     """Per-document map default: statement.pdf -> statement.pii_map.json,
     next to the input document."""
     return str(Path(input_path).with_suffix(".pii_map.json"))
+
+
+def _build_detector(args):
+    """Construct the layer-0 VLM detector, or None for the default layers path.
+
+    Imported lazily so the default path never pays for it, and so a missing
+    model server only breaks runs that actually asked for one."""
+    if getattr(args, "detector", "layers") != "vlm":
+        if getattr(args, "geometry", "ocr") != "ocr":
+            raise SystemExit(
+                "--geometry is only meaningful with --detector vlm: the "
+                "pattern/NER layers detect in OCR text and have no geometry "
+                "of their own"
+            )
+        return None
+    if not (getattr(args, "image", False) or getattr(args, "pdf", False)):
+        raise SystemExit("--detector vlm requires --image or --pdf")
+
+    from pii.core.vlm import DEFAULT_URL, VlmDetector
+
+    return VlmDetector(
+        url=getattr(args, "vlm_url", None) or DEFAULT_URL,
+        # Boxes are only requested when they will actually be used: asking for
+        # coordinates measurably costs recall, so the OCR-geometry path does
+        # not pay that price.
+        want_boxes=getattr(args, "geometry", "ocr") == "vlm",
+    )
 
 
 def _report(spans, text: str, file=None, prefix: str = "  ") -> None:
@@ -149,6 +178,65 @@ def _debug(args) -> int:
     return 0
 
 
+def _strip_media(args, pipeline, detector):
+    """Handle --image / --pdf. Returns an exit code."""
+    if getattr(args, "image", False):
+        from PIL import Image
+
+        from pii.core.image_mode import strip_image
+
+        pmap = PseudonymMap(args.map)
+        result = strip_image(Image.open(args.input), pipeline, pmap,
+                             ocr_backend=args.ocr_backend, feed=args.feed,
+                             detector=detector,
+                             geometry=getattr(args, "geometry", "ocr"))
+        result.image.save(args.output)
+        pmap.save()
+        if args.report:
+            if result.ocr is not None:
+                print(f"{len(result.spans)} entities detected:", file=sys.stderr)
+                _report(result.spans, result.ocr.text)
+            else:
+                # --geometry vlm skips OCR: no text, no offsets, so the painted
+                # segments are the only record of what was redacted.
+                print(f"{len(result.segments)} entities detected:",
+                      file=sys.stderr)
+                for seg in result.segments:
+                    print(f"  {seg.label}", file=sys.stderr)
+        if args.log_invalid_identifiers == "yes" and result.invalid:
+            _report_invalid(result.invalid)
+        return 0
+
+    if getattr(args, "pdf", False):
+        from pii.core.pdf_mode import DEFAULT_DPI, strip_pdf
+
+        def progress(number: int, count: int) -> None:
+            print(f"page {number}/{count} ...", file=sys.stderr)
+
+        pmap = PseudonymMap(args.map)
+        result = strip_pdf(args.input, pipeline, pmap, args.output,
+                           dpi=args.dpi or DEFAULT_DPI,
+                           ocr_backend=args.ocr_backend,
+                           feed=args.feed,
+                           progress=progress,
+                           detector=detector,
+                           geometry=getattr(args, "geometry", "ocr"))
+        pmap.save()
+        if args.report:
+            total = sum(len(p.spans) for p in result.pages)
+            print(f"{total} entities detected:", file=sys.stderr)
+            for p in result.pages:
+                if p.ocr is not None:
+                    _report(p.spans, p.ocr.text, prefix=f"  p{p.number:<3} ")
+                else:
+                    for seg in p.segments:
+                        print(f"  p{p.number:<3} {seg.label}", file=sys.stderr)
+        invalid = [f for p in result.pages for f in p.invalid]
+        if args.log_invalid_identifiers == "yes" and invalid:
+            _report_invalid(invalid)
+        return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="pii", description="Local PII stripping tool"
@@ -214,6 +302,27 @@ def main(argv=None) -> int:
              "boundary) or page (the whole page as one string). A line-only "
              "backend has one block per line, so pair blocks with a layout "
              "backend",
+    )
+    p_strip.add_argument(
+        "--detector", choices=["layers", "vlm"], default="layers",
+        help="what finds the PII in --image/--pdf modes: layers (default; "
+             "pattern + checksum recognizers and the NER model over OCR text) "
+             "or vlm (a local vision LLM reads the page image directly and "
+             "produces the plan itself, replacing both layers). EXPERIMENTAL",
+    )
+    p_strip.add_argument(
+        "--geometry", choices=["ocr", "vlm"], default="ocr",
+        help="where painted boxes come from when --detector vlm: ocr "
+             "(default; each detected value is located in the OCR text and "
+             "painted with exact word boxes — OCR still runs) or vlm (the "
+             "model's own boxes; OCR never runs, faster but measured UNSAFE — "
+             "16%% of boxes clip by >20px, stochastically). Only valid with "
+             "--detector vlm",
+    )
+    p_strip.add_argument(
+        "--vlm-url", default=None,
+        help="llama-server base URL for --detector vlm "
+             "(default http://localhost:8080)",
     )
     p_strip.add_argument(
         "--columns",
@@ -348,45 +457,14 @@ def main(argv=None) -> int:
         invalid_identifiers=args.invalid_identifiers,
         mask_invalid=mask_invalid,
     )
-    if getattr(args, "image", False):
-        from PIL import Image
-
-        from pii.core.image_mode import strip_image
-
-        pmap = PseudonymMap(args.map)
-        result = strip_image(Image.open(args.input), pipeline, pmap,
-                             ocr_backend=args.ocr_backend, feed=args.feed)
-        result.image.save(args.output)
-        pmap.save()
-        if args.report:
-            print(f"{len(result.spans)} entities detected:", file=sys.stderr)
-            _report(result.spans, result.ocr.text)
-        if args.log_invalid_identifiers == "yes" and result.invalid:
-            _report_invalid(result.invalid)
-        return 0
-
-    if getattr(args, "pdf", False):
-        from pii.core.pdf_mode import DEFAULT_DPI, strip_pdf
-
-        def progress(number: int, count: int) -> None:
-            print(f"page {number}/{count} ...", file=sys.stderr)
-
-        pmap = PseudonymMap(args.map)
-        result = strip_pdf(args.input, pipeline, pmap, args.output,
-                           dpi=args.dpi or DEFAULT_DPI,
-                           ocr_backend=args.ocr_backend,
-                           feed=args.feed,
-                           progress=progress)
-        pmap.save()
-        if args.report:
-            total = sum(len(p.spans) for p in result.pages)
-            print(f"{total} entities detected:", file=sys.stderr)
-            for p in result.pages:
-                _report(p.spans, p.ocr.text, prefix=f"  p{p.number:<3} ")
-        invalid = [f for p in result.pages for f in p.invalid]
-        if args.log_invalid_identifiers == "yes" and invalid:
-            _report_invalid(invalid)
-        return 0
+    detector = _build_detector(args)
+    if getattr(args, "image", False) or getattr(args, "pdf", False):
+        try:
+            return _strip_media(args, pipeline, detector)
+        except VlmError as exc:
+            # A missing model server is an operator problem, not a bug —
+            # report it as a message, not a traceback.
+            raise SystemExit(f"pii: {exc}") from None
 
     text = _read(args.input)
 

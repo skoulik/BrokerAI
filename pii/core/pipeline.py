@@ -84,6 +84,13 @@ DEFAULT_STRIP_ENTITIES = {
     "ADDRESS",
     "DATE_OF_BIRTH",
     "IBAN_CODE",
+    # Layer-0 (VLM) detections that no deterministic recognizer has claimed.
+    # The VLM emits one coarse PII_IDENTIFIER class on purpose — layer 1 is what
+    # refines a digit run into TFN/Medicare/ABN/ACN/BSB/account/card — so
+    # anything it cannot classify must still strip, under a generic placeholder.
+    # Distinct from the *_INVALID classes: those matched a pattern and FAILED
+    # its checksum, which is a different signal from matching no pattern at all.
+    "IDENTIFIER_GENERIC",
 }
 
 NLP_CONFIG = {
