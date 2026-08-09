@@ -10,18 +10,24 @@ signal a VLM structurally cannot produce, and it is measurably unreliable at
 is recorded in ARCHITECTURE.md; the measurements behind it are in
 [reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md).
 
-Geometry has two sources and they are deliberately both kept:
+Three geometry regimes exist, and all three are deliberately kept:
 
-- ``geometry="ocr"``  — the model supplies only the *values*; each is located in
-  the OCR text and painted through `RecognizerInput.painted_boxes_for_span`.
-  Safest: OCR word boxes are exact. This is the production path, and it is
-  also what makes layer-1 refinement possible (there is text to refine
-  against — see `PiiPipeline.merge_detections`).
-- ``geometry="vlm"``  — the model's own ``bbox_2d`` is used and OCR never runs.
-  Faster and simpler, but measured **unsafe**: 16% of boxes clip by more than
-  20 px, the tail includes real account numbers, and the failure is *stochastic*
-  (the same value on the same layout is boxed correctly on one page and wrongly
-  on the next), so no padding or calibration fixes it.
+- ``geometry="hybrid"`` — production. Two passes: `detect` names the values,
+  `localize` hands them back and asks only where they are. The boxes are then
+  used as a **search constraint** by `locator.py`, which paints OCR word boxes
+  wherever the value can be matched and falls back to the model's box only for
+  the residue that has no OCR text at all. Rationale for the split lives on
+  `_LOCATE_PROMPT`; rationale for boxes-as-constraint lives in `locator.py`.
+- ``geometry="ocr"``    — one pass, values only. The same locator runs, but
+  with no boxes to constrain it, it degrades to page-wide exact-or-squash
+  matching: the pre-box behaviour, kept as the comparison baseline, with the
+  presence of boxes as the only variable between it and hybrid.
+- ``geometry="vlm"``    — the model's own ``bbox_2d`` is painted directly and
+  OCR never runs. Measured **unsafe**: 16% of boxes clip by more than 20 px,
+  the tail includes real account numbers, and the failure is *stochastic* (the
+  same value on the same layout is boxed correctly on one page and wrongly on
+  the next), so no padding or calibration fixes it. A comparison instrument,
+  never a production option.
 
 The transport is injectable so the testbench never needs a model server.
 """
@@ -34,7 +40,7 @@ import re
 import unicodedata
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Protocol
 
 # VLM class -> pipeline entity type. The VLM deliberately emits COARSE classes:
@@ -55,6 +61,13 @@ TYPE_MAP = {
 # SURYA_INFERENCE_URL.
 DEFAULT_URL = os.environ.get("PII_VLM_URL") or "http://localhost:8080"
 DEFAULT_PAD = 8  # px, at the analysis DPI
+
+# The three geometry regimes described above. "hybrid" is production; the
+# other two are kept so the comparison that produced that verdict stays
+# runnable. Declared here rather than in image_mode because the CLI resolves
+# the flag before it is willing to import the analysis stack.
+GEOMETRIES = ("hybrid", "ocr", "vlm")
+DEFAULT_GEOMETRY = "hybrid"
 
 # Kept verbatim from the tuned probe prompt. Three properties are load-bearing
 # and should not be edited casually - each was established by measurement:
@@ -110,6 +123,31 @@ bbox_2d is the tight box around that text: (x1,y1) top-left, (x2,y2) bottom-righ
 normalized relative coordinates scaled to 1000. Make the box enclose the whole string \
 including its first and last characters.
 If the page contains none, output []."""
+
+# Pass 2 of the two-pass regime. Detection and grounding are separated because
+# asking for both at once measurably costs recall — 350 -> 324 distinct values
+# over 31 pages, and the page that lost its policy number lost the hardest-won
+# detection on it. Splitting them recovers that in full (pass 1 below is
+# byte-identical to the single-pass values prompt) and boxes MORE tightly
+# (1.24x vs 1.41x ink). It is affordable because llama.cpp caches image
+# prefill per image: a second pass on a page already seen costs ~16 s against
+# the ~130 s the image itself cost. Evidence:
+# reports/2026-08-08-vlm-oneshot-qwen36.md.
+_LOCATE_PROMPT = """This page has already been read. Below is the list of text values found \
+on it. Your only job now is to say WHERE each one is printed.
+
+Values:
+{values}
+
+For every value in the list, output one entry per place it appears on the page. A value \
+printed twice gets two entries. If you cannot find a value on the page, omit it — do not \
+guess a location.
+
+Output a JSON array only, no prose, no markdown fence:
+[{{"text": "<the value, copied from the list>", "bbox_2d": [x1, y1, x2, y2]}}]
+bbox_2d is the tight box around that text: (x1,y1) top-left, (x2,y2) bottom-right, in \
+normalized relative coordinates scaled to 1000. Make the box enclose the whole string \
+including its first and last characters."""
 
 
 @dataclass(frozen=True)
@@ -241,10 +279,11 @@ def _extract_array(body: str):
 class VlmDetector:
     """Detects PII directly from a page image.
 
-    `want_boxes` follows the geometry choice: asking for coordinates measurably
-    COSTS recall (on one page, 20 findings including a policy number without
-    boxes vs 19 without it with boxes), so the OCR-geometry path deliberately
-    does not ask for them.
+    `want_boxes` makes the ONE-pass boxes prompt (`geometry="vlm"`). It stays
+    off everywhere else because asking for coordinates alongside detection
+    measurably costs recall — 350 -> 324 distinct values over 31 pages. The
+    production route to geometry is `localize`, a second pass, which pays no
+    such price.
     """
 
     def __init__(
@@ -267,6 +306,31 @@ class VlmDetector:
         return PROMPT + (_OUTPUT_BOXES if self.want_boxes else _OUTPUT_VALUES)
 
     def detect(self, image) -> list[VlmFinding]:
+        return parse_findings(self._ask(image, self.prompt))
+
+    def localize(
+        self, image, findings: list[VlmFinding]
+    ) -> list[VlmFinding]:
+        """Pass 2: hand the already-detected values back and ask only where
+        they are, returning the findings with `box` filled in where the model
+        placed them.
+
+        The model's answer is treated as a POOL of hints rather than a
+        one-to-one reply: it routinely returns a different number of boxes
+        than there were findings (a value printed twice, a value it declines
+        to place), and pairing by position would then silently attach one
+        value's box to another. Matching is by squashed text, assigned in
+        order, and a finding that draws no hint simply keeps `box=None` and
+        falls back to unconstrained search."""
+        if not findings:
+            return findings
+        listing = "\n".join(
+            f"- {value}" for value in dict.fromkeys(f.text for f in findings)
+        )
+        raw = self._ask(image, _LOCATE_PROMPT.format(values=listing))
+        return attach_boxes(findings, parse_findings(raw))
+
+    def _ask(self, image, prompt: str) -> str:
         payload = {
             # Hybrid-thinking models honour this via the chat template; it needs
             # llama-server --jinja to take effect.
@@ -281,7 +345,7 @@ class VlmDetector:
                                 "url": f"data:image/png;base64,{self._encode(image)}"
                             },
                         },
-                        {"type": "text", "text": self.prompt},
+                        {"type": "text", "text": prompt},
                     ],
                 }
             ],
@@ -297,10 +361,39 @@ class VlmDetector:
         }
         response = self.transport(self.url, payload, self.timeout)
         try:
-            raw = response["choices"][0]["message"]["content"]
+            return response["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise VlmError(f"unexpected response shape: {response!r}") from exc
-        return parse_findings(raw)
+
+
+def attach_boxes(
+    findings: list[VlmFinding], hints: list[VlmFinding]
+) -> list[VlmFinding]:
+    """Pair pass-2 boxes onto pass-1 findings by squashed text.
+
+    Squashed rather than exact because the two passes need not agree on
+    separators — pass 2 re-transcribes the value as it copies it back — and
+    the box is a positional hint, so a hint attached on slightly loose text
+    equality costs nothing: `locator` re-derives the real span itself and
+    treats the box only as a search constraint.
+
+    Findings and hints are both consumed in order, so N occurrences of one
+    value draw the model's N boxes for it in page order. Surplus findings
+    keep `box=None`; surplus hints are discarded."""
+    pool: dict[str, list[tuple[int, int, int, int]]] = {}
+    for hint in hints:
+        if hint.box is None:
+            continue
+        key, _ = squash_map(hint.text)
+        pool.setdefault(key, []).append(hint.box)
+
+    out = []
+    for finding in findings:
+        key, _ = squash_map(finding.text)
+        boxes = pool.get(key)
+        box = boxes.pop(0) if boxes else None
+        out.append(replace(finding, box=box) if box is not None else finding)
+    return out
 
 
 class VlmError(RuntimeError):
@@ -311,7 +404,7 @@ class VlmUnavailable(VlmError):
     """The model server could not be reached at all."""
 
 
-def _squash_map(text: str) -> tuple[str, list[int]]:
+def squash_map(text: str) -> tuple[str, list[int]]:
     """Alphanumeric squash plus an index from each squashed char back to its
     offset in the original, so a match found in squashed space can be reported
     as real offsets."""
@@ -321,47 +414,6 @@ def _squash_map(text: str) -> tuple[str, list[int]]:
             chars.append(ch.lower())
             index.append(i)
     return "".join(chars), index
-
-
-def locate(
-    haystack: str, needle: str, taken: list[tuple[int, int]] | None = None
-) -> tuple[int, int] | None:
-    """Find `needle` in `haystack`, returning character offsets.
-
-    Two transcriptions of the same pixels rarely agree exactly - the VLM may
-    normalize spacing or punctuation the OCR kept, or vice versa - so matching
-    is tiered: exact, then on an alphanumeric squash that ignores spacing,
-    hyphens and case. Nothing fuzzier: an edit-distance match risks painting the
-    WRONG region, which is worse than reporting the value as unlocatable, and
-    unlocatable values are surfaced to the caller rather than dropped.
-
-    `taken` lists already-claimed ranges so repeated values (an address printed
-    twice on a page) map to successive occurrences instead of all collapsing
-    onto the first.
-    """
-    taken = taken or []
-
-    def free(start: int, end: int) -> bool:
-        return not any(start < t_end and t_start < end for t_start, t_end in taken)
-
-    at = haystack.find(needle)
-    while at != -1:
-        if free(at, at + len(needle)):
-            return at, at + len(needle)
-        at = haystack.find(needle, at + 1)
-
-    hay_sq, index = _squash_map(haystack)
-    need_sq, _ = _squash_map(needle)
-    if not need_sq:
-        return None
-    at = hay_sq.find(need_sq)
-    while at != -1:
-        start = index[at]
-        end = index[at + len(need_sq) - 1] + 1
-        if free(start, end):
-            return start, end
-        at = hay_sq.find(need_sq, at + 1)
-    return None
 
 
 def _encode_png(image) -> str:

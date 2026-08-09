@@ -44,7 +44,9 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `gliner2_recognizer.py` | GLiNER2 as a Presidio recognizer; **all layer-2 tuning lives in its docstring** — read it before touching NER behaviour |
 | `mapping.py` | `PseudonymMap` — placeholder allocation, JSON persistence, rehydration |
 | `csv_mode.py` | Per-cell transaction-CSV processing |
-| `vlm.py` | **Layer 0** — a local vision LLM reads the page image and names the PII; transport, prompt, parsing, `locate()` |
+| `vlm.py` | **Layer 0** — a local vision LLM reads the page image and names the PII; transport, both prompts (detect / localize), parsing |
+| `locator.py` | Layer-0 findings → spans in the OCR text: candidate scoring with the model's box as a search constraint, and the three geometry tiers |
+| `fuzzy.py` | Confusion-weighted Levenshtein — the fuzzy tier of location, admissible only inside a box |
 | `ocr.py` | OCR-engine seam (`get_ocr_page`) + the shared pixel toolkit (`Box`, `_rows` banding, word-box normalization) |
 | `ocr_page.py` | Perception: `OcrPage` → `OcrLine` → `OcrWord` + `OcrFrame`. Geometry only, no character offsets |
 | `linearization.py` | `OcrPage` → `RecognizerInput`: the flat page string plus the source map that turns a span back into pixel boxes |
@@ -65,14 +67,16 @@ flowchart TB
     PDF["PDF"]
 
     PDF -- "pdf_mode.py: render pages<br>(300 DPI, streamed)" --> IMG
-    IMG --> VLM["vlm.py — Layer 0<br>local vision LLM reads the pixels,<br>names the PII values"]
+    IMG --> VLM["vlm.py — Layer 0<br>pass 1: read the pixels, name the values<br>pass 2: box those values"]
     IMG --> OCRPY["ocr.py seam → ocr_paddle.py (PaddleOCR)<br>GPU: ocr_worker.py subprocess<br>OcrPage → linearize:<br>page string + word-box source map"]
     CSV --> CSVM["csv_mode.py<br>per-cell, sentinel-joined batches"]
 
     TXT --> AE
     CSVM --> AE
     OCRPY -- "page string" --> AE
-    VLM -- "values, located in the page string" --> MRG
+    VLM -- "values + boxes" --> LOC["locator.py<br>box constrains the search;<br>exact / squash / fuzzy → span,<br>else the padded model box"]
+    OCRPY -- "word boxes" --> LOC
+    LOC -- "spans in the page string" --> MRG
 
     subgraph PIPE["pipeline.py — PiiPipeline"]
         AE["Presidio AnalyzerEngine<br>(spaCy NLP engine: tokens/lemmas<br>→ context enhancer)"]
@@ -117,13 +121,15 @@ byte-identical. See the CSV decision below.
 
 Front-end: OCR the page into an `OcrPage` and `linearize` it into the flat page string plus a
 source map recording `(char_start, char_end, bbox)` per word *as it is written*. Detection is
-layer 0 by default — the model reads the pixels and names the values, each of which is located
-in that string — or, with `--detector layers`, the full text pipeline run on the string
-verbatim. Either way layer 1 supplies the precise classes, the checksum shadows and a recall
-floor. Back-end (`image_mode.py`): mapping merged spans to boxes is pure interval intersection
-over the recorded intervals; each span's placeholder is painted over its boxes on the
-**original** image (background-filled box with the placeholder text drawn in —
-pseudonymization, not blackout), emitting the same rehydratable `map.json`.
+layer 0 by default — two model passes name the values and box them, and `locator.py` turns
+each into a span of that string using the box to constrain the search — or, with
+`--detector layers`, the full text pipeline run on the string verbatim. Either way layer 1
+supplies the precise classes, the checksum shadows and a recall floor. Back-end
+(`image_mode.py`): mapping merged spans to boxes is pure interval intersection over the
+recorded intervals; each span's placeholder is painted over its boxes on the **original**
+image (background-filled box with the placeholder text drawn in — pseudonymization, not
+blackout), emitting the same rehydratable `map.json`. Layer-0 findings that match no OCR text
+are painted from the model's own padded box and counted apart (see "Layer 0" below).
 
 ### PDF — the image pipeline per page, reassembled from scratch
 
@@ -582,9 +588,10 @@ stdio protocol. Design decisions and their rationale:
 ### OCR perception layer: OcrPage / linearization (2026-07-24, narrowed 2026-08-09)
 
 **OCR supplies geometry, not detection.** Layer 0 reads the page image and names the values;
-each one is then located in the OCR text and painted with exact word boxes, because the model's
-own boxes are measured unsafe (see "Layer 0" below). Everything in this layer serves that single
-job, which is why it is as small as it is — the layout/segmenter half of it was retired
+`locator.py` then matches each one against the OCR text and paints exact word boxes, because
+the model's own boxes are measured unsafe to paint (see "Layer 0" below — they *are* used, as
+a search constraint, which is a different job). Everything in this layer serves that single
+purpose, which is why it is as small as it is — the layout/segmenter half of it was retired
 2026-08-09 (rationale at the end of this section; full record in DONE.md).
 
 - **The hierarchy (`ocr_page.py`).** `OcrPage` → `OcrLine` → `OcrWord`, plus an `OcrFrame`
@@ -627,7 +634,7 @@ job, which is why it is as small as it is — the layout/segmenter half of it wa
   **all pages** by default; an `overlay` to a `.pdf` reconstructs a fresh image-only PDF via
   `pdf_mode.rebuild_pdf` — strip's reassembly discipline, but *not* redacted (original text +
   boxes), a near-PII local artifact. What it shows is the geometry strip will paint with, so a
-  value missing from these lines is a value `--geometry ocr` cannot redact.
+  value missing from these lines can only be redacted from the model's own box (locator tier 3).
 
 **Why the layout/segmenter layer went (2026-08-09, Sergei).** `OcrBlock`, the two layout backends
 (PP-StructureV3 and PP-DocLayoutV3), the reconstructed line→block linkage, orphan clustering and
@@ -667,25 +674,58 @@ no page image and always uses layers). Evidence for every claim below is in
 `$PII_VLM_URL`) and run at minutes per page rather than seconds. Accepted knowingly (Sergei,
 2026-08-09); the serving/quantization work that attacks it is a TODO.
 
-**Detection and geometry are separate concerns, and only detection is a strength.** The model
-finds PII very well but places boxes *stochastically* badly — 64.9% fully covered at an 8 px
-pad, the same value boxed correctly on one page and wrongly on the next — so no pad or
-calibration repairs it. Geometry therefore has two sources, selected by `--geometry`:
+**Detection and grounding are separate model passes** (`--geometry hybrid`, the default since
+2026-08-09). `detect` names the values; `localize` hands that list back and asks only *where*
+each one is. They are split because asking for both at once costs **7.4% recall corpus-wide**
+(350 → 324 distinct values over 31 pages) — the model spends budget on geometry instead of
+detection, and the page that lost its policy number lost the hardest-won detection on it. The
+split is affordable because llama.cpp caches image prefill per image: a second pass on a page
+already seen costs ~16 s against the ~130 s the image itself cost. Two-pass also boxes *more*
+tightly than one-pass (1.24× vs 1.41× ink).
 
-- **`ocr` (production).** The model returns values only; each is located in the OCR text and
-  painted through `painted_boxes_for_span`. OCR word boxes are exact.
-- **`vlm` (comparison only).** The model's own boxes; OCR never runs. Kept in the tool to keep
-  the comparison live, not as a production option.
+**A model box is a search constraint, not paint geometry.** The boxes are stochastically bad
+to paint — 64.9% fully covered at an 8 px pad, p90 inward clip 63.9 px, the same value boxed
+correctly on one page and wrongly on the next, so no pad or calibration repairs it. But
+*localization* tolerance is about half a word where *painting* tolerance is zero pixels, so a
+box clipped by 60 px still names the right region unambiguously. `locator.py` exploits exactly
+that asymmetry, and it is what removes the mis-location failures the unconstrained search had
+no way to reject: a short identifier squash-matching inside a monetary amount elsewhere on the
+page, a repeated value claiming the wrong occurrence, a nested finding ("John" after "John
+Smith") jumping to an unrelated John.
 
-**Boxes are only requested when they will be used**, because asking for coordinates costs
-7.4% recall corpus-wide — the model spends budget on geometry instead of detection. So the
-safe path is also the more accurate one; there is no trade to make.
+Geometry then resolves in three tiers, in descending confidence:
 
-**A value that cannot be located is surfaced, never dropped.** `locate()` is tiered — exact,
-then an alphanumeric squash ignoring spacing/hyphens/case — and deliberately goes no fuzzier:
-an edit-distance match risks painting the *wrong* region, which is worse than an honest
-"unlocatable". Unlocatable findings warn and are counted, because a detection we cannot place
-is a detection we cannot redact.
+1. **Text matched** (exact, or the alphanumeric squash ignoring spacing/hyphens/case) → paint
+   OCR word boxes through `painted_boxes_for_span`. Exact geometry.
+2. **Text matched only fuzzily**, inside the box → painted the same way. The OCR-damage case,
+   and it still gets exact glyph geometry: we hold word boxes for words we misread.
+3. **Nothing matched** → the model's own box, padded by 0.6× its height and unioned with any
+   word it substantially covers, is the only geometry in existence (a logo — the model boxed
+   `Budget Direct` correctly where there is no text layer at all — a barcode, handwriting).
+   Counted separately on the result as `box_geometry`: stochastic geometry, and with no OCR
+   text layer 1 never sees the value, so it carries no checksum and no `*_INVALID` shadow.
+
+**Fuzzy matching is admissible only under a box.** The rule that governs `locator.py` is
+*fuzzy matching is permitted exactly where a box constrains the candidate set; unconstrained
+search stays at exact-or-squash* — edit distance over a whole page always finds something,
+somewhere, wrong, but restricted to the handful of words a box covers it can only pick
+something in the right place. `fuzzy.py` is weighted Levenshtein: indels and unknown
+substitutions cost 1.0, measured OCR confusion pairs are discounted. The table is a **discount
+inside** the DP, never a gate in front of it — folding both strings through confusion classes
+and testing equality fails on damage the table does not list and cannot express a dropped
+character at all. The motivating case proves it: the top measured confusion is `0` read as `@`,
+and `@` does not survive the squash, so the damage arrives as a *deletion*.
+
+The other two `--geometry` values are kept so the comparison that produced this design stays
+runnable: **`ocr`** runs the same locator with no boxes (it degrades to page-wide
+exact-or-squash — the pre-box baseline, with the presence of boxes as the only variable), and
+**`vlm`** paints the model's raw boxes with OCR switched off entirely.
+
+**A value that cannot be located is surfaced, never dropped.** Findings with neither text nor
+usable geometry warn *and* land on `ImageStripResult.unlocated` / `PdfPageResult.unlocated`,
+because a detection we cannot place is a detection we cannot redact. The count matters
+independently of the warning: Python's default filter deduplicates an identical warning from
+the same line, so a second page with the same residue would otherwise be silent.
 
 **The class vocabulary is coarse on purpose.** The model emits five classes
 (`PII_NAME`/`PII_ADDRESS`/`PII_COMPANY`/`PII_DOB`/`PII_IDENTIFIER`), cut along one test: *can

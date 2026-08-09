@@ -67,13 +67,25 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   not in `DEFAULT_STRIP_ENTITIES`, the placeholder map, or the recognizer's supported entities.
   The ADDRESS passes still strip full addresses and suburb-postcode lines. Rationale in
   [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
-- **OCR supplies geometry, not detection.** Layer 0 (`vlm.py`) names the values; each is
-  located in the OCR text and painted with OCR word boxes. Never paint the model's own
-  `bbox_2d` on a production path — measured stochastically unsafe (16% of boxes clip by
-  >20 px). `--geometry vlm` exists as a comparison instrument only.
-- **A detected value that cannot be located is a leak.** `locate()` goes no fuzzier than the
-  alphanumeric squash on purpose (an edit-distance match risks painting the WRONG region).
-  Unlocatable findings must keep warning loudly and being counted — never silently dropped.
+- **Detection and grounding are two model passes, never one.** `detect` names the values,
+  `localize` asks where they are. Asking for both at once costs 7.4% recall (measured, 31
+  pages); the split costs ~16 s/page because image prefill is cached. Never add `bbox_2d` to
+  the detection prompt.
+- **A model box is a search constraint, not paint geometry.** Layer 0's boxes are
+  stochastically unsafe to paint (16% clip by >20 px) but reliable enough to say *which*
+  occurrence a value is — painting tolerance is zero pixels, localization tolerance is half a
+  word. `locator.py` paints OCR word boxes; the model's own box is painted only for the
+  residue that matches no OCR text at all (a logo, a barcode), padded and counted separately.
+  `--geometry vlm` exists as a comparison instrument only.
+- **Fuzzy matching is permitted exactly where a box constrains the candidate set.** Inside a
+  box, edit distance can only pick something in the right place; page-wide it would paint the
+  WRONG region, so `--geometry ocr` stays at exact-or-squash. The confusion table in
+  `fuzzy.py` is a *discount inside* the edit distance, never a gate in front of it — folding
+  both sides through confusion classes fails on unlisted damage and on dropped characters.
+- **A detected value that cannot be located is a leak.** Unlocatable findings must keep
+  warning loudly AND stay counted on `ImageStripResult.unlocated` / `PdfPageResult.unlocated`
+  — a warning alone is deduplicated by Python's default filter when a later page repeats it.
+  Same for `box_geometry`, which is a weaker redaction rather than none.
 - **The OCR perception layer (`OcrPage`) carries no character offsets.** Offsets live only in
   the linearization source map (`RecognizerInput` / `linearize`) — an offset is a
   (page, assembly) property; baking one onto a line ties perception to one assembly. Keep the

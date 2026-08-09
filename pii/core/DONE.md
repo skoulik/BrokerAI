@@ -1509,3 +1509,108 @@ the move; new completed tasks append to the matching section with their records.
       `tests/pii/core/test_ocr.py` was deleted as a full duplicate of `test_linearization.py`.
       Fast suite 266 green (was 316 before ~50 tests went with the deleted modules), and it
       dropped from 23 s to 6.7 s once the pdf-mode seam stopped loading real paddle.)*
+
+- [x] **Box-guided location: the two-pass hybrid** *(2026-08-09, Sergei's call. Current design
+      in [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0"; this record is the reasoning and the
+      before/after. Closes the "Hybrids that deliberately use the VLM's own boxes" item, which
+      had been postponed the same day.)*
+
+      **The trigger.** A review of how VLM detections and OCR spans were matched turned up
+      five failure modes in `locate()`, and four of them shared one root cause: the search was
+      page-wide with no positional constraint. A short identifier squash-matching inside a
+      monetary amount (`"4000"` inside `$14,000.00` — verified, the old locator paints the
+      amount and leaves the real value legible); a repeated value claiming the wrong
+      occurrence; a nested finding (`"John"` reported after `"John Smith"`) either colliding
+      with `taken` or hunting for an unrelated John; and unlocatable values, which were warned
+      about but not counted anywhere a caller could see — and Python's default warning filter
+      deduplicates an identical message from the same line, so a second page with the same
+      residue was silent.
+
+      **The reframing that shaped the design.** Sergei proposed making the boxes first-class
+      with an overlap-gated locator and a Levenshtein tier. The refinement taken was that a
+      box's *primary* value is as a **search constraint**, not as fallback geometry — and that
+      this is safe precisely where painting is not. The measured box failures (64.9% fully
+      covered, p90 inward clip 63.9 px, the two-pass one-character shift) are all *painting*
+      failures: painting tolerance is zero pixels, localization tolerance is about half a word,
+      so a box clipped by 60 px still names the right region unambiguously. The same signal
+      that is unusable for pixels is decisive for disambiguation.
+
+      That also settles the fuzzy-matching question the old invariant had closed. "No fuzzier
+      than the squash" was justified by *global* search; under a box the justification
+      evaporates, so the rule became **fuzzy matching is permitted exactly where a box
+      constrains the candidate set**.
+
+      **Levenshtein vs. a confusion table — Sergei's correction, and it was right.** The first
+      proposal leaned on a confusion-class fold (the measured `0→@`, `J→3`, `1→2`, `4→8`,
+      `W→H` pairs from the 2026-07-17 fidelity sweep). Sergei's objection: a substitution table
+      fails when the damage is to a character it does not list, and cannot express a *dropped*
+      character at all, whereas edit distance still yields a useful metric. The resolution is
+      weighted Levenshtein — the table is a **discount inside** the DP, never a gate in front
+      of it, degrading to plain Levenshtein wherever it is silent. The motivating case proves
+      the point on its own: the top measured confusion is `0` read as `@`, and `@` does not
+      survive the alphanumeric squash, so that damage reaches the matcher as a *deletion* that
+      no confusion table of any size could catch.
+
+      **Two passes, not one.** Boxes are requested by a second call (`VlmDetector.localize`)
+      rather than added to the detection prompt, because the report measured single-pass boxes
+      at −7.4% recall corpus-wide (350 → 324 distinct values over 31 pages). Pass 1 is
+      byte-identical to the values-mode prompt, so the 445/350 baseline is preserved by
+      construction. Affordable because image prefill is cached per image: ~16 s for a second
+      pass against the ~130 s the image itself cost. The report had already measured two-pass
+      as boxing more tightly than one-pass (1.24× vs 1.41× ink).
+
+      **What landed.** `pii/core/fuzzy.py` (weighted Levenshtein, confusion discount, budget)
+      and `pii/core/locator.py` (candidate scoring + the three geometry tiers), both new;
+      `VlmDetector.localize` + `_LOCATE_PROMPT` + `attach_boxes` in `vlm.py`;
+      `PiiPipeline.strips_value` so the kept-ORGANIZATION policy reaches tier 3 (without it the
+      default run paints over every bank logo the model boxes); `box_geometry` and `unlocated`
+      on `ImageStripResult`/`PdfPageResult`, reported by the CLI regardless of `--report`;
+      `--geometry hybrid` as the new default with `ocr`/`vlm` kept as instruments, plumbed
+      through `pii_eval score` too.
+
+      Candidate scoring replaced the strict tier ladder mid-design: strict tiers have an
+      ordering pathology where a displaced box's local match beats a correct global exact
+      match. Ranking every candidate by `(has_overlap, kind, overlap, -distance)` avoids it and
+      gives the guarantee that made the change safe to adopt — **with no box every overlap is
+      zero and the ranking collapses to kind-then-position, which is exactly the pre-box
+      behaviour**, so nothing that located correctly before can regress. The old `locate()` was
+      deleted rather than kept beside it, to avoid two copies of the squash-matching rule.
+
+      Tier 2 (box overlaps OCR words, text matches only fuzzily) was added to the sketch, which
+      had only OCR-span-or-model-box: where OCR misread the value we still hold exact glyph
+      geometry for the words we misread, so most of what the sketch would have sent to the
+      padded-box fallback keeps exact geometry instead. Tier 3's box is padded by 0.6× its
+      height — scaled rather than fixed because the residual two-pass error is a
+      one-character displacement, which scales with the font — and unioned with any word it
+      substantially covers, so a box clipping mid-word is completed by that word's own box.
+
+      **First real run (2026-08-09, 2 pages of the insurance certificate, Qwen3.6-27B Q8_0 on
+      the Mac at b10326).** End-to-end clean: 21 entities, layer 1 refining the coarse classes
+      into `AU_TFN`/`AU_ABN`/`AU_DRIVERS_LICENCE`/`EMAIL_ADDRESS`/`PHONE_NUMBER`, tier 3 firing
+      twice, and a re-OCR of the output confirming every probed value gone from the pixels.
+      Three findings came out of it, two of them recorded as TODO items: a tier-3 paint does
+      not suppress a later identical finding, so the "NOT redacted" line raised a false alarm
+      (safe direction, but it is the line that must be trustworthy); a value wrapped across
+      lines/columns falls to tier 3 instead of matching, costing exact geometry rather than
+      recall; and — the significant one — **the image prefill is not reused between the two
+      passes**, so the hybrid costs ~2× per page instead of the ~+9% the design assumed. That
+      last one invalidates a premise taken from the 2026-08-08 report and is recorded against
+      the serving/tuning item, where it now sits alongside the page-conveyor idea.
+
+      **Still not measured.** The A/B (`--geometry hybrid` vs `ocr` on the 31-page real corpus)
+      is the open TODO item that follows this one. In particular the size of the tier-3 residue is
+      unknown, and it decides whether tier 3 earns its complexity or the disambiguation is
+      carrying the whole change.
+
+      **Two holes closed by self-review before hand-off**, both in the same direction —
+      geometry that carries no information must not be allowed to look like a redaction. A
+      zero-area model box padded for tier 3 becomes a small rectangle at an arbitrary spot,
+      which would be painted and *counted* while covering nothing; it now reports the value as
+      unplaced instead. And a box covering most of the page is not a constraint, so allowing
+      the fuzzy tier under it would smuggle back exactly the page-wide edit-distance search
+      the design forbids; above 40 covered words the fuzzy tier is withdrawn while
+      exact/squash and overlap ranking continue.
+
+      Fast suite **308 green** (was 266: +12 `test_fuzzy.py`, +23 `test_locator.py`, +7 net in
+      `test_vlm.py` — 11 added against the 4 retired `locate()` tests, which moved to
+      `test_locator.py` as the no-box cases they now describe); heavyweight suite 8 green.)*

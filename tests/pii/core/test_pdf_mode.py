@@ -200,15 +200,24 @@ def test_strip_pdf_reports_page_text_and_offsets(tmp_path, pipeline,
 
 
 class _FakeDetector:
-    """Layer 0 without a model server: returns the same finding per page."""
+    """Layer 0 without a model server: returns the same finding per page.
+
+    `localize` is the second pass of the hybrid regime; this stand-in adds no
+    boxes, which is also the real fallback when the model declines to place a
+    value — the locator then searches the page string unconstrained."""
 
     def __init__(self, findings):
         self.findings = findings
         self.calls = 0
+        self.localize_calls = 0
 
     def detect(self, image):
         self.calls += 1
         return list(self.findings)
+
+    def localize(self, image, findings):
+        self.localize_calls += 1
+        return list(findings)
 
 
 def test_strip_pdf_vlm_detector_uses_ocr_for_geometry(tmp_path, pipeline,
@@ -225,7 +234,8 @@ def test_strip_pdf_vlm_detector_uses_ocr_for_geometry(tmp_path, pipeline,
     pmap = PseudonymMap()
     result = strip_pdf(src, pipeline, pmap, out, dpi=72, detector=detector)
 
-    assert detector.calls == 2  # one model call per page
+    assert detector.calls == 2  # one detection call per page...
+    assert detector.localize_calls == 2  # ...and one grounding call per page
     for page_result in result.pages:
         # Layer 1 refined the model's coarse class off the OCR text.
         assert [r.entity_type for r in page_result.spans] == ["EMAIL_ADDRESS"]

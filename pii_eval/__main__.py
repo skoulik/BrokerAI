@@ -2,6 +2,7 @@ import argparse
 import sys
 
 from pii.core.ocr import OCR_PAGE_BACKENDS
+from pii.core.vlm import DEFAULT_GEOMETRY, GEOMETRIES
 
 # Canonical home of every generated corpus (gitignored): one folder per
 # modality (text/, image/), one subfolder per seed.
@@ -115,6 +116,13 @@ def main() -> int:
                          "--modality image/pdf: vlm (default, the product "
                          "default — needs a llama-server, see $PII_VLM_URL, "
                          "and runs at minutes per page) or layers")
+    sc.add_argument("--geometry", choices=list(GEOMETRIES),
+                    default=DEFAULT_GEOMETRY,
+                    help="how detected values are placed on the page under "
+                         "--detector vlm (default: hybrid, the product "
+                         "default). The A/B that matters is hybrid vs ocr: "
+                         "same detector, same locator, boxes as the only "
+                         "variable")
 
     args = parser.parse_args()
     if args.command == "generate":
@@ -166,7 +174,8 @@ def main() -> int:
                            threshold=args.threshold,
                            invalid_identifiers=args.invalid_identifiers,
                            ocr_backend=args.ocr_backend,
-                           detector=args.detector)
+                           detector=args.detector,
+                           geometry=args.geometry)
     if args.modality == "pdf":
         if not args.corpus:
             parser.error("--modality pdf requires -c (a real corpus folder, "
@@ -177,7 +186,8 @@ def main() -> int:
                          threshold=args.threshold,
                          invalid_identifiers=args.invalid_identifiers,
                          ocr_backend=args.ocr_backend,
-                         detector=args.detector)
+                         detector=args.detector,
+                         geometry=args.geometry)
     from pii_eval.score import score
 
     return score(args.corpus or _default_corpus(args.seed),

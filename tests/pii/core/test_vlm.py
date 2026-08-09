@@ -20,8 +20,8 @@ from pii.core.vlm import (
     VlmDetector,
     VlmError,
     VlmFinding,
+    attach_boxes,
     fold_digits,
-    locate,
     parse_findings,
 )
 
@@ -159,29 +159,80 @@ def test_bad_response_shape_raises():
         det.detect(Image.new("RGB", (4, 4), "white"))
 
 
-# --------------------------------------------------------------- locate
+# ------------------------------------------------------------ two-pass boxes
+#
+# Detection and grounding are separate calls because asking for both at once
+# costs recall (350 -> 324 distinct values over 31 pages). Value location
+# itself is tests/pii/core/test_locator.py.
 
 
-def test_locate_exact():
-    assert locate("name: Sergei Kulik here", "Sergei Kulik") == (6, 18)
+def test_localize_asks_only_where_and_lists_the_values():
+    send = _transport('[{"text": "A. Person", "bbox_2d": [10, 20, 30, 40]}]')
+    det = VlmDetector(transport=send)
+    findings = [VlmFinding(text="A. Person", entity_type="PERSON")]
+
+    (out,) = det.localize(Image.new("RGB", (8, 8), "white"), findings)
+
+    assert out.box == (10, 20, 30, 40)
+    prompt = send.seen["payload"]["messages"][0]["content"][1]["text"]
+    assert "A. Person" in prompt
+    assert "WHERE" in prompt
 
 
-def test_locate_tolerates_formatting_differences():
-    # The two transcriptions of the same pixels need not agree on separators.
-    start, end = locate("BSB 083-064 acct", "083 064")
-    assert "083-064" == "BSB 083-064 acct"[start:end]
+def test_pass_one_never_asks_for_boxes_in_the_two_pass_regime():
+    # The recall cost is paid by asking for coordinates ALONGSIDE detection;
+    # the split exists precisely to avoid it, so pass 1 must stay clean.
+    assert "bbox_2d" not in VlmDetector(want_boxes=False).prompt
 
 
-def test_locate_returns_none_rather_than_guessing():
-    assert locate("nothing relevant", "Sergei Kulik") is None
+def test_localize_makes_no_call_for_an_empty_page():
+    def explode(*a, **kw):  # pragma: no cover - must not run
+        raise AssertionError("no second pass without findings")
+
+    assert VlmDetector(transport=explode).localize(None, []) == []
 
 
-def test_repeated_value_maps_to_successive_occurrences():
-    text = "24 Stacey Dr ... 24 Stacey Dr"
-    first = locate(text, "24 Stacey Dr")
-    second = locate(text, "24 Stacey Dr", taken=[first])
-    assert first != second
-    assert text[second[0] : second[1]] == "24 Stacey Dr"
+def test_attach_boxes_pairs_repeats_in_order():
+    findings = [
+        VlmFinding(text="24 Stacey Dr", entity_type="ADDRESS"),
+        VlmFinding(text="24 Stacey Dr", entity_type="ADDRESS"),
+    ]
+    hints = [
+        VlmFinding(text="24 Stacey Dr", entity_type="ADDRESS", box=(1, 1, 2, 2)),
+        VlmFinding(text="24 Stacey Dr", entity_type="ADDRESS", box=(3, 3, 4, 4)),
+    ]
+    assert [f.box for f in attach_boxes(findings, hints)] == [
+        (1, 1, 2, 2),
+        (3, 3, 4, 4),
+    ]
+
+
+def test_attach_boxes_tolerates_a_mismatched_hint_count():
+    # The model routinely returns a different number of boxes than there were
+    # findings; pairing by position would silently mis-attach. A finding that
+    # draws no hint keeps box=None and falls back to unconstrained search.
+    findings = [
+        VlmFinding(text="first", entity_type="PERSON"),
+        VlmFinding(text="second", entity_type="PERSON"),
+    ]
+    hints = [
+        VlmFinding(text="second", entity_type="PERSON", box=(3, 3, 4, 4)),
+        VlmFinding(text="not asked for", entity_type="PERSON", box=(9, 9, 9, 9)),
+    ]
+    out = attach_boxes(findings, hints)
+    assert out[0].box is None
+    assert out[1].box == (3, 3, 4, 4)
+
+
+def test_attach_boxes_matches_through_reformatting():
+    # Pass 2 re-transcribes the value as it copies it back, so the two passes
+    # need not agree on separators.
+    findings = [VlmFinding(text="083-064", entity_type="IDENTIFIER_GENERIC")]
+    hints = [
+        VlmFinding(text="083 064", entity_type="IDENTIFIER_GENERIC",
+                   box=(1, 2, 3, 4))
+    ]
+    assert attach_boxes(findings, hints)[0].box == (1, 2, 3, 4)
 
 
 # --------------------------------------------------------------- geometry
@@ -241,6 +292,136 @@ def test_unlocatable_value_warns_and_is_not_silently_dropped(pipeline):
             ocr=_ocr("something else entirely"),
         )
     assert result.spans == []
+    # A count that reaches the caller, not only a warning that may be
+    # deduplicated by the default filter on the next page.
+    assert [f.text for f in result.unlocated] == ["NOT ON THE PAGE"]
+
+
+def test_value_with_no_ocr_text_is_painted_from_the_model_box(pipeline):
+    # Tier 3 — the logo/barcode case. --strip-orgs so the kept-ORGANIZATION
+    # policy is not what decides the outcome here.
+    from pii.core.image_mode import strip_from_vlm
+    from pii.core.pipeline import DEFAULT_STRIP_ENTITIES
+
+    image = Image.new("RGB", (1000, 1000), "white")
+    with pytest.warns(RuntimeWarning, match="MODEL's own box"):
+        result = strip_from_vlm(
+            image,
+            [VlmFinding("Budget Direct", "IDENTIFIER_GENERIC",
+                        box=(700, 700, 900, 800))],
+            pipeline,
+            PseudonymMap(),
+            ocr=_ocr("statement of account"),
+        )
+    assert [f.text for f in result.box_geometry] == ["Budget Direct"]
+    assert result.unlocated == []
+    assert _has_non_background(result.image, (700, 700, 900, 800))
+    assert DEFAULT_STRIP_ENTITIES  # sanity: the strip list is non-empty
+
+
+def test_a_kept_organization_is_not_painted_from_its_box(pipeline):
+    # The prompt carries no institutional carve-outs by design, so the model
+    # boxes merchant logos. The kept-ORGANIZATION policy has to reach tier 3
+    # too, or the default run paints over every bank logo it sees.
+    from pii.core.image_mode import strip_from_vlm
+
+    result = strip_from_vlm(
+        Image.new("RGB", (1000, 1000), "white"),
+        [VlmFinding("Budget Direct", "ORGANIZATION", box=(700, 700, 900, 800))],
+        pipeline,
+        PseudonymMap(),
+        ocr=_ocr("statement of account"),
+    )
+    assert result.box_geometry == []
+    assert not _has_non_background(result.image, (700, 700, 900, 800))
+
+
+def test_hybrid_geometry_runs_a_second_pass_and_uses_it(pipeline):
+    # The dispatch: detect -> localize -> locate, with the box constraining
+    # which of two identical values is claimed.
+    from pii.core.image_mode import strip_rendered_page
+    from pii.core.ocr_page import OcrFrame, build_page
+    from pii.core.ocr import Box
+
+    calls = []
+
+    class FakeDetector:
+        def detect(self, image):
+            calls.append("detect")
+            return [VlmFinding("SERGEI KULIK", "PERSON")]
+
+        def localize(self, image, findings):
+            calls.append("localize")
+            return [VlmFinding("SERGEI KULIK", "PERSON", box=(0, 0, 300, 100))]
+
+    def fake_ocr(image):
+        # Two identical values, one inside the box and one outside it.
+        row = [
+            ("SERGEI", Box(0, 0, 60, 12), 99.0),
+            ("KULIK", Box(70, 0, 50, 12), 99.0),
+            ("SERGEI", Box(500, 0, 60, 12), 99.0),
+            ("KULIK", Box(570, 0, 50, 12), 99.0),
+        ]
+        return build_page([row], OcrFrame(width=1000, height=120, page=1))
+
+    result = strip_rendered_page(
+        Image.new("RGB", (1000, 120), "white"),
+        pipeline,
+        PseudonymMap(),
+        ocr_engine=fake_ocr,
+        detector=FakeDetector(),
+        geometry="hybrid",
+    )
+    assert calls == ["detect", "localize"]
+    (span,) = result.spans
+    assert result.ocr.text[span.start : span.end] == "SERGEI KULIK"
+    assert span.start == 0  # the occurrence the box pointed at
+
+
+def test_ocr_geometry_skips_the_second_pass(pipeline):
+    # The pre-box baseline stays reachable, and must not pay for a pass whose
+    # boxes it would ignore.
+    from pii.core.image_mode import strip_rendered_page
+    from pii.core.ocr_page import OcrFrame, build_page
+
+    calls = []
+
+    class FakeDetector:
+        def detect(self, image):
+            calls.append("detect")
+            return []
+
+        def localize(self, image, findings):  # pragma: no cover - must not run
+            raise AssertionError("--geometry ocr must not run pass 2")
+
+    strip_rendered_page(
+        Image.new("RGB", (100, 40), "white"),
+        pipeline,
+        PseudonymMap(),
+        ocr_engine=lambda im: build_page(
+            [], OcrFrame(width=100, height=40, page=1)
+        ),
+        detector=FakeDetector(),
+        geometry="ocr",
+    )
+    assert calls == ["detect"]
+
+
+def test_unknown_geometry_is_rejected(pipeline):
+    from pii.core.image_mode import strip_rendered_page
+
+    class FakeDetector:
+        def detect(self, image):  # pragma: no cover - never reached
+            return []
+
+    with pytest.raises(ValueError, match="unknown geometry"):
+        strip_rendered_page(
+            Image.new("RGB", (10, 10), "white"),
+            pipeline,
+            PseudonymMap(),
+            detector=FakeDetector(),
+            geometry="nonsense",
+        )
 
 
 def test_vlm_geometry_needs_no_ocr_and_scales_boxes(pipeline):

@@ -22,8 +22,10 @@ The segmenter is retired and layer 0 is the default detector (record in
   and deterministic recall floor over layer 0's findings (`merge_detections`). Whether that
   means presidio or our own code is still open — note it *inverts* the "Stop duplicating
   Presidio's checksum arithmetic" item below, whose proposed fix is to delegate *to* presidio.
-- **PaddleOCR stays** and supplies geometry: VLM boxes are stochastically unreliable, so
-  `--geometry ocr` is production and `--geometry vlm` is a comparison instrument only.
+- **PaddleOCR stays** and supplies paint geometry: VLM boxes are stochastically unreliable to
+  paint, so `--geometry vlm` is a comparison instrument only. They *are* used in production
+  (`--geometry hybrid`, the default) as a search constraint, which tolerates the error they
+  actually have — see [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0".
 - **GLiNER2 (and spaCy with it) are the next retirement candidate** — beaten on this corpus at
   things they structurally cannot do — but the decision has NOT been taken. They still run as
   part of the layer-1 union, which preserves cross-layer disagreement as a signal the tier-3
@@ -35,17 +37,48 @@ quantization item below is what stands between this and a usable product.
 
 ## Next up — image/PDF path
 
-- [ ] **Hybrids that deliberately use the VLM's own boxes** (Sergei, 2026-08-09 — postponed,
-      recorded so the idea is not lost). `--geometry ocr` can only redact what OCR can read, so
-      it has two structural blind spots: a value the model reads correctly but `locate()` cannot
-      find in the OCR text (digit damage breaking the squash), and content with no OCR text at
-      all — the model boxed a **logo** correctly, and barcodes are graphics. In exactly those
-      cases the model's box is the only geometry there is. Sketch: use OCR geometry wherever a
-      value locates, and fall back to the (padded) VLM box only for the unlocatable residue —
-      which is already counted and warned about. The measured box distribution is bimodal
-      (median excellent, 16% clipping >20 px), so the fallback must be padded generously and
-      probably reported differently from a clean redaction. Interacts with the barcode-masking
-      item below, which this could partly subsume.
+- [x] ~~**Hybrids that deliberately use the VLM's own boxes**~~ — **DONE 2026-08-09** as
+      `--geometry hybrid` (the new default): two-pass detect-then-localize, `locator.py`
+      candidate scoring with the box as a search constraint, `fuzzy.py` confusion-weighted
+      edit distance, and the padded model box as tier 3. It landed larger than the sketch
+      because the box turned out to be worth more as a *disambiguator* than as a fallback.
+      Record in [DONE.md](DONE.md), design in [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0".
+
+- [ ] **A tier-3 paint does not suppress a later identical finding, so the "NOT redacted"
+      line can cry wolf** (found in the first hybrid run, 2026-08-09). `locate_findings`
+      recognizes a redundant finding by containment in an already-claimed *char span*; a
+      box-only placement has no span, so a second finding of the same value with no box of its
+      own falls through to `unlocated` and is reported as unredacted even though the pixels
+      were painted. Observed on the insurance page: the same address appeared in both the
+      tier-3 list and the unlocated list, and re-OCR of the output confirmed **nothing
+      leaked**. The error is in the safe direction, but it is in the one line an operator has
+      to be able to trust, so it should not stand. The fix needs a semantics decision first:
+      should a painted box suppress a later identical value anywhere on the page (wrong if the
+      two occurrences are genuinely in different places), or should the report merely
+      distinguish "unplaced, but an identical value was painted elsewhere" from "unplaced,
+      nothing painted"? The second is honest and cheap; prefer it unless the first is argued.
+
+- [ ] **A value wrapped across lines/columns falls to tier 3 instead of matching** (same run).
+      The model returned an address and a vehicle description as single long strings; both
+      landed on tier 3, i.e. painted from the model's box rather than exact word boxes, even
+      though the text is on the page and OCR read it. The likely cause is that the linearized
+      page interleaves other column content between the value's parts, so no *contiguous*
+      word window matches — `_fuzzy_windows` only considers contiguous slices of the source
+      map, by design (a non-contiguous window would let a span swallow unrelated text). Worth
+      confirming against `pii debug ocr` on that page before choosing a fix. Options: allow a
+      window to skip a bounded number of intervening words when the skipped text is itself
+      part of no other finding; or split a long layer-0 value on its own line breaks and
+      locate the pieces independently, which fits the "one box per line" painting model
+      already in use. Recall is not lost either way — this is exact geometry vs approximate.
+
+- [ ] **Measure the hybrid against the `ocr` baseline on the 31-page real corpus** — the
+      A/B the design was argued from but has NOT been run: `python -m pii_eval score
+      --modality pdf -c pii_eval/corpora/real/1 --geometry hybrid` vs `--geometry ocr`, same
+      detector and same locator, boxes as the only variable. Three numbers decide whether
+      tier 3 earns its complexity or the disambiguation is carrying the whole change:
+      (a) the size of the tier-3 residue, (b) how many values change span between the two
+      runs (silent mis-locations the box fixed), (c) the throughput cost of pass 2 against
+      the predicted ~16 s/page. Until this runs, the hybrid is reasoned-for, not measured.
 
 - [ ] Belt-and-braces text-layer scan (*decide later*, split out of the PDF mode task when it
       shipped 2026-07-18): additionally scan any existing source text layer to catch text the
@@ -113,13 +146,66 @@ quantization item below is what stands between this and a usable product.
       has been made against it, so the first `pii_eval score --modality pdf` on the real
       corpus is the outstanding validation.
 
-- [ ] **Serving / llama.cpp tuning job** (scoped 2026-08-08, deferred to its own session).
-      ~176 s/page at Q8_0 is a research profile, not a product one — a 50-page submission
-      bundle is ~2.5 h. Time splits **~130 s prefill (image ingestion, 74%)** and **~45 s
-      decode (11 tok/s against a ~14 tok/s memory-bound ceiling)**, so a lever only matters if
-      it attacks the right half. Already tried and rejected: `-fa on` and `-ub 2048` gave *no*
-      improvement (73 vs 80 tok/s prefill, decode unchanged). Battery throttling halves
-      everything — check `pmset -g ps` before trusting any number.
+- [ ] **Serving / llama.cpp tuning job — now also owns page-level concurrency** (scoped
+      2026-08-08; re-scoped 2026-08-09 after the first hybrid run measured the two-pass cost
+      for real. Sergei: combine with the conveyor idea and postpone.)
+      ~176 s/page at Q8_0 was already a research profile rather than a product one — a 50-page
+      bundle is ~2.5 h — and **the hybrid default doubles it**. Time splits **~130 s prefill
+      (image ingestion, 74%)** and **~45 s decode (11 tok/s against a ~14 tok/s memory-bound
+      ceiling)**, so a lever only matters if it attacks the right half. Already tried and
+      rejected: `-fa on` and `-ub 2048` gave *no* improvement (73 vs 80 tok/s prefill, decode
+      unchanged). Battery throttling halves everything — check `pmset -g ps` before trusting
+      any number.
+
+      **Measured 2026-08-09, and it invalidates a premise this design was argued from: the
+      image prefill is NOT reused between the two passes.** Four requests over two pages of
+      `116832820_7_Insurance_Certificate`, b10326, `-np 1`, `--image-max-tokens 16384`, AC
+      power:
+
+      | page / pass | prefill | tokens | decode | out |
+      |---|---|---|---|---|
+      | p1 detect   | 112.1 s | 8990 | 3.1 s | 35 |
+      | p1 localize | 110.6 s | 8790 | 7.2 s | 80 |
+      | p2 detect   | 112.1 s | 8990 | 46.0 s | 504 |
+      | p2 localize | 112.3 s | 9006 | 74.2 s | 812 |
+
+      The report's "additional passes on the same page cost ~16 s, not 130 s" **did not
+      reproduce** — pass 2 re-encodes the image in full, so the hybrid costs ~2× per page
+      rather than the ~+9% the design assumed (p2: 345 s against 158 s for values-only).
+      No `reusing`/prefix-match line appears in the server log. **Sergei's hypothesis
+      (2026-08-09), and the most likely one: it is the changed prompt.** Pass 2 sends the same
+      image but different text, and if the multimodal cache path only reuses on a whole-prompt
+      match rather than a prefix match, any wording change forces a full re-encode — which is
+      exactly what the timings show. One cheap experiment discriminates it: send the same image
+      twice with an *identical* prompt. Fast second request ⇒ whole-prompt matching, and the
+      fix has to make pass 2 a prefix extension of pass 1 (or drop to `/completion` where the
+      token sequence is ours to control) rather than a different instruction after the same
+      image. Slow ⇒ image chunks are not cached at all and the lever is elsewhere.
+      Also worth trying, cheaply: `--cache-prompt` is enabled by default but `--cache-reuse`
+      defaults to **0** (`--cache-reuse 256`); and a newer llama.cpp than b10326. **Until this is settled, `--geometry hybrid`
+      buys its correctness at 2× throughput, and whether it deserves to stay the default is an
+      open question, not a settled one.** If reuse cannot be recovered, single-pass boxes
+      (−7.4% recall, 1× cost) becomes a live option again and the three-way trade should be
+      re-argued rather than inherited.
+
+      **Page-level concurrency (Sergei, 2026-08-09).** A conveyor over consecutive pages is
+      only worth building against the model, not around it: OCR + locate + layer 1 + paint are
+      ~5% of a page, so overlapping just those caps out at single digits. What is worth having
+      is running whole pages in parallel — but the standing constraint is that `-np > 1`
+      batches sequences into one decode call and thereby breaks the reproducibility the gate
+      depends on (item 4 below). Sergei's position is that sessions can run in parallel with
+      determinism *and* cache intact, at a cost that is only memory. The version of that which
+      is clearly true is **N separate server processes, each `-np 1`** — no shared batch, so
+      per-request determinism is untouched, and the cache is per process. That is blocked on
+      memory today (2 × 28.6 GB does not fit in 64 GB) which makes it **downstream of the
+      quantization item**: at Q4 (~15 GB) two servers fit and page-level parallelism becomes
+      free of the determinism objection. Whether one process with `-np N` can also keep
+      determinism is the open question — test it the way `-np 1` was qualified in the first
+      place: three identical runs of the same page under concurrent load, diffed for
+      byte-identical finding sets. Note the prefill-reuse question above interacts: if pass 2
+      is ever made cheap by caching, the two passes of a page must stay adjacent on the same
+      slot, and a scheduler that interleaves pages would evict exactly the cache that made it
+      cheap.
 
       Run in this order, each measured against the frozen baseline (**445 findings / 350
       distinct values over 31 pages**, values mode, which needs no geometry oracle):
@@ -142,10 +228,19 @@ quantization item below is what stands between this and a usable product.
          does not predict. **Cost: it breaks determinism** — precisely what disqualified Surya
          as a gate — so it must be opt-in, with eval/gate runs pinned to `-np 1`. KV cache per
          slot is affordable if `-c` drops (we use ~9k of 32k).
+      5. **Recover prefill reuse between the two passes** (see the measurement above). Worth
+         up to ~50% of the hybrid's cost on its own, and it is the only item here that is a
+         *correction* rather than an optimization — the design's throughput argument assumed
+         it already worked.
+      6. **N parallel single-slot servers + a page conveyor**, once 2 makes them fit. The
+         determinism-safe form of page-level concurrency; scales with however many copies of
+         the model fit in RAM.
 
       Ordering rationale: 1 attacks the biggest slice and costs nothing but a measurement; 2 is
-      cheap and independent; 3 changes the model so it needs a quality re-check; 4 is last
-      because it is the only one that buys speed by giving up a property we rely on.
+      cheap and independent; 3 changes the model so it needs a quality re-check; 4 is late
+      because it buys speed by giving up a property we rely on; 5 can jump the queue if the
+      hybrid stays the default, since it is repairing an assumption rather than adding one;
+      6 depends on 2 for its memory budget.
 - [ ] **PaddleOCR-VL as an OCR backend** (researched 2026-07-25, *postponed* — Sergei: layout
       model first, no VLM for now). The 0.9B VLM ships in the installed `paddleocr` 3.7.0 as
       the `PaddleOCRVL` pipeline (v1.6 default, `vl_rec_backend: native` = paddle, so torch-free

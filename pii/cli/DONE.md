@@ -51,3 +51,19 @@ Completed CLI work. The engineering records for the underlying engine features l
       backends went. `--detector` uses a `None` sentinel so it can resolve per mode — vlm for
       media, layers for text/CSV — which keeps a plain text run from demanding a model
       server.)*
+
+- [x] `--geometry hybrid` becomes the default, and the two lower-confidence outcomes get a
+      voice *(2026-08-09; engine record and rationale in [../core/DONE.md](../core/DONE.md)).
+      `--geometry` grew a third choice and now defaults to `hybrid`; `ocr` (the previous
+      default) and `vlm` stay as comparison instruments. `_build_detector` still ties
+      `want_boxes` to the geometry, but the tie is narrower — only `vlm` uses the one-pass
+      boxes prompt, since `hybrid` takes its geometry from a second call that costs no recall.
+
+      `_report_geometry` prints two new lines: values painted from the model's own box, and
+      values that could not be placed at all. Both print **independently of `--report`** — one
+      is a weaker redaction and the other is no redaction, so neither may be conditional on
+      the operator having asked for a detection listing. The counts come from the new
+      `box_geometry`/`unlocated` fields rather than from warnings, because Python's default
+      filter deduplicates an identical warning from the same line and a second page with the
+      same residue would otherwise report nothing. The same `--geometry` flag was added to
+      `pii_eval score`, so the hybrid-vs-ocr A/B is one flag.)*

@@ -268,6 +268,21 @@ class PiiPipeline:
         kept = [r for r in detected if self._in_strip_plan(r, text)]
         return _merge_overlaps(kept + list(layer1)), invalid
 
+    def strips_value(self, entity_type: str, value: str) -> bool:
+        """Whether a bare (type, value) pair would be stripped.
+
+        The offset-free form of `_in_strip_plan`, for detections that never
+        got a span — layer-0 findings painted from the model's own box
+        (locator tier 3). Without it the kept-ORGANIZATION policy would not
+        reach them and a boxed merchant logo would be painted over.
+        """
+        return self._in_strip_plan(
+            RecognizerResult(
+                entity_type=entity_type, start=0, end=len(value), score=1.0
+            ),
+            value,
+        )
+
     def _in_strip_plan(self, r, text: str) -> bool:
         """Whether a detected span is stripped.
 

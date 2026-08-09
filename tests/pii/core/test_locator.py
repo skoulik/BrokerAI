@@ -1,0 +1,327 @@
+"""Box-guided value location.
+
+Two things are under test and they pull in opposite directions:
+
+- the box must SHARPEN matching (repeats, collisions, nested findings) and
+  admit fuzzy matching that would be reckless page-wide;
+- and it must never make things worse than the unconstrained search that
+  preceded it, which is why every no-box case here asserts the old behaviour.
+
+Model-free: findings are constructed directly, and the OCR page is built
+through the real perception -> linearization seam. Dual coverage per the
+project rule — the corpus probe is the other half.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from pii.core.linearization import linearize
+from pii.core.locator import denormalize, locate_findings
+from pii.core.ocr import Box
+from pii.core.ocr_page import OcrFrame, build_page
+from pii.core.vlm import VlmFinding
+
+# Page geometry for the synthetic layouts below: one row per line, words laid
+# out left to right, all boxes the same height.
+_CHAR_W = 10
+_LINE_H = 12
+_LINE_GAP = 20
+_PAGE_W = 1000
+_PAGE_H = 400
+
+
+def _page(*lines: str):
+    """A RecognizerInput from one string per text line."""
+    rows = []
+    for row_index, line in enumerate(lines):
+        row, x = [], 0
+        for token in line.split(" "):
+            width = _CHAR_W * len(token)
+            row.append((token, Box(x, row_index * _LINE_GAP, width, _LINE_H), 99.0))
+            x += width + _CHAR_W
+        rows.append(row)
+    return linearize(
+        build_page(rows, OcrFrame(width=_PAGE_W, height=_PAGE_H, page=1))
+    )
+
+
+def _box_over(ocr, needle: str, occurrence: int = 0):
+    """The model-space (0-1000) box a well-behaved model would return for the
+    `occurrence`-th appearance of `needle` in the page text."""
+    at = -1
+    for _ in range(occurrence + 1):
+        at = ocr.text.find(needle, at + 1)
+        assert at != -1, f"{needle!r} not on the page"
+    boxes = ocr.boxes_for_span(at, at + len(needle))
+    left = min(b.left for b in boxes)
+    top = min(b.top for b in boxes)
+    right = max(b.right for b in boxes)
+    bottom = max(b.bottom for b in boxes)
+    return (
+        round(left / _PAGE_W * 1000),
+        round(top / _PAGE_H * 1000),
+        round(right / _PAGE_W * 1000),
+        round(bottom / _PAGE_H * 1000),
+    )
+
+
+def _place(ocr, *findings):
+    return locate_findings(list(findings), ocr, (_PAGE_W, _PAGE_H))
+
+
+def _text_of(ocr, placement) -> str:
+    return ocr.text[placement.start : placement.end]
+
+
+# ------------------------------------------------- no box: the old behaviour
+#
+# These are the pre-box locator's own tests. They must keep passing verbatim:
+# a finding without a box has to behave exactly as it did before, or the
+# change is a regression for every value the model declines to place.
+
+
+def test_exact_match_without_a_box():
+    ocr = _page("name: Sergei Kulik here")
+    (p,) = _place(ocr, VlmFinding("Sergei Kulik", "PERSON")).placements
+    assert _text_of(ocr, p) == "Sergei Kulik" and p.kind == "exact"
+
+
+def test_formatting_differences_are_absorbed_without_a_box():
+    # The two transcriptions of the same pixels need not agree on separators.
+    ocr = _page("BSB 083-064 acct")
+    (p,) = _place(ocr, VlmFinding("083 064", "IDENTIFIER_GENERIC")).placements
+    assert _text_of(ocr, p) == "083-064" and p.kind == "squash"
+
+
+def test_a_missing_value_is_reported_not_guessed():
+    ocr = _page("nothing relevant")
+    (p,) = _place(ocr, VlmFinding("Sergei Kulik", "PERSON")).placements
+    assert p.kind is None and p.start is None
+
+
+def test_repeated_value_maps_to_successive_occurrences_without_a_box():
+    ocr = _page("24 Stacey Dr and 24 Stacey Dr")
+    result = _place(
+        ocr,
+        VlmFinding("24 Stacey Dr", "ADDRESS"),
+        VlmFinding("24 Stacey Dr", "ADDRESS"),
+    )
+    first, second = result.placements
+    assert (first.start, first.end) != (second.start, second.end)
+    assert _text_of(ocr, second) == "24 Stacey Dr"
+
+
+def test_no_fuzzy_matching_without_a_box():
+    # The constraint is what licenses edit distance. With no box there is
+    # nothing to confine the search, so damaged text stays unlocatable rather
+    # than being matched somewhere plausible.
+    ocr = _page("acct 162-09711-4 closed")
+    (p,) = _place(ocr, VlmFinding("162-097111-4", "IDENTIFIER_GENERIC")).placements
+    assert p.kind is None
+
+
+# --------------------------------------------------- the box as disambiguator
+
+
+def test_box_picks_the_right_occurrence_of_a_repeated_value():
+    ocr = _page("24 Stacey Dr billing", "posted to 24 Stacey Dr")
+    box = _box_over(ocr, "24 Stacey Dr", occurrence=1)
+    (p,) = _place(ocr, VlmFinding("24 Stacey Dr", "ADDRESS", box=box)).placements
+    assert p.start == ocr.text.rfind("24 Stacey Dr")
+
+
+def test_box_beats_a_squash_collision_elsewhere_on_the_page():
+    # "4000" squash-matches inside "$14,000.00" — the exact failure the
+    # unconstrained search had no way to reject. Here the real value is
+    # OCR-damaged (0 read as O), so the collision is the only clean string
+    # match on the page and still must not win.
+    ocr = _page("ref 4OOO issued", "total $14,000.00 paid")
+    box = _box_over(ocr, "4OOO")
+    (p,) = _place(ocr, VlmFinding("4000", "IDENTIFIER_GENERIC", box=box)).placements
+    assert _text_of(ocr, p) == "4OOO" and p.kind == "fuzzy"
+
+
+def test_a_useless_box_still_leaves_the_page_wide_match():
+    # Boxes are stochastic: one pointing at empty space must not cost a value
+    # that plain matching would have found. The floor is unconditional.
+    ocr = _page("name: Sergei Kulik here")
+    (p,) = _place(
+        ocr, VlmFinding("Sergei Kulik", "PERSON", box=(900, 900, 950, 950))
+    ).placements
+    assert _text_of(ocr, p) == "Sergei Kulik"
+
+
+def test_nested_finding_is_recognized_as_already_covered():
+    # "John" reported separately after "John Smith" must not go hunting for a
+    # different John — the wider span already paints those pixels.
+    ocr = _page("paid John Smith today")
+    result = _place(
+        ocr,
+        VlmFinding("John Smith", "PERSON"),
+        VlmFinding("John", "PERSON"),
+    )
+    wide, narrow = result.placements
+    assert _text_of(ocr, wide) == "John Smith"
+    assert narrow.kind == "redundant" and narrow.start is None
+
+
+def test_a_nested_value_elsewhere_is_still_found():
+    # ...but redundancy is about the pixels, not the string: a second John on
+    # the page is a real second detection.
+    ocr = _page("paid John Smith and John Doe")
+    result = _place(
+        ocr,
+        VlmFinding("John Smith", "PERSON"),
+        VlmFinding("John", "PERSON"),
+    )
+    wide, narrow = result.placements
+    assert narrow.start == ocr.text.rfind("John")
+    assert narrow.start != wide.start
+
+
+# ------------------------------------------------------ the box licenses fuzzy
+
+
+def test_fuzzy_recovers_a_dropped_character_inside_the_box():
+    ocr = _page("acct 162-09711-4 closed")
+    box = _box_over(ocr, "162-09711-4")
+    (p,) = _place(
+        ocr, VlmFinding("162-097111-4", "IDENTIFIER_GENERIC", box=box)
+    ).placements
+    assert _text_of(ocr, p) == "162-09711-4" and p.kind == "fuzzy"
+
+
+def test_fuzzy_span_paints_exact_word_boxes_not_the_model_box():
+    # Tier 2: we could not read the value, but we do have its glyph geometry.
+    ocr = _page("acct 162-09711-4 closed")
+    box = _box_over(ocr, "162-09711-4")
+    (p,) = _place(
+        ocr, VlmFinding("162-097111-4", "IDENTIFIER_GENERIC", box=box)
+    ).placements
+    assert p.box is None  # nothing falls back to model geometry
+    assert ocr.boxes_for_span(p.start, p.end) == ocr.boxes_for_span(
+        ocr.text.find("162-09711-4"), ocr.text.find("162-09711-4") + 11
+    )
+
+
+def test_a_clipped_box_still_locates_the_whole_value():
+    # p90 inward clip is ~64 px. Localization tolerance is far looser than
+    # painting tolerance, which is the premise of the whole design.
+    ocr = _page("acct 162-09711-4 closed")
+    x1, y1, x2, y2 = _box_over(ocr, "162-09711-4")
+    clipped = (x1 + 30, y1, x2 - 30, y2)
+    (p,) = _place(
+        ocr, VlmFinding("162-09711-4", "IDENTIFIER_GENERIC", box=clipped)
+    ).placements
+    assert _text_of(ocr, p) == "162-09711-4"
+
+
+def test_a_value_wrapped_across_lines_is_one_span():
+    ocr = _page("PAKENHAM", "VIC 3810")
+    box = _box_over(ocr, "PAKENHAM")
+    (p,) = _place(
+        ocr, VlmFinding("PAKENHAM VIC 3810", "ADDRESS", box=box)
+    ).placements
+    assert _text_of(ocr, p) == "PAKENHAM\nVIC 3810"
+
+
+# --------------------------------------------------------- tier 3 and the residue
+
+
+def test_a_box_over_pixels_with_no_text_falls_back_to_model_geometry():
+    # The logo case: a correctly boxed value the OCR engine cannot see at all.
+    ocr = _page("statement of account")
+    (p,) = _place(
+        ocr, VlmFinding("Budget Direct", "ORGANIZATION", box=(600, 600, 800, 700))
+    ).placements
+    assert p.kind == "box" and p.start is None and p.box is not None
+
+
+def test_the_fallback_box_is_padded_for_the_tail():
+    ocr = _page("statement of account")
+    raw = (600, 600, 800, 700)
+    (p,) = _place(
+        ocr, VlmFinding("Budget Direct", "ORGANIZATION", box=raw)
+    ).placements
+    exact = denormalize(raw, _PAGE_W, _PAGE_H)
+    assert p.box.left < exact.left and p.box.top < exact.top
+    assert p.box.right > exact.right and p.box.bottom > exact.bottom
+
+
+def test_the_fallback_box_absorbs_a_word_it_clips():
+    # Where the box cuts through a word, the word's own exact box completes
+    # it — over-painting a neighbour is recoverable, half a legible account
+    # number is not.
+    ocr = _page("acct 162-09711-4 closed")
+    word = next(w for w in ocr.words if w.text == "162-09711-4")
+    clipped = (
+        round(word.box.left / _PAGE_W * 1000),
+        round(word.box.top / _PAGE_H * 1000),
+        round((word.box.left + word.box.width // 3) / _PAGE_W * 1000),
+        round(word.box.bottom / _PAGE_H * 1000),
+    )
+    (p,) = _place(
+        ocr, VlmFinding("something unreadable", "IDENTIFIER_GENERIC", box=clipped)
+    ).placements
+    assert p.kind == "box"
+    assert p.box.right >= word.box.right
+
+
+def test_a_box_over_unmatchable_words_still_falls_back_rather_than_vanishing():
+    ocr = _page("acct 162-09711-4 closed")
+    box = _box_over(ocr, "162-09711-4")
+    (p,) = _place(
+        ocr, VlmFinding("Q7ZZZ9WWWW", "IDENTIFIER_GENERIC", box=box)
+    ).placements
+    assert p.kind == "box"
+
+
+def test_a_degenerate_box_is_reported_unplaced_not_painted():
+    # Padding a zero-area box yields a small rectangle at an arbitrary spot.
+    # Painting it would COUNT as a redaction while covering nothing, which is
+    # a hidden leak — worse than an honest "could not place this".
+    ocr = _page("statement of account")
+    (p,) = _place(
+        ocr, VlmFinding("Budget Direct", "ORGANIZATION", box=(0, 0, 0, 0))
+    ).placements
+    assert p.kind is None and p.box is None
+
+
+def test_a_page_sized_box_does_not_license_page_wide_fuzzy_matching():
+    # A box covering everything is no constraint at all, and fuzzy matching
+    # under it would be exactly the global edit-distance search the design
+    # rules out. Exact/squash still work; only the fuzzy tier is withdrawn.
+    ocr = _page(*[f"row{i} acct 162-09711-4 closed" for i in range(12)])
+    (p,) = _place(
+        ocr,
+        VlmFinding("162-097111-4", "IDENTIFIER_GENERIC", box=(0, 0, 1000, 1000)),
+    ).placements
+    assert p.kind != "fuzzy"
+
+
+def test_the_three_outcomes_are_reported_separately():
+    ocr = _page("paid Sergei Kulik today")
+    result = _place(
+        ocr,
+        VlmFinding("Sergei Kulik", "PERSON"),
+        VlmFinding("Budget Direct", "ORGANIZATION", box=(600, 600, 800, 700)),
+        VlmFinding("nowhere at all", "PERSON"),
+    )
+    assert [p.finding.text for p in result.located] == ["Sergei Kulik"]
+    assert [p.finding.text for p in result.box_only] == ["Budget Direct"]
+    assert [p.finding.text for p in result.unlocated] == ["nowhere at all"]
+
+
+# ------------------------------------------------------------------ geometry
+
+
+@pytest.mark.parametrize(
+    "box,expected",
+    [
+        ((0, 0, 1000, 1000), Box(0, 0, _PAGE_W, _PAGE_H)),
+        ((0, 0, 500, 500), Box(0, 0, _PAGE_W // 2, _PAGE_H // 2)),
+    ],
+)
+def test_denormalize_maps_model_space_onto_pixels(box, expected):
+    assert denormalize(box, _PAGE_W, _PAGE_H) == expected

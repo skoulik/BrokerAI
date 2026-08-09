@@ -87,6 +87,11 @@ class PdfPageResult:
     invalid: list
     # What was painted — the only record on the VLM-geometry path (no spans).
     segments: list = dataclasses.field(default_factory=list)
+    # Findings painted from the model's own box, and findings not painted at
+    # all. Carried per page so a document-level report can total them; see
+    # ImageStripResult for why they are counted rather than only warned about.
+    box_geometry: list = dataclasses.field(default_factory=list)
+    unlocated: list = dataclasses.field(default_factory=list)
 
 
 @dataclass
@@ -103,7 +108,7 @@ def strip_pdf(
     ocr_backend: str = "paddle",
     progress: Callable[[int, int], None] | None = None,
     detector=None,
-    geometry: str = "ocr",
+    geometry: str = "hybrid",
 ) -> PdfStripResult:
     """Strip a PDF page by page and write a fresh, image-only PDF.
 
@@ -148,6 +153,8 @@ def strip_pdf(
                     spans=result.spans,
                     invalid=result.invalid,
                     segments=result.segments,
+                    box_geometry=result.box_geometry,
+                    unlocated=result.unlocated,
                 )
             )
     # A fresh document carries nothing from the source; empty the

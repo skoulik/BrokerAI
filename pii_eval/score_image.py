@@ -35,6 +35,7 @@ from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
 from pii.core.image_mode import strip_image
 from pii.core.linearization import linearize
 from pii.core.ocr import get_ocr_page
+from pii.core.vlm import DEFAULT_GEOMETRY
 from pii_eval.score import _norm
 
 # Classic OCR confusion pairs, collapsed to one representative per class.
@@ -199,22 +200,25 @@ def reread_engine():
     return lambda image: linearize(engine(image))
 
 
-def build_detector(detector: str):
+def build_detector(detector: str, geometry: str = DEFAULT_GEOMETRY):
     """The layer-0 detector for the STRIP side, or None for the layers path.
     Imported lazily so a `--detector layers` run needs no model server."""
     if detector != "vlm":
         return None
     from pii.core.vlm import VlmDetector
 
-    return VlmDetector()
+    # Only the raw-box instrument uses the one-pass boxes prompt; everything
+    # else takes geometry from the second pass, which costs no recall.
+    return VlmDetector(want_boxes=geometry == "vlm")
 
 
 def score_image(corpus: str, threshold: float = 0.4,
                 invalid_identifiers: str = "likely",
                 ocr_backend: str = "paddle",
-                detector: str = "vlm") -> int:
+                detector: str = "vlm",
+                geometry: str = DEFAULT_GEOMETRY) -> int:
     ocr = reread_engine()
-    vlm = build_detector(detector)
+    vlm = build_detector(detector, geometry)
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     source = (corpus_path / manifest["source"]).resolve()
@@ -231,7 +235,8 @@ def score_image(corpus: str, threshold: float = 0.4,
         image = Image.open(corpus_path / doc["file"])
         pmap = PseudonymMap()
         result = strip_image(image, pipeline, pmap,
-                             ocr_backend=ocr_backend, detector=vlm)
+                             ocr_backend=ocr_backend, detector=vlm,
+                             geometry=geometry)
         reread = ocr(result.image).text
         inv_ents = [e for e in entities if e["type"] in INVALID_ENTITY_TYPES]
         reg_ents = [e for e in entities if e["type"] not in INVALID_ENTITY_TYPES]

@@ -21,7 +21,7 @@ from pathlib import Path
 from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
 from pii.core.ocr import OCR_PAGE_BACKENDS
 # stdlib-only module, so importing it here costs nothing on the default path
-from pii.core.vlm import VlmError
+from pii.core.vlm import DEFAULT_GEOMETRY, GEOMETRIES, VlmError
 
 
 def _read(source: str) -> str:
@@ -59,8 +59,9 @@ def _build_detector(args):
         detector = "vlm" if media else "layers"
     elif detector == "vlm" and not media:
         raise SystemExit("--detector vlm requires --image or --pdf")
+    geometry = getattr(args, "geometry", DEFAULT_GEOMETRY)
     if detector != "vlm":
-        if getattr(args, "geometry", "ocr") != "ocr":
+        if geometry != DEFAULT_GEOMETRY:
             raise SystemExit(
                 "--geometry is only meaningful with --detector vlm: the "
                 "pattern/NER layers detect in OCR text and have no geometry "
@@ -72,10 +73,10 @@ def _build_detector(args):
 
     return VlmDetector(
         url=getattr(args, "vlm_url", None) or DEFAULT_URL,
-        # Boxes are only requested when they will actually be used: asking for
-        # coordinates measurably costs recall, so the OCR-geometry path does
-        # not pay that price.
-        want_boxes=getattr(args, "geometry", "ocr") == "vlm",
+        # The one-pass boxes prompt is only used where its boxes are painted
+        # directly. Everywhere else geometry comes from the second pass
+        # (VlmDetector.localize), which costs no recall.
+        want_boxes=geometry == "vlm",
     )
 
 
@@ -85,6 +86,28 @@ def _report(spans, text: str, file=None, prefix: str = "  ") -> None:
     for r in spans:
         value = text[r.start : r.end].replace("\n", "\\n")
         print(f"{prefix}{r.entity_type:<20} {r.score:.2f}  {value!r}", file=file)
+
+
+def _report_geometry(box_geometry, unlocated, file=None, prefix: str = "") -> None:
+    """Report the two lower-confidence outcomes of value location.
+
+    Always printed when non-empty, independently of --report: one is a
+    weaker redaction and the other is no redaction at all, so neither may
+    depend on the operator having asked for a detection listing."""
+    file = file if file is not None else sys.stderr
+    if box_geometry:
+        print(
+            f"{prefix}{len(box_geometry)} value(s) painted from the model's "
+            f"own box (no OCR text matched — logo/barcode/graphic?); geometry "
+            f"is approximate and layer 1 never saw them",
+            file=file,
+        )
+    if unlocated:
+        print(
+            f"{prefix}WARNING: {len(unlocated)} detected value(s) could not be "
+            f"placed on the page and were NOT redacted",
+            file=file,
+        )
 
 
 def _report_invalid(findings, file=None) -> None:
@@ -201,7 +224,7 @@ def _strip_media(args, pipeline, detector):
         result = strip_image(Image.open(args.input), pipeline, pmap,
                              ocr_backend=args.ocr_backend,
                              detector=detector,
-                             geometry=getattr(args, "geometry", "ocr"))
+                             geometry=getattr(args, "geometry", DEFAULT_GEOMETRY))
         result.image.save(args.output)
         pmap.save()
         if args.report:
@@ -215,6 +238,7 @@ def _strip_media(args, pipeline, detector):
                       file=sys.stderr)
                 for seg in result.segments:
                     print(f"  {seg.label}", file=sys.stderr)
+        _report_geometry(result.box_geometry, result.unlocated)
         if args.log_invalid_identifiers == "yes" and result.invalid:
             _report_invalid(result.invalid)
         return 0
@@ -231,7 +255,7 @@ def _strip_media(args, pipeline, detector):
                            ocr_backend=args.ocr_backend,
                            progress=progress,
                            detector=detector,
-                           geometry=getattr(args, "geometry", "ocr"))
+                           geometry=getattr(args, "geometry", DEFAULT_GEOMETRY))
         pmap.save()
         if args.report:
             total = sum(len(p.spans) for p in result.pages)
@@ -242,6 +266,10 @@ def _strip_media(args, pipeline, detector):
                 else:
                     for seg in p.segments:
                         print(f"  p{p.number:<3} {seg.label}", file=sys.stderr)
+        _report_geometry(
+            [f for p in result.pages for f in p.box_geometry],
+            [f for p in result.pages for f in p.unlocated],
+        )
         invalid = [f for p in result.pages for f in p.invalid]
         if args.log_invalid_identifiers == "yes" and invalid:
             _report_invalid(invalid)
@@ -312,11 +340,15 @@ def main(argv=None) -> int:
              "and CSV input always uses layers",
     )
     p_strip.add_argument(
-        "--geometry", choices=["ocr", "vlm"], default="ocr",
-        help="where painted boxes come from when --detector vlm: ocr "
-             "(default; each detected value is located in the OCR text and "
-             "painted with exact word boxes — OCR still runs) or vlm (the "
-             "model's own boxes; OCR never runs, faster but measured UNSAFE — "
+        "--geometry", choices=list(GEOMETRIES), default=DEFAULT_GEOMETRY,
+        help="how detected values are placed on the page when --detector vlm: "
+             "hybrid (default; a second model pass boxes each value, and those "
+             "boxes constrain the search for it in the OCR text — painting "
+             "still uses exact OCR word boxes, falling back to the model's own "
+             "padded box only where there is no OCR text at all, as for a logo "
+             "or a barcode), ocr (no second pass; search the whole page string "
+             "for each value — the pre-box baseline), or vlm (paint the "
+             "model's own boxes, OCR never runs; faster but measured UNSAFE — "
              "16%% of boxes clip by >20px, stochastically, so it is a "
              "comparison instrument, not a production option). Only valid "
              "with --detector vlm",

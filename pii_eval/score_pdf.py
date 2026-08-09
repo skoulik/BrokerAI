@@ -30,6 +30,7 @@ from pathlib import Path
 
 from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
 from pii.core.pdf_mode import pdf_to_images, strip_pdf
+from pii.core.vlm import DEFAULT_GEOMETRY
 from pii_eval.build import CRITICAL
 from pii_eval.score_image import (
     _noise,
@@ -44,7 +45,8 @@ from pii_eval.score_image import (
 def score_pdf(corpus: str, threshold: float = 0.4,
               invalid_identifiers: str = "likely",
               ocr_backend: str = "paddle",
-              detector: str = "vlm") -> int:
+              detector: str = "vlm",
+              geometry: str = DEFAULT_GEOMETRY) -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     truth = json.loads((corpus_path / "truth.json").read_text("utf-8"))
@@ -54,7 +56,7 @@ def score_pdf(corpus: str, threshold: float = 0.4,
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ocr = reread_engine()
-    vlm = build_detector(detector)
+    vlm = build_detector(detector, geometry)
     pipeline = PiiPipeline(threshold=threshold,
                            invalid_identifiers=invalid_identifiers)
 
@@ -67,6 +69,7 @@ def score_pdf(corpus: str, threshold: float = 0.4,
         result = strip_pdf(
             source_dir / doc["source"], pipeline, PseudonymMap(), out_pdf,
             dpi=dpi, ocr_backend=ocr_backend, detector=vlm,
+            geometry=geometry,
             progress=lambda n, c: print(f"  {doc['id']} page {n}/{c} ...",
                                         file=sys.stderr),
         )

@@ -70,13 +70,28 @@ on the original image (`pii/core/image_mode.py`).
   text only. No model server, seconds per page. Text and CSV input always
   uses this, since there is no page image to read.
 
-`--geometry` (only with `--detector vlm`) chooses where painted boxes come
-from. `ocr` (default) locates each value in the OCR text and paints exact
-word boxes; `vlm` uses the model's own boxes and skips OCR entirely. **Use
-the default**: the model's boxes are measured unsafe — 16% clip by more than
-20 px, stochastically, leaving part of a value legible — so `vlm` is a
-comparison instrument, not a production option. Asking for boxes also costs
-the model ~7% recall, so the safe path is the more accurate one too.
+`--geometry` (only with `--detector vlm`) chooses how detected values are
+placed on the page.
+
+- `hybrid` (**default**) — a second model pass boxes each detected value, and
+  those boxes constrain the search for it in the OCR text. Painting still uses
+  exact OCR word boxes; the model's own box is painted only where there is no
+  OCR text at all, as for a logo or a barcode, padded and reported separately.
+- `ocr` — no second pass; each value is searched for across the whole page
+  string. The behaviour before boxes were used, kept for comparison.
+- `vlm` — paint the model's own boxes, skipping OCR entirely.
+
+**Use the default.** The model's boxes are far too unreliable to *paint* — 16%
+clip by more than 20 px, stochastically, leaving part of a value legible — but
+reliable enough to say which occurrence of a value you are looking at, which
+is all `hybrid` asks of them. `vlm` is a comparison instrument, not a
+production option.
+
+Two lines in the run output report the weaker outcomes, and they are printed
+whether or not you passed `--report`: values painted from the model's own box
+(approximate geometry, no checksum validation) and values that could not be
+placed at all (**not redacted** — treat as a leak and re-run or handle by
+hand).
 
 The OCR engine is **PaddleOCR**, and it supplies *geometry*, not detection.
 `--ocr-backend` selects the model tier: `paddle` (default, = `paddle:v6_medium`),
@@ -107,8 +122,8 @@ stderr; `--report` prefixes detections with their page number.
 
 `pii debug ocr <image|pdf>` OCRs the page(s) and dumps the **perceived structure** — lines,
 words and their boxes — for inspecting what the OCR stage produced (no PII detection, no
-painting). This is the geometry `--geometry ocr` paints with, so a value missing from these
-lines is a value the tool cannot redact. `--format json` (round-trippable), `text` (human
+painting). This is the geometry the strip path paints with, so a value missing from these
+lines can only be redacted from the model's own box. `--format json` (round-trippable), `text` (human
 summary), or `overlay` (annotated raster) — the overlay outlines each word in grey and each
 assembled line in blue with its index, which makes the row banding visible. `--ocr-backend`
 takes the same model tiers as `strip` (`paddle` default).
