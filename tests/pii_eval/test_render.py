@@ -118,11 +118,12 @@ class TestFindValue:
 @pytest.mark.slow
 @pytest.mark.parametrize("font", ["consola.ttf", "times.ttf"])
 def test_rendered_page_is_ocr_readable(font):
-    from pii.core.ocr import get_ocr
+    from pii.core.linearization import linearize
+    from pii.core.ocr import get_ocr_page
 
     page = render_page(
         "ACCOUNT STATEMENT\nTFN: 123 456 782", font, 24
     )
-    text = get_ocr("paddle:v6_medium")(page).text
+    text = linearize(get_ocr_page("paddle:v6_medium")(page)).text
     assert "STATEMENT" in text
     assert "456" in text

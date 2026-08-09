@@ -1,5 +1,10 @@
 """Layered PII detection + pseudonymization pipeline.
 
+Layer 0: a local vision LLM reads the page image and names the values
+         (pii.core.vlm) — the detector for --image/--pdf. It emits COARSE
+         classes on purpose, because it is measurably unreliable at typing
+         identifiers; `merge_detections` folds a layer-1 pass over the same
+         OCR text on top to refine, validate and extend them.
 Layer 1: Presidio pattern/checksum recognizers — built-in AU_TFN, AU_ABN,
          AU_ACN, AU_MEDICARE, credit cards, emails — plus the custom
          recognizers in pii.core.recognizers (BSB, account, PayID,
@@ -223,6 +228,46 @@ class PiiPipeline:
         )
         return plan, _collect_invalid(results, text)
 
+    def merge_detections(
+        self, detected: list, text: str
+    ) -> tuple[list, list[InvalidFinding]]:
+        """Fold layer-0 detections and a layer-1 pass over the same text into
+        one strip plan.
+
+        `detected` are layer-0 (VLM) spans already located in `text`, so both
+        span sets share one offset space — which is only true because
+        production geometry is OCR (`--geometry ocr`), and is what makes this
+        a merge rather than a reconciliation.
+
+        Layer 1 does three jobs here, and all three fall out of running the
+        ordinary analyzer pass and merging the two sets:
+
+        - REFINE. The VLM emits one coarse IDENTIFIER_GENERIC class on
+          purpose; an overlapping layer-1 span carries the precise,
+          checksum-validated type and OUTRANKS it (see _rank), so the merged
+          span strips as AU_TFN_1 / AU_BSB_1 / CREDIT_CARD_1, not ID_1.
+        - VALIDATE. The *_INVALID shadows are a signal a VLM structurally
+          cannot produce — it can read a TFN but not verify its mod-11
+          arithmetic — so they can only come from this pass.
+        - UNION. Whatever layer 1 finds that the model missed is added, which
+          is a deterministic recall floor under a stochastic detector.
+
+        Layer-0 spans are put through the strip plan first, so the kept-
+        ORGANIZATION policy applies to them exactly as it does to layer 1: the
+        prompt deliberately carries no institutional carve-outs (an
+        unauditable per-page keep decision is the wrong place for one), which
+        means the model reports merchant and bank names by design and this is
+        where they are kept.
+
+        Where the two disagree on a specific class the higher score wins,
+        which is layer 0 (it detects at 1.0) — deliberate, it is the better
+        semantic detector. The failure that protects against (layer 1 typing
+        the AFSL number 237502 as a phone) costs an over-strip, not a leak.
+        """
+        layer1, invalid = self.detect(text)
+        kept = [r for r in detected if self._in_strip_plan(r, text)]
+        return _merge_overlaps(kept + list(layer1)), invalid
+
     def _in_strip_plan(self, r, text: str) -> bool:
         """Whether a detected span is stripped.
 
@@ -277,11 +322,26 @@ def _resolve_overlaps(results):
 
 
 def _rank(r) -> tuple:
-    """Merge ranking: any valid entity type outranks any invalid class
-    regardless of score (recall-first — an invalid-class candidate must
-    never claim the placeholder from a real detection), score breaks ties
-    within a class."""
-    return (r.entity_type not in INVALID_ENTITY_TYPES, r.score)
+    """Merge ranking: which member's entity type LABELS a merged span. Three
+    tiers, score breaking ties within a tier. Ranking decides the label only —
+    every member's extent is unioned regardless, recall-first.
+
+    2. A specific class — layer 1's pattern/checksum classes and layer 0's
+       semantic ones alike.
+    1. IDENTIFIER_GENERIC: layer 0 saw an identifier and deliberately did not
+       type it (it drifts CREDIT_CARD <-> AU_BANK_ACCOUNT on the same value
+       between runs), so ANY specific class overlapping it wins the
+       placeholder. This is the refinement in `merge_detections`.
+    0. The *_INVALID shadows: "matched a pattern, failed its checksum" must
+       never claim the placeholder from a real detection.
+    """
+    if r.entity_type in INVALID_ENTITY_TYPES:
+        tier = 0
+    elif r.entity_type == "IDENTIFIER_GENERIC":
+        tier = 1
+    else:
+        tier = 2
+    return (tier, r.score)
 
 
 def _merge_overlaps(results):

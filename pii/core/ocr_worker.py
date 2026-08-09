@@ -10,7 +10,7 @@ Design:
 - One worker per model tier, spawned lazily on first use and kept alive
   for the whole run (the PaddleOCR engine loads once, not per call).
 - Framed request/response over the child's stdio: parent writes a PNG
-  frame to the child's stdin, child writes a serialized OcrResult frame
+  frame to the child's stdin, child writes a serialized OcrPage frame
   back. The child claims fd 1 for the protocol and redirects Python/C
   stdout to stderr FIRST, so paddle's chatty logging can never corrupt
   the binary stream (both fds forced to binary mode on Windows).
@@ -37,7 +37,6 @@ import threading
 
 from PIL import Image
 
-from pii.core.ocr import OcrResult
 from pii.core.ocr_page import OcrPage
 
 # Frame: 1 status byte + 4-byte big-endian length + payload.
@@ -77,7 +76,7 @@ def _read_frame(stream) -> tuple[int, bytes]:
 # --------------------------------------------------------------------------
 
 def _serve(read_stream, write_stream, ocr_fn) -> None:
-    """Frame loop: PNG in, serialized OcrResult out, until stdin closes.
+    """Frame loop: PNG in, serialized OcrPage out, until stdin closes.
 
     A per-image failure is returned as an error frame and the worker keeps
     serving (one bad page must not kill the engine); only stdin EOF ends
@@ -114,35 +113,17 @@ def _binary_stdio() -> tuple:
 
 
 def _resolve(spec: str):
-    """Resolve a worker spec to a warmed-up `ocr_fn(image) -> OcrResult|OcrPage`.
+    """Resolve a worker spec — a PaddleOCR model tier — to a warmed-up
+    `ocr_fn(image) -> OcrPage`.
 
-    - bare tier ("v6_medium"): PaddleOCR -> OcrResult (the strip path).
-    - "page:<tier>": PaddleOCR line-only -> OcrPage.
-    - "structure": PP-StructureV3 (layout) -> OcrPage.
-    - "doclayout:<model>": PP-DocLayoutV3 blocks + PaddleOCR lines -> OcrPage.
-
-    The engine loads here so a load failure surfaces before READY. All
-    paddle/PP-Structure imports stay inside this function: the module is
-    imported by the torch-holding parent, which must never load paddle."""
+    The engine loads here so a load failure surfaces before READY, and the
+    paddle import stays inside this function: the module is imported by the
+    torch-holding parent, which must never load paddle."""
     from functools import partial
 
-    if spec.startswith("doclayout:"):
-        from pii.core.ocr_doclayout import _layout_engine, doclayout_page
-        layout = spec.partition(":")[2]
-        _layout_engine(layout)  # also builds the OCR engine
-        return partial(doclayout_page, layout=layout)
-    if spec == "structure" or spec.startswith("structure:"):
-        from pii.core.ocr_ppstructure import _structure_engine, ppstructure_page
-        _structure_engine()
-        return ppstructure_page
-    if spec.startswith("page:"):
-        from pii.core.ocr_paddle import _engine, ocr_page_paddle
-        tier = spec.partition(":")[2]
-        _engine(tier)
-        return partial(ocr_page_paddle, tier=tier)
-    from pii.core.ocr_paddle import _engine, ocr_image_paddle
+    from pii.core.ocr_paddle import _engine, ocr_page_paddle
     _engine(spec)
-    return partial(ocr_image_paddle, tier=spec)
+    return partial(ocr_page_paddle, tier=spec)
 
 
 def main(argv=None) -> int:
@@ -204,7 +185,7 @@ class PaddleWorker:
                 f"paddle worker ({self.tier}) died (exit {code}) — {e}"
             ) from None
 
-    def ocr(self, image: Image.Image) -> OcrResult:
+    def ocr(self, image: Image.Image) -> OcrPage:
         with self._lock:
             if not self.alive():
                 raise RuntimeError(
@@ -255,16 +236,9 @@ def _worker_for(spec: str) -> PaddleWorker:
         return worker
 
 
-def worker_ocr(tier: str, image: Image.Image) -> OcrResult:
-    """OCR one image through the worker for a bare paddle `tier` -> OcrResult
-    (the strip path). A death mid-call surfaces from ocr()."""
-    return _worker_for(tier).ocr(image)
-
-
 def worker_page(spec: str, image: Image.Image) -> OcrPage:
-    """OCR one image through the worker for `spec` -> OcrPage. `spec` is
-    "structure" (PP-StructureV3), "doclayout:<model>" (PP-DocLayoutV3 blocks +
-    PaddleOCR lines) or "page:<tier>" (paddle line-only)."""
+    """OCR one image through the worker for `spec` (a paddle model tier) ->
+    OcrPage. A death mid-call surfaces from ocr()."""
     return _worker_for(spec).ocr(image)
 
 

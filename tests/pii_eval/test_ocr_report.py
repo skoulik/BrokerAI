@@ -1,19 +1,28 @@
 """OCR-fidelity sweep internals (pii_eval/ocr_report.py) — model-free:
 alignment, error taxonomy, and geometric re-lining are exercised on
-hand-built OcrResults; no OCR engine run."""
+hand-built OcrPages; no OCR engine run."""
 
-from pii.core.ocr import Box, assemble
+from pii.core.ocr import Box
+from pii.core.ocr_page import OcrFrame, build_page
 from pii_eval.ocr_report import (
     _bucket,
     _edit_ops,
     align_lines,
+    page_words,
     score_page,
     visual_lines,
 )
 
+_FRAME = OcrFrame(width=1000, height=1000, page=1)
+
 
 def _word(text, left, top, conf=90.0, width=40, height=20):
     return (text, Box(left=left, top=top, width=width, height=height), conf)
+
+
+def assemble(rows):
+    """Hand-built rows -> the measured word list the report consumes."""
+    return page_words(build_page(rows, _FRAME))
 
 
 class TestBucket:

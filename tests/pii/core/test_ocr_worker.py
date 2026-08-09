@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from pii.core.ocr import Box, OcrResult, assemble
+from pii.core.ocr import Box
+from pii.core.ocr_page import OcrFrame, OcrPage, build_page
 from pii.core.ocr_worker import (
     PaddleWorker,
     _OK,
@@ -35,8 +36,11 @@ def _png(size=(20, 12), color="white") -> bytes:
     return buf.getvalue()
 
 
-def _canned() -> OcrResult:
-    return assemble([[("HELLO", Box(0, 0, 10, 10), 90.0)]])
+def _canned() -> OcrPage:
+    return build_page(
+        [[("HELLO", Box(0, 0, 10, 10), 90.0)]],
+        OcrFrame(width=20, height=12, page=1),
+    )
 
 
 def _child(body: str):
@@ -47,7 +51,8 @@ def _child(body: str):
         "from pii.core.ocr_worker import (_binary_stdio, _read_frame, "
         "_write_frame, _OK, _ERR, _READY)\n"
         "import pickle\n"
-        "from pii.core.ocr import assemble, Box\n"
+        "from pii.core.ocr import Box\n"
+        "from pii.core.ocr_page import OcrFrame, build_page\n"
         "r, w = _binary_stdio()\n" + body
     )
     return [sys.executable, "-c", script]
@@ -82,19 +87,19 @@ class TestServe:
             except EOFError:
                 return frames
 
-    def test_happy_path_returns_ocr_result(self):
+    def test_happy_path_returns_ocr_page(self):
         frames = self._run([_png()], lambda image: _canned())
         assert len(frames) == 1
         status, payload = frames[0]
         assert status == _OK
-        assert pickle.loads(payload).text == "HELLO"
+        assert pickle.loads(payload).lines[0].text == "HELLO"
 
     def test_bad_image_reports_error_and_keeps_serving(self):
         frames = self._run(
             [b"not-a-png", _png()], lambda image: _canned()
         )
         assert [f[0] for f in frames] == [1, _OK]  # ERR then OK
-        assert pickle.loads(frames[1][1]).text == "HELLO"
+        assert pickle.loads(frames[1][1]).lines[0].text == "HELLO"
 
     def test_ocr_exception_reported_not_fatal(self):
         calls = []
@@ -116,12 +121,13 @@ class TestClient:
         worker = PaddleWorker("test", cmd=_child(
             "_write_frame(w, _READY, b'')\n"
             "_read_frame(r)\n"
-            "_write_frame(w, _OK, pickle.dumps("
-            "assemble([[('HELLO', Box(0, 0, 10, 10), 90.0)]])))\n"
+            "_write_frame(w, _OK, pickle.dumps(build_page("
+            "[[('HELLO', Box(0, 0, 10, 10), 90.0)]], "
+            "OcrFrame(width=20, height=12, page=1))))\n"
         ))
         try:
-            result = worker.ocr(Image.new("RGB", (20, 12), "white"))
-            assert result.text == "HELLO"
+            page = worker.ocr(Image.new("RGB", (20, 12), "white"))
+            assert page.lines[0].text == "HELLO"
         finally:
             worker.close()
 
@@ -158,10 +164,11 @@ class TestClient:
 @pytest.mark.gpu
 @pytest.mark.slow
 def test_real_paddle_worker_end_to_end():
-    """The real worker: PNG in, readable OcrResult out (paddle GPU)."""
+    """The real worker: PNG in, readable OcrPage out (paddle GPU)."""
     from PIL import ImageDraw, ImageFont
 
-    from pii.core.ocr_worker import worker_ocr
+    from pii.core.linearization import linearize
+    from pii.core.ocr_worker import worker_page
 
     arial = Path(r"C:\Windows\Fonts\arial.ttf")
     if not arial.exists():
@@ -171,8 +178,8 @@ def test_real_paddle_worker_end_to_end():
         (40, 30), "TFN 123 456 782", font=ImageFont.truetype(str(arial), 32),
         fill="black",
     )
-    result = worker_ocr("v6_medium", img)
-    assert "123 456 782" in result.text
+    page = worker_page("v6_medium", img)
+    assert "123 456 782" in linearize(page).text
 
 
 def test_worker_module_is_torch_free_to_import():

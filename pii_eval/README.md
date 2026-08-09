@@ -179,14 +179,15 @@ Summary tables (shared with the image tier) split strip/keep rows by
 each entity's `strip_expected`, so a type may appear in both tables —
 real corpora have ORGANIZATION/PHONE_NUMBER on both sides.
 
-`--ocr-backend` and `--feed` (2026-07-27) vary the *strip* side of the
-`image`/`pdf` runs; they default to the product defaults
-(`doclayout:v3` + `blocks` — one recognizer pass per layout block), so the
-harness measures what ships. Pass `--ocr-backend paddle --feed page` for the
-flat line-only path, or `ppstructure` for the other layout model. The **re-read**
-of stripped output always uses the flat default tier
-(`score_image.reread_engine`), so the measuring instrument stays constant
-across such a comparison. Both scorers keep writing to the same
+`--detector` and `--ocr-backend` vary the *strip* side of the `image`/`pdf`
+runs; both default to the product defaults (`vlm` + `paddle`), so the harness
+measures what ships. **That means an image/pdf scoring run needs a running
+llama-server** (`$PII_VLM_URL`) and takes minutes per page; pass
+`--detector layers` for a fast, server-free comparison run. The **re-read** of
+stripped output is always pinned to the default OCR tier
+(`score_image.reread_engine`) — it is the measuring instrument, so it stays
+constant across configurations, and under `--detector vlm` the model under
+test must not be its own scorer. Both scorers keep writing to the same
 `<corpus>/stripped/` folder, so move it aside between configs if you want
 to keep each run's output.
 

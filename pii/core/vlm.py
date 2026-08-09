@@ -1,16 +1,22 @@
-"""Layer-0 alternative detector: a local vision LLM reads the page image.
+"""Layer 0: a local vision LLM reads the page image and names the PII.
 
 This is NOT an OCR backend. An OCR adapter feeds text into the analyzer; this
-bypasses the analyzer entirely and produces the merged-span plan itself, so it
-joins the pipeline at the same seam `PiiPipeline.detect` does. The design
-decision is recorded in ARCHITECTURE.md; the measurements behind it are in
+reads pixels and produces detections directly, joining at the same seam
+`PiiPipeline.detect` does. It does NOT replace layer 1: each value it finds is
+located in the OCR text and then refined, validated and extended by a layer-1
+pass over that same text (`PiiPipeline.merge_detections`) — checksums are a
+signal a VLM structurally cannot produce, and it is measurably unreliable at
+*typing* an identifier even when it reads one correctly. The design decision
+is recorded in ARCHITECTURE.md; the measurements behind it are in
 [reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md).
 
 Geometry has two sources and they are deliberately both kept:
 
 - ``geometry="ocr"``  — the model supplies only the *values*; each is located in
-  the OCR text and painted through `OcrResult.painted_boxes_for_span`. Safest:
-  OCR word boxes are exact.
+  the OCR text and painted through `RecognizerInput.painted_boxes_for_span`.
+  Safest: OCR word boxes are exact. This is the production path, and it is
+  also what makes layer-1 refinement possible (there is text to refine
+  against — see `PiiPipeline.merge_detections`).
 - ``geometry="vlm"``  — the model's own ``bbox_2d`` is used and OCR never runs.
   Faster and simpler, but measured **unsafe**: 16% of boxes clip by more than
   20 px, the tail includes real account numbers, and the failure is *stochastic*

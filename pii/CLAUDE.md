@@ -67,22 +67,29 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   not in `DEFAULT_STRIP_ENTITIES`, the placeholder map, or the recognizer's supported entities.
   The ADDRESS passes still strip full addresses and suburb-postcode lines. Rationale in
   [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
+- **OCR supplies geometry, not detection.** Layer 0 (`vlm.py`) names the values; each is
+  located in the OCR text and painted with OCR word boxes. Never paint the model's own
+  `bbox_2d` on a production path — measured stochastically unsafe (16% of boxes clip by
+  >20 px). `--geometry vlm` exists as a comparison instrument only.
+- **A detected value that cannot be located is a leak.** `locate()` goes no fuzzier than the
+  alphanumeric squash on purpose (an edit-distance match risks painting the WRONG region).
+  Unlocatable findings must keep warning loudly and being counted — never silently dropped.
 - **The OCR perception layer (`OcrPage`) carries no character offsets.** Offsets live only in
   the linearization source map (`RecognizerInput` / `linearize`) — an offset is a
-  (page, assembly) property and we run multiple trial linearizations; baking one onto a line
-  ties perception to one assembly. Keep the anti-silent-leak rule (record `(start,end,box)` at
-  construction, never re-derive from lengths) on the source map.
-- **An OCR line is never dropped.** `OcrLine.block_id` is total: line-only backends synthesize
-  one block per line; a layout model's orphan line gets its own synthetic block. A dropped line
-  is unredacted PII.
+  (page, assembly) property; baking one onto a line ties perception to one assembly. Keep the
+  anti-silent-leak rule (record `(start,end,box)` at construction, never re-derive from
+  lengths) on the source map.
+- **An OCR line is never dropped.** Every row carrying words becomes an `OcrLine`, with no
+  filtering or scoring step in between. A dropped line is unredacted PII.
+- **`_rows` visual banding is load-bearing.** It is what puts a label and its value from two
+  side-by-side detection regions onto ONE assembled line, which is how context promotion reaches
+  a value in a column beside its own label. Keep the x-overlap guard (two regions sharing an
+  x-column are stacked lines, not one row).
 - **A line box contains its glyph ink.** Build `OcrLine.box` only through
   `ocr_page._line_box` (word boxes ∪ their region boxes) — engine word boxes are inset from the
-  ink, so a word-box union slices the first and last glyph and makes backends disagree on
-  identical lines.
-- **PP-StructureV3 needs the `paddlex[ocr]` extras and the `_stub_torch` `Tensor`-as-class
-  shim** (scipy, pulled in by `paddlex[ocr]`, probes `issubclass(x, torch.Tensor)`). Its models
-  live under `models/paddlex`. Reach OCR that yields an `OcrPage` only through `get_ocr_page`
-  (worker on the GPU wheel, in-process on CPU) — never import torch into a paddle-GPU process.
+  ink, so a word-box union slices the first and last glyph.
+- **Reach OCR only through `get_ocr_page`** (worker on the GPU paddle wheel, in-process on CPU)
+  — never import torch into a paddle-GPU process. Models live under `models/paddlex`.
 - **Edge cases get dual coverage (2026-07-15).** Every newly identified corner case or fail
   mode gets BOTH a pytest test (model-free via the fake-model/stub patterns where possible,
   `model`-marked otherwise) AND a pii_eval corpus probe (distinct truth type per the

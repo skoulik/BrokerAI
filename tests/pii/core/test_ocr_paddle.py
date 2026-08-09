@@ -1,13 +1,19 @@
 """PaddleOCR adapter conversion (pii/core/ocr_paddle.py) — model-free:
-`result_to_ocr` is pure, so fake PaddleOCR result dicts exercise the
-line->word normalization without paddle installed or imported."""
+`result_to_page` is pure, so fake PaddleOCR result dicts exercise the
+line->word normalization without paddle installed or imported.
+
+Assertions about assembled text go through `linearize`, because that string
+is what the locator searches and what the recognizers see."""
 
 import pytest
 
 from pii.core.linearization import linearize
-from pii.core.ocr import get_ocr, get_ocr_page
+from pii.core.ocr import get_ocr_page
 from pii.core.ocr_page import OcrFrame
-from pii.core.ocr_paddle import result_to_ocr, result_to_page
+from pii.core.ocr_paddle import result_to_page
+
+_FRAME = OcrFrame(width=1000, height=1000, page=1,
+                  backend="paddle", tier="v6_medium")
 
 
 def _result(texts, boxes, scores, words=None, word_boxes=None):
@@ -18,45 +24,22 @@ def _result(texts, boxes, scores, words=None, word_boxes=None):
     return d
 
 
-class TestGetOcr:
-    def test_paddle_is_default(self):
-        # Tesseract retired 2026-07-17: paddle is the only engine, the
-        # default backend, and the old name is now an unknown backend.
-        assert callable(get_ocr())
-        with pytest.raises(ValueError):
-            get_ocr("tesseract")
+def _page(result):
+    return result_to_page(result, _FRAME)
 
-    def test_paddle_resolves_without_importing_paddle(self):
-        fn = get_ocr("paddle")
-        assert callable(fn)
 
-    def test_paddle_tier_selection(self):
-        assert callable(get_ocr("paddle:v5_server"))
-        assert callable(get_ocr("paddle:v6_medium"))
-
-    def test_unknown_paddle_tier_raises(self):
-        with pytest.raises(ValueError):
-            get_ocr("paddle:v7_giga")
-
-    def test_unknown_backend_raises(self):
-        with pytest.raises(ValueError):
-            get_ocr("tessseract")
+def _text(result):
+    return linearize(_page(result)).text
 
 
 class TestGetOcrPage:
     """get_ocr_page resolves a backend to an (image) -> OcrPage callable
-    without loading any engine (wheel-selected transport; engine loads only
-    when the callable is invoked)."""
+    without loading any engine (wheel-selected transport; the engine loads
+    only when the callable is invoked)."""
 
-    def test_default_is_doclayout_v3(self):
-        # The 2026-07-25 layout bake-off verdict; ppstructure stays selectable.
-        assert get_ocr_page.__defaults__ == ("doclayout:v3",)
+    def test_default_is_the_default_tier(self):
+        assert get_ocr_page.__defaults__ == ("paddle",)
         assert callable(get_ocr_page())
-
-    def test_families_resolve(self):
-        for backend in ("ppstructure", "doclayout", "doclayout:v3", "paddle",
-                        "paddle:v6_medium", "paddle:v5_server"):
-            assert callable(get_ocr_page(backend))
 
     def test_every_advertised_backend_resolves(self):
         from pii.core.ocr import OCR_PAGE_BACKENDS
@@ -64,30 +47,30 @@ class TestGetOcrPage:
         for backend in OCR_PAGE_BACKENDS:
             assert callable(get_ocr_page(backend))
 
-    def test_unknown_family_raises(self):
-        with pytest.raises(ValueError):
-            get_ocr_page("surya")
+    def test_retired_backend_names_raise(self):
+        # tesseract/surya (2026-07-17) and the layout backends (2026-08-09)
+        # are gone; their names must fail loudly, not resolve to something
+        # else that silently changes what gets painted.
+        for backend in ("tesseract", "surya", "doclayout", "doclayout:v3",
+                        "ppstructure"):
+            with pytest.raises(ValueError):
+                get_ocr_page(backend)
 
     def test_unknown_paddle_tier_raises(self):
         with pytest.raises(ValueError):
             get_ocr_page("paddle:v7_giga")
 
-    def test_unknown_layout_model_raises(self):
-        with pytest.raises(ValueError):
-            get_ocr_page("doclayout:v9")
-
     @pytest.mark.parametrize("backend,spec", [
-        ("doclayout", "doclayout:v3"),
-        ("doclayout:v3", "doclayout:v3"),
-        ("ppstructure", "structure"),
-        ("paddle:v5_server", "page:v5_server"),
+        ("paddle", "v6_medium"),
+        ("paddle:v6_medium", "v6_medium"),
+        ("paddle:v5_server", "v5_server"),
     ])
     def test_gpu_wheel_routes_to_the_right_worker_spec(
         self, backend, spec, monkeypatch
     ):
-        """The spec strings are a stringly-typed contract between get_ocr_page
-        and the worker's _resolve — a typo would surface only under a real
-        engine, so pin them here."""
+        """The spec strings are a stringly-typed contract between
+        get_ocr_page and the worker's _resolve — a typo would surface only
+        under a real engine, so pin them here."""
         from pii.core import ocr_paddle, ocr_worker
 
         monkeypatch.setattr(ocr_paddle, "_gpu_wheel", lambda: True)
@@ -97,50 +80,64 @@ class TestGetOcrPage:
         get_ocr_page(backend)(object())
         assert seen == [spec]
 
-    def test_worker_resolve_handles_the_doclayout_spec(self, monkeypatch):
+    def test_worker_resolve_binds_and_warms_the_tier(self, monkeypatch):
         """The other side of that contract: _resolve binds the right callable
         AND warms the engine (so a load failure surfaces before READY, not on
         the first page)."""
-        from pii.core import ocr_doclayout, ocr_worker
+        from pii.core import ocr_paddle, ocr_worker
 
         warmed = []
-        monkeypatch.setattr(ocr_doclayout, "_layout_engine", warmed.append)
-        ocr_fn = ocr_worker._resolve("doclayout:v3")
-        assert warmed == ["v3"]
-        assert ocr_fn.func is ocr_doclayout.doclayout_page
-        assert ocr_fn.keywords == {"layout": "v3"}
+        monkeypatch.setattr(ocr_paddle, "_engine", warmed.append)
+        ocr_fn = ocr_worker._resolve("v6_medium")
+        assert warmed == ["v6_medium"]
+        assert ocr_fn.func is ocr_paddle.ocr_page_paddle
+        assert ocr_fn.keywords == {"tier": "v6_medium"}
 
 
-class TestResultToOcr:
-    def test_lines_words_confs(self):
-        ocr = result_to_ocr(_result(
+class TestRowBanding:
+    """Detection regions carry no reading order, so `_rows` bands them into
+    visual rows by y-centre. Load-bearing, not cosmetic: a label and its value
+    in two side-by-side regions must land on ONE assembled line, or context
+    promotion never reaches the value."""
+
+    def test_lines_and_confidence(self):
+        page = _page(_result(
             texts=["TFN 123", "BSB 999"],
             boxes=[[20, 10, 120, 30], [20, 60, 120, 80]],
             scores=[0.94, 0.5],
         ))
-        assert ocr.text == "TFN 123\nBSB 999"
-        assert [w.text for w in ocr.words] == ["TFN", "123", "BSB", "999"]
-        assert [round(w.conf) for w in ocr.words] == [94, 94, 50, 50]
-        assert [w.line for w in ocr.words] == [0, 0, 1, 1]
+        assert [ln.text for ln in page.lines] == ["TFN 123", "BSB 999"]
+        # conf is per LINE — paddle scores regions, not words
+        assert [round(ln.conf) for ln in page.lines] == [94, 50]
 
     def test_same_row_regions_join_one_line_left_to_right(self):
         # detection split one visual row into two regions, listed
         # right-region-first — assembly must re-order geometrically
-        ocr = result_to_ocr(_result(
+        result = _result(
             texts=["AMOUNT", "DATE PARTICULARS"],
             boxes=[[400, 10, 500, 30], [20, 10, 250, 30]],
             scores=[0.9, 0.9],
-        ))
-        assert ocr.text == "DATE PARTICULARS AMOUNT"
-        assert [w.line for w in ocr.words] == [0, 0, 0]
+        )
+        assert _text(result) == "DATE PARTICULARS AMOUNT"
+        assert len(_page(result).lines) == 1
+
+    def test_label_and_value_columns_reach_one_line(self):
+        # The d11.p2 shape: 'Account Number' in a left column, its value in a
+        # right one. Banded into one line, the account recognizer's context
+        # promotion fires; split across lines it does not, and the number
+        # leaks. This is the behaviour the layout segmenter used to lose.
+        assert _text(_result(
+            texts=["Account Number", ": 162-097111-4"],
+            boxes=[[20, 10, 260, 34], [300, 10, 520, 34]],
+            scores=[0.9, 0.9],
+        )) == "Account Number : 162-097111-4"
 
     def test_stacked_regions_stay_separate_lines(self):
-        ocr = result_to_ocr(_result(
+        assert _text(_result(
             texts=["second", "first"],
             boxes=[[20, 60, 120, 80], [20, 10, 120, 30]],
             scores=[0.9, 0.9],
-        ))
-        assert ocr.text == "first\nsecond"
+        )) == "first\nsecond"
 
     def test_tall_region_does_not_bridge_stacked_lines(self):
         # The BPAY block (issue #6): a tall logo sits between two stacked
@@ -148,7 +145,7 @@ class TestResultToOcr:
         # logo bridge them into one interleaved row; the x-overlap guard keeps
         # them separate — two regions sharing an x-column are stacked lines,
         # not one row — so the card line survives intact and reads as a card.
-        ocr = result_to_ocr(_result(
+        text = _text(_result(
             texts=["Biller Code 22863", "BPAY", "Ref: 4564 9427 0001 0443"],
             boxes=[
                 [358, 2715, 601, 2745],   # Biller Code, h30, y-center 2730
@@ -157,12 +154,12 @@ class TestResultToOcr:
             ],
             scores=[0.9, 0.9, 0.9],
         ))
-        assert "Ref: 4564 9427 0001 0443" in ocr.text.split("\n")
+        assert "Ref: 4564 9427 0001 0443" in text.split("\n")
 
     def test_close_columns_same_row_still_merge(self):
         # Regression guard for the x-overlap guard: side-by-side columns at the
         # same y (non-overlapping x) must still assemble as one row.
-        ocr = result_to_ocr(_result(
+        assert _text(_result(
             texts=["01 APR PAYMENT", "2,148.74", "377,970.04"],
             boxes=[
                 [20, 10, 300, 40],     # description
@@ -170,23 +167,24 @@ class TestResultToOcr:
                 [560, 10, 720, 40],    # balance
             ],
             scores=[0.9, 0.9, 0.9],
-        ))
-        assert ocr.text == "01 APR PAYMENT 2,148.74 377,970.04"
+        )) == "01 APR PAYMENT 2,148.74 377,970.04"
 
+
+class TestWordGeometry:
     def test_merged_fragments_map_word_boxes(self):
         # the verified quirk: fragments "TFN123" / " " / "456" against
         # line text "TFN 123 456" — boxes come from char-stream overlap,
         # tokens always from the line text
-        ocr = result_to_ocr(_result(
+        (line,) = _page(_result(
             texts=["TFN 123 456"],
             boxes=[[20, 10, 320, 30]],
             scores=[0.9],
             words=[["TFN123", " ", "456"]],
             word_boxes=[[[20, 10, 200, 30], [200, 10, 210, 30],
                          [210, 10, 320, 30]]],
-        ))
-        assert [w.text for w in ocr.words] == ["TFN", "123", "456"]
-        tfn, one23, four56 = ocr.words
+        )).lines
+        assert [w.text for w in line.words] == ["TFN", "123", "456"]
+        tfn, one23, four56 = line.words
         assert (tfn.box.left, tfn.box.right) == (20, 200)
         assert (one23.box.left, one23.box.right) == (20, 200)
         assert (four56.box.left, four56.box.right) == (210, 320)
@@ -194,107 +192,50 @@ class TestResultToOcr:
     def test_fragment_mismatch_falls_back_to_interpolation(self):
         # fragment chars disagree with the line text -> whole line
         # interpolates over the line box
-        ocr = result_to_ocr(_result(
+        (line,) = _page(_result(
             texts=["AB CD"],
             boxes=[[0, 10, 100, 30]],
             scores=[0.9],
             words=[["ABX"]],
             word_boxes=[[[0, 10, 50, 30]]],
-        ))
-        ab, cd = ocr.words
+        )).lines
+        ab, cd = line.words
         assert ab.box.left < cd.box.left
         assert ab.box.right <= cd.box.left + 1
         assert cd.box.right <= 100
 
     def test_no_word_data_interpolates(self):
-        ocr = result_to_ocr(_result(
+        (line,) = _page(_result(
             texts=["one two"],
             boxes=[[0, 10, 140, 30]],
             scores=[0.9],
-        ))
-        one, two = ocr.words
-        assert [w.text for w in ocr.words] == ["one", "two"]
+        )).lines
+        one, two = line.words
+        assert [w.text for w in line.words] == ["one", "two"]
         assert one.box.left == 0
         assert two.box.left > one.box.right - 2
         assert two.box.right <= 140
 
     def test_polys_when_rec_boxes_missing(self):
-        ocr = result_to_ocr({
+        (line,) = _page({
             "rec_texts": ["hi"],
             "rec_polys": [[(20, 10), (120, 10), (120, 30), (20, 30)]],
             "rec_scores": [1.0],
-        })
-        (word,) = ocr.words
+        }).lines
+        (word,) = line.words
         assert word.box.left == 20
         assert word.box.right == 120
 
-    def test_empty_result(self):
-        ocr = result_to_ocr({"rec_texts": [], "rec_scores": []})
-        assert ocr.text == ""
-        assert ocr.words == []
-
-    def test_boxes_for_span_works_through_adapter(self):
-        ocr = result_to_ocr(_result(
-            texts=["TFN 123 456"],
-            boxes=[[20, 10, 320, 30]],
-            scores=[0.9],
-        ))
-        start = ocr.text.index("123")
-        boxes = ocr.boxes_for_span(start, start + len("123 456"))
-        assert len(boxes) == 1  # same line unions into one box
-        assert boxes[0].right <= 320
-
-
-class TestResultToPage:
-    """Line-only OcrPage adapter: same region extraction as result_to_ocr,
-    but each line wrapped in its own synthetic block (paddle has no layout
-    model). Model-free — fake result dicts, no engine."""
-
-    @staticmethod
-    def _page(result):
-        return result_to_page(
-            result,
-            OcrFrame(width=1000, height=1000, page=1,
-                     backend="paddle", tier="v6_medium"),
-        )
-
-    def test_lines_and_synthetic_blocks(self):
-        page = self._page(_result(
-            texts=["TFN 123", "BSB 999"],
-            boxes=[[20, 10, 120, 30], [20, 60, 120, 80]],
-            scores=[0.94, 0.5],
-        ))
-        assert [ln.text for ln in page.lines] == ["TFN 123", "BSB 999"]
-        assert [round(ln.conf) for ln in page.lines] == [94, 50]
-        assert [ln.block_id for ln in page.lines] == [0, 1]
-        # one synthetic block per line, in reading order
-        assert len(page.blocks) == 2
-        assert all(b.origin == "synthetic" and b.kind == "unassigned"
-                   for b in page.blocks)
-        assert [b.reading_order for b in page.blocks] == [0, 1]
-        # block_id is total; page reachable transitively through the block
-        for ln in page.lines:
-            assert page.block_of(ln).page_id == page.frame.page
-
-    def test_words_carry_geometry(self):
-        page = self._page(_result(
-            texts=["TFN 123 456"], boxes=[[20, 10, 320, 30]], scores=[0.9],
-        ))
-        (line,) = page.lines
-        assert [w.text for w in line.words] == ["TFN", "123", "456"]
-        assert line.box.left == 20 and line.box.right <= 320
-
     def test_line_box_is_the_region_box_with_or_without_fragments(self):
-        # The two layout backends differ ONLY in whether the paddle result
-        # carries word fragments: PP-Structure's normalized result drops them
-        # (words interpolate across the region box), the doclayout path asks
-        # for them (`return_word_box=True`) and gets boxes inset from the ink.
-        # The line box must not move between the two — it spans the region.
+        # A paddle result may or may not carry usable word fragments (a
+        # mismatch falls back to interpolation across the region box). The
+        # LINE box must not move between the two — it spans the region, which
+        # is what contains the ink and what painting grows a run out to.
         region = [20, 10, 320, 30]
-        interpolated = self._page(_result(
+        interpolated = _page(_result(
             texts=["TFN 123 456"], boxes=[region], scores=[0.9],
-        ))
-        fragmented = self._page(_result(
+        )).lines[0]
+        fragmented = _page(_result(
             texts=["TFN 123 456"],
             boxes=[region],
             scores=[0.9],
@@ -303,36 +244,31 @@ class TestResultToPage:
             word_boxes=[[[26, 10, 120, 30], [130, 10, 220, 30],
                          [230, 10, 316, 30]]],
         )).lines[0]
-        assert fragmented.box == interpolated.lines[0].box
+        assert fragmented.box == interpolated.box
         assert (fragmented.box.left, fragmented.box.right) == (20, 320)
         # the inset fragments still survive as the WORD geometry
         assert fragmented.words[0].box.left == 26
         assert fragmented.words[-1].box.right == 316
 
-    def test_linearize_parity_with_ocrresult(self):
-        # build_page + linearize must reproduce result_to_ocr's text exactly,
-        # including geometric row re-ordering (right-region-first input).
-        for result in [
-            _result(texts=["AMOUNT", "DATE PARTICULARS"],
-                    boxes=[[400, 10, 500, 30], [20, 10, 250, 30]],
-                    scores=[0.9, 0.9]),
-            _result(texts=["second", "first"],
-                    boxes=[[20, 60, 120, 80], [20, 10, 120, 30]],
-                    scores=[0.9, 0.9]),
-            _result(texts=["01 APR PAYMENT", "2,148.74", "377,970.04"],
-                    boxes=[[20, 10, 300, 40], [360, 10, 520, 40],
-                           [560, 10, 720, 40]],
-                    scores=[0.9, 0.9, 0.9]),
-        ]:
-            page = self._page(result)
-            assert linearize(page).text == result_to_ocr(result).text
+    def test_boxes_for_span_works_through_adapter(self):
+        ocr = linearize(_page(_result(
+            texts=["TFN 123 456"],
+            boxes=[[20, 10, 320, 30]],
+            scores=[0.9],
+        )))
+        start = ocr.text.index("123")
+        boxes = ocr.boxes_for_span(start, start + len("123 456"))
+        assert len(boxes) == 1  # same line unions into one box
+        assert boxes[0].right <= 320
 
-    def test_frame_carried(self):
-        page = self._page(_result(
-            texts=["hi"], boxes=[[0, 0, 10, 10]], scores=[1.0]))
-        assert page.frame.width == 1000
-        assert page.frame.backend == "paddle" and page.frame.tier == "v6_medium"
 
-    def test_empty_result(self):
-        page = self._page({"rec_texts": [], "rec_scores": []})
-        assert page.lines == () and page.blocks == ()
+def test_frame_carried():
+    page = _page(_result(texts=["hi"], boxes=[[0, 0, 10, 10]], scores=[1.0]))
+    assert page.frame.width == 1000
+    assert page.frame.backend == "paddle" and page.frame.tier == "v6_medium"
+
+
+def test_empty_result():
+    page = _page({"rec_texts": [], "rec_scores": []})
+    assert page.lines == ()
+    assert linearize(page).text == ""

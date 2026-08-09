@@ -44,10 +44,15 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `gliner2_recognizer.py` | GLiNER2 as a Presidio recognizer; **all layer-2 tuning lives in its docstring** — read it before touching NER behaviour |
 | `mapping.py` | `PseudonymMap` — placeholder allocation, JSON persistence, rehydration |
 | `csv_mode.py` | Per-cell transaction-CSV processing |
-| `ocr.py` | OCR-engine seam + neutral interchange: word boxes → assembled text with char intervals recorded at assembly time (`get_ocr`, `OcrResult`, `assemble`) |
-| `ocr_paddle.py` | PaddleOCR adapter: line-oriented det/rec → per-word `OcrResult`; picks worker vs in-process by wheel |
-| `ocr_worker.py` | Persistent PaddleOCR worker subprocess (GPU paddle can't share a process with torch) — framed PNG-in / `OcrResult`-out |
-| `image_mode.py` | Image front/back-end: OCR text through the unchanged text pipeline, placeholders painted onto the original pixels |
+| `vlm.py` | **Layer 0** — a local vision LLM reads the page image and names the PII; transport, prompt, parsing, `locate()` |
+| `ocr.py` | OCR-engine seam (`get_ocr_page`) + the shared pixel toolkit (`Box`, `_rows` banding, word-box normalization) |
+| `ocr_page.py` | Perception: `OcrPage` → `OcrLine` → `OcrWord` + `OcrFrame`. Geometry only, no character offsets |
+| `linearization.py` | `OcrPage` → `RecognizerInput`: the flat page string plus the source map that turns a span back into pixel boxes |
+| `ocr_paddle.py` | PaddleOCR adapter: line-oriented det/rec → per-word `OcrPage`; picks worker vs in-process by wheel |
+| `ocr_worker.py` | Persistent PaddleOCR worker subprocess (GPU paddle can't share a process with torch) — framed PNG-in / `OcrPage`-out |
+| `ocr_debug.py` | `pii debug ocr` renderers over an `OcrPage`: JSON, text summary, annotated overlay |
+| `paint.py` | The drawing toolkit (`Segment`, `paint_segments`, fill/frame styles), shared by strip and the debug overlay |
+| `image_mode.py` | Image front/back-end: detect (layer 0 or the layers path), locate in the OCR text, paint placeholders onto the original pixels |
 | `pdf_mode.py` | PDF render + reassembly legs: pages → pixels → image pipeline per page → fresh image-only PDF (`pdf_to_images`, `strip_pdf`) |
 
 ### The whole picture
@@ -60,19 +65,21 @@ flowchart TB
     PDF["PDF"]
 
     PDF -- "pdf_mode.py: render pages<br>(300 DPI, streamed)" --> IMG
-    IMG --> OCRPY["ocr.py seam → ocr_paddle.py (PaddleOCR)<br>GPU: ocr_worker.py subprocess<br>word boxes + char intervals<br>recorded at assembly"]
+    IMG --> VLM["vlm.py — Layer 0<br>local vision LLM reads the pixels,<br>names the PII values"]
+    IMG --> OCRPY["ocr.py seam → ocr_paddle.py (PaddleOCR)<br>GPU: ocr_worker.py subprocess<br>OcrPage → linearize:<br>page string + word-box source map"]
     CSV --> CSVM["csv_mode.py<br>per-cell, sentinel-joined batches"]
 
     TXT --> AE
     CSVM --> AE
-    OCRPY -- "assembled text" --> AE
+    OCRPY -- "page string" --> AE
+    VLM -- "values, located in the page string" --> MRG
 
     subgraph PIPE["pipeline.py — PiiPipeline"]
         AE["Presidio AnalyzerEngine<br>(spaCy NLP engine: tokens/lemmas<br>→ context enhancer)"]
         L1["Layer 1 — patterns/checksums<br>built-in AU TFN/Medicare/ABN/ACN,<br>cards, email, phone, IBAN<br>+ recognizers.py: BSB, account, PayID<br>+ invalid_recognizers.py: shadows"]
         L2["Layer 2 — gliner2_recognizer.py<br>GLiNER2: PERSON, ORG, ADDRESS, DOB"]
         L3["Layer 3 — local-LLM audit<br>via llama-server (planned)"]
-        MRG["filter to strip list →<br>union-merge overlapping spans"]
+        MRG["filter to strip list →<br>union-merge overlapping spans<br>(layer 1 refines IDENTIFIER_GENERIC)"]
         AE --- L1
         AE --- L2
         AE -.- L3
@@ -106,15 +113,17 @@ recognizer can match across, with a hard alignment check afterwards; NER spans a
 per cell. Placeholders can never straddle cell boundaries; date/amount columns pass through
 byte-identical. See the CSV decision below.
 
-### Image — a front-end and back-end around the unchanged text pipeline
+### Image — detect, locate, paint
 
-Front-end (`ocr.py`): OCR the image into word boxes, drop empty boxes, assemble the text,
-recording `(char_start, char_end, bbox)` per word *at assembly time*. The assembled text goes
-through the full text pipeline verbatim — detection never sees pixels. Back-end
-(`image_mode.py`): mapping merged spans to boxes is pure interval intersection over the
-recorded intervals; each span's placeholder is painted over its boxes on the **original**
-image (background-filled box with the placeholder text drawn in — pseudonymization, not
-blackout), emitting the same rehydratable `map.json`.
+Front-end: OCR the page into an `OcrPage` and `linearize` it into the flat page string plus a
+source map recording `(char_start, char_end, bbox)` per word *as it is written*. Detection is
+layer 0 by default — the model reads the pixels and names the values, each of which is located
+in that string — or, with `--detector layers`, the full text pipeline run on the string
+verbatim. Either way layer 1 supplies the precise classes, the checksum shadows and a recall
+floor. Back-end (`image_mode.py`): mapping merged spans to boxes is pure interval intersection
+over the recorded intervals; each span's placeholder is painted over its boxes on the
+**original** image (background-filled box with the placeholder text drawn in —
+pseudonymization, not blackout), emitting the same rehydratable `map.json`.
 
 ### PDF — the image pipeline per page, reassembled from scratch
 
@@ -514,8 +523,8 @@ The exception is a local VLM doing OCR+PII detection in one pass: that cannot be
 an OCR adapter feeding the analyze step, so it is an *alternative pipeline* joining at the
 merged-spans level — **built 2026-08-08, see "Layer 0" below**.
 
-**Realized 2026-07-17** as `ocr.py::get_ocr(backend) -> (image, lang=...) -> OcrResult`
-(`OCR_BACKENDS`; paddle entries select a model tier, e.g. `paddle:v6_medium`). The PaddleOCR
+**Realized 2026-07-17** as `ocr.py::get_ocr_page(backend) -> (image, lang=...) -> OcrPage`
+(`OCR_PAGE_BACKENDS`; entries select a model tier, e.g. `paddle:v6_medium`). The PaddleOCR
 adapter (`ocr_paddle.py`) established two structural rules the seam now carries:
 
 - **Process rules are part of a backend's contract.** On Windows, paddlepaddle-gpu and torch
@@ -537,10 +546,10 @@ The GPU paddle wheel and torch cannot share a Windows process (the cudnn mutual 
 above). With Tesseract retired, the image pipeline has to run both — GLiNER2 on torch for
 detection, paddle for OCR — so paddle moves into its own interpreter: a **persistent worker
 subprocess** (`ocr_worker.py`), spawned lazily and kept alive for the run. The engine loads
-once per worker; PNG bytes go in and a pickled `OcrResult` comes back over a framed
+once per worker; PNG bytes go in and a pickled `OcrPage` comes back over a framed
 stdio protocol. Design decisions and their rationale:
 
-- **Routing is by wheel, not by torch-load timing.** `ocr_paddle.make_paddle_ocr(tier)`
+- **Routing is by wheel, not by torch-load timing.** `ocr.get_ocr_page(backend)`
   returns the worker-backed callable on the GPU wheel and the in-process partial on the CPU
   wheel. Choosing by wheel (not "is torch imported yet") makes the decision independent of
   call ordering — the image pipeline OCRs *before* it runs NER, so a torch-presence check
@@ -560,206 +569,79 @@ stdio protocol. Design decisions and their rationale:
   paddle's legitimate stalls (first-call D3D12 fallback ~13 s, cold model load) make any
   static deadline false-kill-prone. Revisit with a watchdog only if a real hang is observed.
 - **The client side stays torch-safe.** `ocr_worker.py`'s module level imports only stdlib +
-  the neutral `OcrResult`; the paddle import lives inside `main()`, reached only as
+  the neutral `OcrPage`; the paddle import lives inside `main()`, reached only as
   `python -m pii.core.ocr_worker <tier>`. So the torch-holding parent can `import
   pii.core.ocr_worker` without tainting itself (regression-tested).
 - **Cost accepted.** Both models hold VRAM at once during pipeline runs (worker paddle +
   parent GLiNER2 on one GPU); on the 11 GB 2080 Ti this is fine for page-sized renders but is
   the first place to watch for OOM on very large images (`text_det_limit_side_len` is the
   lever). Per-call IPC is a PNG encode + pipe transfer + pickle — negligible next to GPU
-  inference. `worker_ocr` replaces a worker that died between documents (fresh attempt) while
+  inference. `worker_page` replaces a worker that died between documents (fresh attempt) while
   a mid-call death still raises.
 
-### OCR perception layer: OcrPage / linearization / PP-StructureV3 (2026-07-24)
+### OCR perception layer: OcrPage / linearization (2026-07-24, narrowed 2026-08-09)
 
-A ground-up rework of the OCR *output* into a strongly-typed, engine-neutral **perception
-hierarchy**, plus a layout-aware PP-StructureV3 backend and a diagnostics command. Motivated by
-rethinking the PII problem more abstractly: the flat `OcrResult` (assembled text + word list) is
-fine for the current strip path but too thin to reason about grouping. The strip pipeline still
-runs on `OcrResult`/`assemble` — this layer is built *alongside* it and drives the new
-diagnostics; migrating strip onto it is a recorded TODO.
+**OCR supplies geometry, not detection.** Layer 0 reads the page image and names the values;
+each one is then located in the OCR text and painted with exact word boxes, because the model's
+own boxes are measured unsafe (see "Layer 0" below). Everything in this layer serves that single
+job, which is why it is as small as it is — the layout/segmenter half of it was retired
+2026-08-09 (rationale at the end of this section; full record in DONE.md).
 
-- **The hierarchy (`ocr_page.py`).** `OcrPage` → `OcrBlock` → `OcrLine` → `OcrWord`, plus an
-  `OcrFrame` (raster size, dpi, source, page, backend/tier). This is the standard OCR document
-  hierarchy every serious engine speaks (page → block → line → word), so any backend normalizes
-  into it — not a paddle-specific shape. `OcrBlock` carries `kind` (text/title/table/footer/…)
-  and `origin` (`detected`|`synthetic`). Perception holds geometry only — **no character
-  offsets** (see linearization).
-- **Block is mandatory; a line is never dropped.** Every `OcrLine.block_id` resolves (`block_id`
-  is *total*): a layout-less backend synthesizes one block per line (`origin="synthetic"`), a
-  layout backend fills real typed blocks (`origin="detected"`), and a line a layout model leaves
-  unassigned becomes its own synthetic block. A page is thus reachable transitively from any
-  line, and — the load-bearing reason — **a dropped OCR line is unredacted PII**, so orphans are
-  bucketed, never discarded. `region_box` stays *per-word* (a visual row can merge several
-  detection regions, each with its own line box — the paint geometry depends on it).
+- **The hierarchy (`ocr_page.py`).** `OcrPage` → `OcrLine` → `OcrWord`, plus an `OcrFrame`
+  (raster size, dpi, source, page, backend/tier). Perception holds geometry only — **no
+  character offsets** (see linearization). `region_box` is *per-word*, not per-line: a visual row
+  can merge several detection regions, each with its own line box, and the paint geometry
+  depends on it.
+- **A line is never dropped.** Every row carrying words becomes an `OcrLine`, unconditionally —
+  a dropped OCR line is unredacted PII. There is no filtering, scoring or grouping step that
+  could swallow one.
 - **A line box contains its glyph ink (`_line_box`, 2026-07-27).** `OcrLine.box` is the union of
-  the line's word boxes **with their region boxes**, computed in one helper both builders call.
-  Engine word boxes are *inset* from the ink while the detection region box contains it, so a box
-  built from word boxes alone slices the first and last glyph. It is also what made the two layout
-  backends disagree on identical lines: PP-Structure's normalized result carries no word
-  fragments, so its words interpolate across the whole region box and the line box matched the
-  region *by accident*, while `doclayout` asks for fragments (`return_word_box=True`) and got the
-  inset. Union rather than the region alone because paddle occasionally emits a region that does
-  not contain its own words — the same defence `painted_boxes_for_span` applies when growing a
-  paint run, so the box can never end up narrower than the words it holds. Measurements in DONE.md.
-- **Linearization is a separate layer (`linearization.py`).** The recognizer runs on one flat
-  string; `linearize(OcrPage) -> RecognizerInput` produces it plus a **source map** (each char
-  range → the OCR geometry it came from). Character offsets are born *here*, per linearization —
-  an offset is a property of the (page, assembly) pair, not of a line, because we intend to try
-  several assemblies (combine lines differently; feed the recognizer per block). The
-  anti-silent-leak rule (record `(start, end, box)` at construction, never re-derive from
-  lengths — the presidio-image-redactor leak class) moves down intact: it now lives on the
-  source map. `linearize` v1 reproduces the historical `assemble` byte-for-byte; smarter trial
-  linearizations grow behind the seam without touching perception or painting.
-- **`get_ocr_page(backend)` — wheel-selected transport, one implementation.** Mirrors `get_ocr`:
-  worker subprocess on the GPU wheel, in-process on the CPU wheel. The debug command and the
-  eventual strip migration both go through it, so there is *no debug-only OCR path* and the
-  diagnostics exercise exactly the transport release will use. The worker (`ocr_worker.py`) was
-  generalized to a **spec dispatch** — a bare tier still returns `OcrResult` (the untouched
-  strip path), `page:<tier>` returns a line-only `OcrPage`, `structure` returns a PP-Structure
-  `OcrPage` — over the same framed stdio protocol.
-- **PP-StructureV3 backend (`ocr_ppstructure.py`).** Lean config: layout detection + reading
-  order + OCR only (table/formula/seal/chart/orientation all off — financial-doc PII needs
-  text + boxes, not cell structure), OCR sub-models pinned to `PP-OCRv6_medium`. Blocks come
-  from `parsing_res_list` (typed `label`, `bbox`, `order_index`); lines from `overall_ocr_res`.
-  PP-Structure exposes **no line→block linkage** (measured: `child_blocks` is empty for text
-  blocks — a block gives only its concatenated content, bbox and a `num_of_lines` count), so the
-  linkage is reconstructed by **geometric containment** of each line box in a block box,
-  cross-checked against `num_of_lines`. **Layout thresholds are PaddleX's shipped per-class
-  dict** (`text` 0.4, `table` 0.5, `paragraph_title` 0.3, rest 0.5 — not the flat 0.5 the API's
-  float knob implies; passing a float replaces all 20 classes at once). We override nothing:
-  `_layout_thresholds(overrides)` is the seam, keyed by label name and resolved through the
-  model's own `label_list`. Relaxing `text` to ~0.33 is the measured cure for orphaned
-  label/value header panels (2026-07-25, numbers and trade-offs in DONE.md) — deliberately not
-  adopted pending the linearization rework. Operational: needs the `paddlex[ocr]` extras, and
-  `_stub_torch` now presents `torch.Tensor` as a real class because scipy (pulled in by
-  `paddlex[ocr]`) probes `issubclass(x, torch.Tensor)`. Models land under `models/paddlex`
-  (`PP-DocLayout_plus-L`, `PP-DocBlockLayout`). Full install/adoption record in DONE.md.
+  the line's word boxes **with their region boxes**. Engine word boxes are *inset* from the ink
+  while the detection region box contains it, so a box built from word boxes alone slices the
+  first and last glyph (measured: 50 of 53 lines on a real statement page lost up to 8 px of ink
+  at 200 dpi). Union rather than the region alone because paddle occasionally emits a region that
+  does not contain its own words — the same defence `painted_boxes_for_span` applies when growing
+  a paint run, so the box can never end up narrower than the words it holds.
+- **`_rows` visual banding is load-bearing, not cosmetic.** Detection regions carry no reading
+  order, so they are banded into rows by y-centre and each row becomes one line, left to right.
+  This is what puts a label and its value from two side-by-side regions onto **one** assembled
+  line — which is how context promotion reaches an account number sitting in a column beside its
+  own label (`d11.p2`). A tall neighbour (a logo) must not bridge two stacked lines, hence the
+  x-overlap guard: two regions sharing an x-column are stacked lines, not one row (issue #6).
+- **Linearization is a separate layer (`linearization.py`).** The recognizer and the locator both
+  run on one flat string; `linearize(OcrPage) -> RecognizerInput` produces it plus a **source
+  map** (each char range → the OCR geometry it came from). Character offsets are born *here* — an
+  offset is a property of the (page, assembly) pair, not of a line. The anti-silent-leak rule
+  (record `(start, end, box)` at construction, never re-derive from lengths — the
+  presidio-image-redactor leak class) lives on the source map. `RecognizerInput` is the **single**
+  implementation of span→box mapping; the parallel flat `OcrResult`/`assemble` copy of it was
+  deleted 2026-08-09.
+- **`get_ocr_page(backend)` — wheel-selected transport, one implementation.** Worker subprocess
+  on the GPU paddle wheel, in-process on the CPU wheel (the DLL rules in `ocr_paddle.py`). Strip,
+  diagnostics and the eval harness all go through it, so there is *no* second OCR path and the
+  diagnostics exercise exactly the transport release uses. A worker spec is simply a model tier.
 - **Diagnostics (`ocr_debug.py`, `pii debug ocr`).** Renderers over an `OcrPage`: round-trippable
-  JSON, a human text summary, and an annotated **overlay** raster (lines + blocks + reading
-  order; detected blocks blue, synthetic amber-tagged). Drawing reuses the shared toolkit —
-  `Segment`/`paint_segments`/fill/frame were extracted from `image_mode` into `pii.core.paint`
-  (2026-07-24) so the OCR-only debug path doesn't drag in the analysis stack (`image_mode`
-  imports the pipeline); `image_mode` re-exports the names, strip/eval untouched. PDFs process
+  JSON, a human text summary, and an annotated **overlay** raster (word boxes grey, assembled
+  lines blue and numbered — the `_rows` banding made visible). Drawing reuses the shared toolkit
+  in `pii.core.paint`, so the OCR-only debug path doesn't drag in the analysis stack. PDFs process
   **all pages** by default; an `overlay` to a `.pdf` reconstructs a fresh image-only PDF via
-  `pdf_mode.rebuild_pdf` — strip's reassembly discipline (nothing structural survives), but *not*
-  redacted (original text + boxes), a near-PII local artifact. OCR-only, so a debug run stays
-  light and torch-free. On a line-only page every block is synthetic, so the overlay draws the
-  `_rows()` grouping — the intended lens for judging the open **per-block recognizer feeding**
-  question (TODO).
+  `pdf_mode.rebuild_pdf` — strip's reassembly discipline, but *not* redacted (original text +
+  boxes), a near-PII local artifact. What it shows is the geometry strip will paint with, so a
+  value missing from these lines is a value `--geometry ocr` cannot redact.
 
-### Second layout backend: PP-DocLayoutV3 (`doclayout:v3`, 2026-07-25)
-
-A second layout-aware `OcrPage` backend, built to answer one question (Sergei): does a newer
-layout **model** see statement tables better than the one PP-StructureV3 ships with? Full
-numbers in [reports/2026-07-25-layout-bakeoff-doclayoutv3.md](reports/2026-07-25-layout-bakeoff-doclayoutv3.md).
-
-- **The two backends differ only in where blocks come from.** `ppstructure` runs the
-  PP-StructureV3 *pipeline* (layout submodule PP-DocLayout_plus-L, an RT-DETR detector: boxes
-  and labels, reading order computed afterwards by the pipeline's xycut pass). `doclayout:v3`
-  runs **PP-DocLayoutV3 standalone** (`paddleocr.LayoutDetection`) and pairs it with a direct
-  `PaddleOCR` call for lines. V3 is a transformer with a **reading-order head**, so the order
-  is the model's own. Pipeline vs model is the distinction to keep straight: PP-StructureV3 is
-  a pipeline whose layout stage is a model; PP-DocLayoutV3 is that stage, one generation on.
-- **Lines come from the same pinned PP-OCR tier either way**, so switching backends cannot
-  change recognized characters — CER, the leak gate and every fidelity number are held constant
-  by construction, isolating the structure question. (Measured caveat: PP-Structure's internal
-  OCR feed *fragments* a handful of lines — `'Pa'` + `'Page 1 of'` where the direct call reads
-  `'Page 1 of 1'` — so the line sources are near-identical, not identical, and the difference
-  favours the direct call.)
-- **Result: V3 dominates.** Over the 31-page real corpus: table blocks 24 → **45**, orphan
-  lines 117 (6.2%) → **20 (1.1%)**, at 4.5 s/page vs 4.7 (the layout model is ~0.1 s/page;
-  PP-OCR dominates both). The BSB/account label-value panel that motivated the
-  `_layout_thresholds` seam comes back as a `table` block, so that pending threshold decision
-  is moot on this path.
-- **`draw_threshold` is not an operating point — the trap that inverted the first run.**
-  Standalone `LayoutDetection` with no explicit threshold falls back to `draw_threshold: 0.5`
-  from the model's exported `inference.yml`: a *visualization* default stamped into every
-  PaddleDetection export. At 0.5, V3 detects nothing on whole pages (20.4% orphan lines) — it
-  looked worse than plus-L, which PP-StructureV3 hands a tuned per-class dict. Every shipped
-  pipeline overrides the default; `_shipped_knobs` therefore lifts the operating point
-  (`threshold` 0.3, `layout_nms`, `layout_unclip_ratio`, `layout_merge_bboxes_mode`) out of the
-  pipeline config that **names our model**, newest first. Matching by model name is what makes
-  the index-keyed dicts inside it safe: they are keyed by *that* model's taxonomy — the exact
-  retargeting hazard `_layout_thresholds` warns about when borrowing plus-L's dict. Nothing
-  matched → `{}` → shipped defaults, never a guess. Sweep: 0.1/0.2 reach ~0.1% orphans and more
-  tables but merge blocks larger; the recall cliff is between 0.3 and 0.4; **shipped 0.3 kept**,
-  since judging over-merge needs block ground truth we do not have.
-- **Reading order is list position, not the `order` field.** paddlex sorts the result list by
-  the model's reading-order column, then `update_order_index` numbers 1..N over it while
-  blanking every label in `SKIP_ORDER_LABELS` — `table`, `image`, `header`, `footer` among them.
-  Ranking by that field (the way PP-Structure's `order_index` is ranked) would push every
-  statement table to the end of the page. Regression-tested.
-- **The line→block linkage is now shared** (`ocr_page.build_layout_page`): every layout engine
-  refuses to say which lines belong to which block, so the reconstruction — containment, orphans
-  into their own synthetic blocks, `(block reading order, top, left)` emission — lives in one
-  place for both backends, as does the "never drop a line" invariant. Paddle-result → lines is
-  likewise one function (`ocr_paddle._result_lines`), used by the line-only path (banded into
-  visual rows), PP-Structure (`overall_ocr_res`) and this backend (unbanded — a layout model's
-  blocks already group the lines, so re-banding by y-centre would fight it).
-- **Adopted as the default** (Sergei, on these numbers, 2026-07-25): `get_ocr_page` and
-  `--ocr-backend` default to `doclayout:v3`; `ppstructure` stays selectable, unchanged, as the
-  comparison baseline (worker spec `doclayout:<model>` alongside `structure`). It reached the
-  strip path too on 2026-07-27, with the per-block feed (see below); the flat
-  `get_ocr`/`OcrResult` path is now the opt-in. `OcrBlock.conf` carries the detector's score;
-  V3's per-block
-  `polygon_points` are deliberately not stored (nothing consumes block polygons and
-  `ocr_debug.page_to_dict` does not serialize them — filling the field would silently break the
-  JSON round-trip; it is the lever for skewed scans).
-
-### Per-block recognizer feeding (`--feed blocks`, 2026-07-27)
-
-The payoff the perception layer was built for: the recognizer's unit is a **layout block**,
-not a page. `linearize_blocks(page)` cuts the page into one `RecognizerInput` per block
-(offsets local to it), the strip path runs the pipeline **once per block**, and
-`rebase(inputs)` folds the per-block inputs — and the spans found in them — back into one
-page-level view with global offsets. Numbers and the reasoning behind the verdict:
-[reports/2026-07-27-per-block-feed-bakeoff.md](reports/2026-07-27-per-block-feed-bakeoff.md).
-
-- **Full isolation, by separate analyzer calls — not a sentinel.** A `RECORD_SEPARATOR`
-  boundary (the csv_mode idiom) would isolate GLiNER2's attention windows and block layer-1
-  patterns while leaving Presidio's context enhancer free to reach across. Separate calls
-  isolate all three layers, which is the variable Sergei asked to measure. It costs no
-  measurable wall time (31 real pages: 402 s per-block vs 401 s page-wide): OCR dominates the
-  run, and a quadratic-attention encoder is roughly indifferent between one long window and
-  many short ones.
-- **Same characters, different cut.** `rebase(linearize_blocks(page))` is byte-identical to
-  `linearize(page)` — blocks are emitted in the order their first line appears (a layout
-  backend has already sorted lines by block reading order), lines within a block in page
-  order, parts joined by the same newline `_assemble` puts between lines. So the feed changes
-  *only* what the recognizer sees at once; painting, placeholder numbering, reporting and the
-  eval harness are indifferent to it.
-- **Deliberately dumb, on Sergei's instruction (2026-07-27): every block is a unit**, whatever
-  its `kind` or `origin`. No title-glues-to-body, no orphan clustering, no minimum size.
-  Consequences accepted on purpose: on a line-only backend the feed degenerates to per-line,
-  and an orphan line is a context-free one-line window. Heuristics get added only against
-  measured need.
-- **The cost is cross-block context, and it is real but did not bite.** A label in one block
-  can no longer promote a value in the next (pinned by unit test: `BSB` and `014-936` in
-  separate blocks detect *nothing*, where one page detects both). On the real corpus the
-  label/value panels sit inside one `table` block under `doclayout:v3`, while the interference
-  the feed removes — a header panel sharing an attention window with 40 transaction rows — is
-  everywhere. Net **−4 critical leaks** against its own backend control (BSB recall 67 → 100%,
-  ADDRESS 95 → 100%, joint names 43 → 71%).
-- **`doclayout:v3` + `--feed blocks` is the strip default** (Sergei, on these numbers,
-  2026-07-27), for `strip --image`/`--pdf`, the `strip_image`/`strip_pdf` signatures and the
-  eval scorers alike — the harness measures what ships. The flat `OcrResult` path stays
-  reachable behind an explicit `--ocr-backend paddle --feed page`.
-  **One accepted regression rides with it:** switching perception *by itself* costs leaks
-  (12 vs 9 — the feed then wins 4 back for a net 8), because lines inside a block are emitted
-  in `(top, left)` order and a multi-column header panel therefore interleaves — a value is
-  emitted before its own label, so context promotion never fires (`d11`'s account number).
-  The flat path avoids it only because `_rows` bands side-by-side regions into one visual
-  line. The fix is intra-block column structure (the same defect as issue #8a), now the top
-  item on the layout track.
-- **Seams.** `image_mode.strip_from_page(image, page, …, feed=)` is the `OcrPage` strip entry
-  (`strip_from_ocr` keeps the flat `OcrResult` path untouched); `strip_image`/`strip_pdf` take
-  `feed` and route by it; the CLI exposes `--feed {page,blocks}` on `strip`, and the eval
-  harness the same knob on `score`. `ImageStripResult.ocr` is now "an `OcrResult` or a
-  `RecognizerInput`" — both answer `.text`/`.painted_boxes_for_span`, which is the whole
-  contract callers use. The eval scorers always re-read stripped output with the *flat*
-  default tier (`score_image.reread_engine`), so the measuring instrument stays constant while
-  backend and feed vary.
+**Why the layout/segmenter layer went (2026-08-09, Sergei).** `OcrBlock`, the two layout backends
+(PP-StructureV3 and PP-DocLayoutV3), the reconstructed line→block linkage, orphan clustering and
+the per-block recognizer feed (`--feed blocks`) all existed to *reconstruct* page structure the
+VLM reads natively. Once layer 0 became the detector they had no consumer: the whole segmenter
+was solving a problem the new detector does not have. It was also never a net win on its own
+axis — on the 31-page real corpus the segmenter default scored 8 critical leaks against the
+line-only path's 9, trading leaks rather than removing them, and its repayment plan (table-cell
+structure → per-cell feeding → a perception-hierarchy change) was a large programme. Dropping it
+restores `_rows` column banding, which fixes the `d11.p2` account-number leak that was live in
+the shipping default. Numbers in
+[reports/2026-07-27-per-block-feed-bakeoff.md](reports/2026-07-27-per-block-feed-bakeoff.md) and
+[reports/2026-07-25-layout-bakeoff-doclayoutv3.md](reports/2026-07-25-layout-bakeoff-doclayoutv3.md);
+the adapters are one revert away in git history, the same disposition as Tesseract and Surya.
 
 ### Tesseract retired (2026-07-17)
 
@@ -767,18 +649,23 @@ Tesseract was the first OCR backend; the round-1 fidelity bake-off retired it (S
 decision on the report — ~25× higher CER than PP-OCRv6_medium, an x-height cliff paddle does
 not have, and structure damage that was the actual identifier-leak driver). The adapter
 (`ocr_image`/`_lines_from_tesseract`), the `pytesseract` dependency, the edge-pad workaround,
-and the `tesseract` backend name are removed; `get_ocr`/`--ocr-backend` default to paddle
-(`v6_medium`). The neutral interchange (`OcrResult`/`assemble`/`get_ocr`) is unchanged — it
-was always the seam, not Tesseract-specific. Leak-gate parity confirmed before removal
+and the `tesseract` backend name are removed; the OCR seam and `--ocr-backend` default to
+paddle (`v6_medium`). The neutral interchange was unchanged by the removal — it was always
+the seam, not Tesseract-specific. Leak-gate parity confirmed before removal
 (records in DONE.md). The operational-profile section below is kept as **history**.
 
-### Layer 0 — the VLM detector, and where its geometry comes from (2026-08-08)
+### Layer 0 — the VLM detector, and where its geometry comes from (2026-08-08; default 2026-08-09)
 
-`vlm.py` is a detector, not an OCR backend: it reads the page image and emits the merged-span
-plan directly, honouring the same contract as `PiiPipeline.detect`, so placeholder allocation,
-overlap merging, painting, PDF rebuild and map handling are shared with the default path.
-Reached with `--detector vlm` on `--image`/`--pdf`. Evidence for every claim below is in
+`vlm.py` is a detector, not an OCR backend: it reads the page image and names the PII directly,
+honouring the same contract as `PiiPipeline.detect`, so placeholder allocation, overlap merging,
+painting, PDF rebuild and map handling are shared with the layered path. **It is the default for
+`--image`/`--pdf` since 2026-08-09** (`--detector layers` is the fallback; text and CSV input has
+no page image and always uses layers). Evidence for every claim below is in
 [reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md).
+
+**Consequence of the flip: `--image`/`--pdf` now require a llama-server** (`--vlm-url`, or
+`$PII_VLM_URL`) and run at minutes per page rather than seconds. Accepted knowingly (Sergei,
+2026-08-09); the serving/quantization work that attacks it is a TODO.
 
 **Detection and geometry are separate concerns, and only detection is a strength.** The model
 finds PII very well but places boxes *stochastically* badly — 64.9% fully covered at an 8 px
@@ -809,6 +696,28 @@ dates cannot; only semantics decides, which is the model's strength. Collapsing 
 recall and *gained* generalization (a vehicle registration was caught with no mention of
 vehicles in the prompt). Unrefined identifiers strip under `IDENTIFIER_GENERIC` (`ID_n`) —
 distinct from the `*_INVALID` classes, which mean "matched a pattern and failed its checksum".
+
+**Layer 1 refines, validates and extends layer 0 (`PiiPipeline.merge_detections`, 2026-08-09).**
+This is what makes the coarse vocabulary above workable rather than lossy. Because production
+geometry is OCR, the located layer-0 spans and an ordinary layer-1 pass over the same page text
+share one offset space, so folding them together is a merge, not a reconciliation. Three jobs,
+all falling out of the existing `_merge_overlaps`:
+
+- **Refine.** `_rank` gained a middle tier — a specific class outranks `IDENTIFIER_GENERIC`,
+  which outranks the `*_INVALID` shadows — so a layer-1 span overlapping a generic identifier
+  wins the placeholder and the value strips as `TFN_1`, not `ID_1`.
+- **Validate.** The `*_INVALID` shadows are a signal a VLM structurally cannot produce (it can
+  read a TFN but not verify its mod-11 arithmetic), so they can only come from this pass.
+- **Union.** Whatever layer 1 finds and the model missed is added — a deterministic recall floor
+  under a stochastic detector.
+
+Layer-0 spans go through the strip plan first, so the **kept-ORGANIZATION policy applies to them
+exactly as to layer-1 spans**. That is not a detail: the prompt deliberately carries no
+institutional carve-outs, so the model reports merchant and bank names by design, and this filter
+is where they are kept. Where the two layers disagree on a specific class the higher score wins,
+which is layer 0 (it detects at 1.0) — deliberate, it is the better semantic detector, and the
+failure that guards against (layer 1 typing the AFSL number `237502` as a phone) costs an
+over-strip, not a leak.
 
 **The prompt carries no institutional exclusions.** Over-strip is recoverable by the operator
 keep-list; under-strip is a breach. A prompt is the wrong home for a keep decision: a model

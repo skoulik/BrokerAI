@@ -1,105 +1,57 @@
-"""OCR adapter: image -> assembled text + word bounding boxes.
+"""OCR adapter seam + the shared pixel-geometry toolkit.
 
-Engine-neutral interchange: whatever the engine, a page becomes a list of
-words carrying (text, bbox, conf, line) and an OcrResult whose assembled
-text records each word's character interval AT ASSEMBLY TIME. Mapping a
-detected PII span back to pixel boxes is then pure interval intersection —
-never re-derived from word lengths, which is the silent-leak class found in
-the presidio-image-redactor review (DONE.md).
+PaddleOCR is the OCR engine (`ocr_paddle.py`); this module owns `Box`, the
+line-banding and word-box normalization every paddle-shaped result goes
+through, and the `get_ocr_page` seam resolving a backend name to an
+`image -> OcrPage` callable.
 
-Assembly preserves line structure (words joined by spaces, lines by
-newlines) rather than flat-joining the whole page: the GLiNER2 recognizer
-runs per-line passes, and statement rows only make sense as lines.
+OCR supplies GEOMETRY, not detection: layer 0 (`vlm.py`) reads the page image
+and names the values, and each value is then located in the OCR text so it
+can be painted with exact word boxes. The perception objects live in
+`ocr_page.py`; character offsets are born in `linearization.py` and never
+here — re-deriving an offset from word lengths is the silent-leak class found
+in the presidio-image-redactor review (DONE.md).
 
-PaddleOCR is the OCR engine (`ocr_paddle.py`); this module owns the
-neutral interchange (`Box`/`OcrWord`/`OcrResult`/`assemble`) that every
-backend normalizes into, plus the `get_ocr` seam. Tesseract was the first
-backend and was retired 2026-07-17 after the fidelity bake-off (records in
-DONE.md); its operational profile survives there as history.
+Line structure is preserved (words joined by spaces, lines by newlines)
+rather than flat-joining the page: statement rows only make sense as lines,
+and `_rows` banding is what keeps a label and its value on one of them.
+
+Retired backends live in git history: tesseract (2026-07-17), surya
+(2026-07-17), and the PP-StructureV3 / PP-DocLayoutV3 layout backends
+(2026-08-09, with the rest of the segmenter). Records in DONE.md and
+reports/.
 """
 
 import re
 from collections import Counter
-from dataclasses import dataclass
 from typing import NamedTuple
 
 from PIL import Image
 
-# The engine seam: every backend is an image -> OcrResult callable
-# normalizing into the interchange below (ARCHITECTURE.md). The paddle
-# entries select a model tier ("paddle" = the default tier). Retired
-# backends live in git history: tesseract (2026-07-17), surya
-# (2026-07-17, one revert away — see reports/ round-2 bake-off).
-OCR_BACKENDS = ("paddle", "paddle:v5_server", "paddle:v6_medium")
+# The engine seam: every backend is an `(image, lang=...) -> OcrPage`
+# callable. The entries select a PaddleOCR model tier; bare "paddle" is
+# DEFAULT_TIER (v6_medium, the round-1 fidelity winner). Lines come from the
+# same pinned PP-OCR tier either way, so the choice moves recognition
+# quality, never the shape of the result.
+OCR_PAGE_BACKENDS = ("paddle", "paddle:v5_server", "paddle:v6_medium")
 
 
-def get_ocr(backend: str = "paddle"):
-    """Resolve a backend name to an `(image, lang=...) -> OcrResult`
-    callable. Imports are deferred so unused engines cost nothing."""
-    if backend.split(":", 1)[0] == "paddle":
-        from pii.core.ocr_paddle import DEFAULT_TIER, MODEL_TIERS, make_paddle_ocr
-
-        tier = backend.partition(":")[2] or DEFAULT_TIER
-        if tier not in MODEL_TIERS:
-            raise ValueError(f"unknown paddle model tier: {tier!r}")
-        return make_paddle_ocr(tier)
-    raise ValueError(f"unknown OCR backend: {backend!r}")
-
-
-# Backends producing the OcrPage perception (get_ocr_page): two layout-aware
-# ones — "doclayout:v3" (standalone PP-DocLayoutV3 + a direct PaddleOCR call,
-# the DEFAULT since the 2026-07-25 bake-off: 2x the table blocks and ~6x fewer
-# orphaned lines than the alternative) and "ppstructure" (the PP-StructureV3
-# pipeline, layout submodule PP-DocLayout_plus-L) — plus the paddle line-only
-# tiers (synthetic per-line blocks). Lines come from the same pinned PP-OCR
-# tier in all three, so the choice moves blocks and reading order, never
-# characters.
-OCR_PAGE_BACKENDS = (
-    "doclayout", "doclayout:v3", "ppstructure",
-    "paddle", "paddle:v5_server", "paddle:v6_medium",
-)
-
-
-def get_ocr_page(backend: str = "doclayout:v3"):
-    """Resolve a backend to an `(image, lang=...) -> OcrPage` callable, worker
-    vs in-process by wheel (mirrors get_ocr). "doclayout[:<model>]" (default)
-    -> PP-DocLayoutV3 blocks + model-predicted reading order; "ppstructure" ->
-    PP-StructureV3 (typed blocks + pipeline reading order); the "paddle" family
-    -> line-only perception (one synthetic block per line). Imports are
-    deferred so the engine loads only when used."""
+def get_ocr_page(backend: str = "paddle"):
+    """Resolve a backend name to an `(image, lang=...) -> OcrPage` callable,
+    worker vs in-process by paddle wheel (see ocr_paddle's DLL rules).
+    Imports are deferred so the engine loads only when used."""
     family, _, selector = backend.partition(":")
-    if family not in ("paddle", "ppstructure", "doclayout"):
+    if family != "paddle":
         raise ValueError(f"unknown OCR page backend: {backend!r}")
     from pii.core.ocr_paddle import DEFAULT_TIER, MODEL_TIERS, _gpu_wheel
 
-    if family == "paddle" and (selector or DEFAULT_TIER) not in MODEL_TIERS:
-        raise ValueError(f"unknown paddle model tier: {selector!r}")
-    if family == "doclayout":
-        from pii.core.ocr_doclayout import DEFAULT_LAYOUT, LAYOUT_MODELS
-
-        layout = selector or DEFAULT_LAYOUT
-        if layout not in LAYOUT_MODELS:
-            raise ValueError(f"unknown layout model: {layout!r}")
-        if _gpu_wheel():
-            from pii.core.ocr_worker import worker_page
-
-            return lambda image, lang="eng": worker_page(
-                f"doclayout:{layout}", image)
-        from functools import partial
-
-        from pii.core.ocr_doclayout import doclayout_page
-
-        return partial(doclayout_page, layout=layout)
     tier = selector or DEFAULT_TIER
+    if tier not in MODEL_TIERS:
+        raise ValueError(f"unknown paddle model tier: {selector!r}")
     if _gpu_wheel():
         from pii.core.ocr_worker import worker_page
 
-        spec = "structure" if family == "ppstructure" else f"page:{tier}"
-        return lambda image, lang="eng": worker_page(spec, image)
-    if family == "ppstructure":
-        from pii.core.ocr_ppstructure import ppstructure_page
-
-        return lambda image, lang="eng": ppstructure_page(image)
+        return lambda image, lang="eng": worker_page(tier, image)
     from functools import partial
 
     from pii.core.ocr_paddle import ocr_page_paddle
@@ -122,131 +74,6 @@ class Box(NamedTuple):
     @property
     def bottom(self) -> int:
         return self.top + self.height
-
-
-@dataclass(frozen=True)
-class OcrWord:
-    text: str
-    box: Box
-    conf: float  # engine confidence, 0-100
-    line: int  # index into the assembled text's lines
-    char_start: int  # interval in OcrResult.text, recorded at assembly
-    char_end: int
-    # Paddle's detection line/region box the word came from. It CONTAINS
-    # the glyph ink, whereas `box` (a per-word fragment box) is inset from
-    # the glyphs by several px at each outer edge — so painting grows the
-    # word box out to this (see painted_boxes_for_span). Defaults to `box`
-    # for callers that supply no region geometry (glyph-tight assumption).
-    region_box: Box | None = None
-
-
-@dataclass(frozen=True)
-class OcrResult:
-    text: str
-    words: list[OcrWord]
-
-    def boxes_for_span(self, start: int, end: int) -> list[Box]:
-        """Pixel boxes covering a character span of `text`.
-
-        Interval intersection (`max(start, w.start) < min(end, w.end)`):
-        a word partially covered by the span — entity boundary mid-word at
-        either end — still yields its box, recall-first. Word boxes on the
-        same line are unioned into one rectangle so the inter-word gaps of
-        a multi-word entity don't survive as readable pixels.
-        """
-        by_line: dict[int, list[Box]] = {}
-        for w in self.words:
-            if max(start, w.char_start) < min(end, w.char_end):
-                by_line.setdefault(w.line, []).append(w.box)
-        return [_union(boxes) for _, boxes in sorted(by_line.items())]
-
-    def painted_boxes_for_span(self, start: int, end: int) -> list[Box]:
-        """Boxes for painting a span — like boxes_for_span, but each line's
-        run is grown out to paddle's line/region box so no glyph fringe
-        survives.
-
-        The word boxes returned by boxes_for_span come from paddle's
-        per-word fragment boxes, which are inset from the glyph ink by
-        several px at each outer edge (the line/region box, `region_box`,
-        contains the ink — measured 2026-07-21). A small fixed paint margin
-        can't cover that, so for each line the run touches we take the union
-        of the run words' region boxes and then pull the outer edges back to
-        the MIDPOINT of the gap toward any neighbouring word not in the span
-        — recovering the run's own inset without overpainting a kept
-        neighbour. Never narrower than boxes_for_span (both midpoint and
-        region edge lie outside the word-union edge). Falls back to the word
-        box where no region geometry was supplied (region_box is None)."""
-        by_line: dict[int, list[OcrWord]] = {}
-        for w in self.words:
-            if max(start, w.char_start) < min(end, w.char_end):
-                by_line.setdefault(w.line, []).append(w)
-        out = []
-        for line_idx, run in sorted(by_line.items()):
-            u_left = min(w.box.left for w in run)
-            u_right = max(w.box.right for w in run)
-            regions = [w.region_box or w.box for w in run]
-            # Union the region box with the word extent. A region box is
-            # meant to CONTAIN its words, but paddle occasionally emits one
-            # that doesn't (measured on a footer line where the run's words
-            # sit past the region's right edge — "ServletRetrieve (6).pdf").
-            # Taking min/max against u_left/u_right keeps the documented
-            # invariant "region edge lies outside the word-union edge", so a
-            # stale region box can never pull an edge PAST the words and the
-            # neighbour clamps below can't produce right < left (negative
-            # width -> Image.new ValueError).
-            left = min(min(r.left for r in regions), u_left)
-            right = max(max(r.right for r in regions), u_right)
-            top = min(r.top for r in regions)
-            bottom = max(r.bottom for r in regions)
-            # Clamp the region extension back toward any same-line word not
-            # part of the run, so we grow into whitespace, not a neighbour.
-            for w in self.words:
-                if w.line != line_idx or max(start, w.char_start) < min(
-                    end, w.char_end
-                ):
-                    continue
-                if w.box.right <= u_left:
-                    left = max(left, (w.box.right + u_left) // 2)
-                elif w.box.left >= u_right:
-                    right = min(right, (w.box.left + u_right) // 2)
-            out.append(Box(left=left, top=top, width=right - left, height=bottom - top))
-        return out
-
-
-def assemble(lines: list[list[tuple]]) -> OcrResult:
-    """Build the assembled text from per-line word tuples, recording each
-    word's character interval as it is written.
-
-    A word tuple is (text, box, conf) or (text, box, conf, region_box);
-    when the region box is omitted it defaults to the word box (glyph-tight
-    assumption — see OcrWord.region_box)."""
-    words = []
-    parts = []
-    pos = 0
-    for line_idx, line in enumerate(lines):
-        if line_idx:
-            parts.append("\n")
-            pos += 1
-        for word_idx, item in enumerate(line):
-            text, box, conf = item[0], item[1], item[2]
-            region_box = item[3] if len(item) > 3 else box
-            if word_idx:
-                parts.append(" ")
-                pos += 1
-            words.append(
-                OcrWord(
-                    text=text,
-                    box=box,
-                    conf=conf,
-                    line=line_idx,
-                    char_start=pos,
-                    char_end=pos + len(text),
-                    region_box=region_box,
-                )
-            )
-            parts.append(text)
-            pos += len(text)
-    return OcrResult(text="".join(parts), words=words)
 
 
 def _union(boxes: list[Box]) -> Box:

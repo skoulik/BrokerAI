@@ -1,7 +1,7 @@
 import argparse
 import sys
 
-from pii.core.ocr import OCR_BACKENDS, OCR_PAGE_BACKENDS
+from pii.core.ocr import OCR_PAGE_BACKENDS
 
 # Canonical home of every generated corpus (gitignored): one folder per
 # modality (text/, image/), one subfolder per seed.
@@ -60,7 +60,7 @@ def main() -> int:
                      help="save rendered sweep pages next to the report")
     rep.add_argument("--summary-only", action="store_true",
                      help="re-print the summary of an existing report")
-    rep.add_argument("--ocr-backend", choices=list(OCR_BACKENDS),
+    rep.add_argument("--ocr-backend", choices=list(OCR_PAGE_BACKENDS),
                      default="paddle",
                      help="OCR engine to sweep (default: paddle); the "
                           "default report file is suffixed per backend")
@@ -104,17 +104,17 @@ def main() -> int:
                     default="likely",
                     help="collection tier for checksum-invalid candidates")
     sc.add_argument("--ocr-backend", choices=list(OCR_PAGE_BACKENDS),
-                    default="doclayout:v3",
-                    help="OCR engine for --modality image/pdf (default: "
-                         "doclayout:v3, the product default; ppstructure is "
-                         "the other layout backend, the paddle tiers are "
-                         "line-only). The re-read of stripped output always "
-                         "uses the flat default tier, so the read-back is "
-                         "constant across backends")
-    sc.add_argument("--feed", choices=["page", "blocks"], default="blocks",
-                    help="what the recognizer is fed per page: blocks "
-                         "(default; one call per layout block — full "
-                         "per-block isolation) or page (one string)")
+                    default="paddle",
+                    help="PaddleOCR model tier supplying geometry on the "
+                         "STRIP side for --modality image/pdf (default: "
+                         "paddle, the product default). The re-read of "
+                         "stripped output is pinned to the default tier, so "
+                         "the measuring instrument stays constant")
+    sc.add_argument("--detector", choices=["layers", "vlm"], default="vlm",
+                    help="what finds the PII on the strip side for "
+                         "--modality image/pdf: vlm (default, the product "
+                         "default — needs a llama-server, see $PII_VLM_URL, "
+                         "and runs at minutes per page) or layers")
 
     args = parser.parse_args()
     if args.command == "generate":
@@ -166,7 +166,7 @@ def main() -> int:
                            threshold=args.threshold,
                            invalid_identifiers=args.invalid_identifiers,
                            ocr_backend=args.ocr_backend,
-                           feed=args.feed)
+                           detector=args.detector)
     if args.modality == "pdf":
         if not args.corpus:
             parser.error("--modality pdf requires -c (a real corpus folder, "
@@ -177,7 +177,7 @@ def main() -> int:
                          threshold=args.threshold,
                          invalid_identifiers=args.invalid_identifiers,
                          ocr_backend=args.ocr_backend,
-                         feed=args.feed)
+                         detector=args.detector)
     from pii_eval.score import score
 
     return score(args.corpus or _default_corpus(args.seed),

@@ -33,7 +33,8 @@ from PIL import Image
 
 from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
 from pii.core.image_mode import strip_image
-from pii.core.ocr import get_ocr
+from pii.core.linearization import linearize
+from pii.core.ocr import get_ocr_page
 from pii_eval.score import _norm
 
 # Classic OCR confusion pairs, collapsed to one representative per class.
@@ -185,24 +186,35 @@ def summarize(all_entities, all_invalid, noise,
     return 0
 
 
-def reread_engine(ocr_backend: str):
-    """The flat OCR engine that re-reads stripped output pixels.
+def reread_engine():
+    """The OCR engine that re-reads stripped output pixels — deliberately
+    PINNED to the default tier, whatever the strip side is configured with.
 
-    A layout backend ("doclayout:v3") is not a flat engine, and every
-    backend takes its lines from the same pinned PP-OCR tier anyway — so the
-    read-back falls back to the default tier. That keeps the scorer's
-    measuring instrument constant while the strip side varies backend/feed,
-    which is what makes those runs comparable."""
-    from pii.core.ocr import OCR_BACKENDS
+    Two reasons it never follows `--ocr-backend`. It is the measuring
+    instrument, so holding it constant is what makes two strip configurations
+    comparable; and under `--detector vlm` the model under test must not be
+    its own scorer, which is the standing reason an independent OCR engine is
+    retained at all."""
+    engine = get_ocr_page("paddle")
+    return lambda image: linearize(engine(image))
 
-    return get_ocr(ocr_backend if ocr_backend in OCR_BACKENDS else "paddle")
+
+def build_detector(detector: str):
+    """The layer-0 detector for the STRIP side, or None for the layers path.
+    Imported lazily so a `--detector layers` run needs no model server."""
+    if detector != "vlm":
+        return None
+    from pii.core.vlm import VlmDetector
+
+    return VlmDetector()
 
 
 def score_image(corpus: str, threshold: float = 0.4,
                 invalid_identifiers: str = "likely",
-                ocr_backend: str = "doclayout:v3",
-                feed: str = "blocks") -> int:
-    ocr = reread_engine(ocr_backend)
+                ocr_backend: str = "paddle",
+                detector: str = "vlm") -> int:
+    ocr = reread_engine()
+    vlm = build_detector(detector)
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     source = (corpus_path / manifest["source"]).resolve()
@@ -219,7 +231,7 @@ def score_image(corpus: str, threshold: float = 0.4,
         image = Image.open(corpus_path / doc["file"])
         pmap = PseudonymMap()
         result = strip_image(image, pipeline, pmap,
-                             ocr_backend=ocr_backend, feed=feed)
+                             ocr_backend=ocr_backend, detector=vlm)
         reread = ocr(result.image).text
         inv_ents = [e for e in entities if e["type"] in INVALID_ENTITY_TYPES]
         reg_ents = [e for e in entities if e["type"] not in INVALID_ENTITY_TYPES]

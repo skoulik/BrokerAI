@@ -1,7 +1,7 @@
 """Image stripping: painting and placeholder consistency.
 
-Painting tests run on constructed OcrResults (no OCR engine); real-engine
-OCR round-trips live in the paddle worker tests (test_ocr_worker.py)."""
+Painting tests run on hand-built OcrPages (no OCR engine); real-engine OCR
+round-trips live in the paddle worker tests (test_ocr_worker.py)."""
 
 from PIL import Image, ImageDraw
 
@@ -9,11 +9,11 @@ from pii.core.image_mode import (
     Segment,
     _grow,
     paint_segments,
-    strip_from_ocr,
     strip_from_page,
 )
 from pii.core.mapping import PseudonymMap
-from pii.core.ocr import Box, assemble
+from pii.core.ocr import Box
+from pii.core.ocr_page import OcrFrame, build_page
 
 RED = (255, 0, 0)
 
@@ -23,24 +23,29 @@ def _colors(image, box):
     return {color for _, color in region.getcolors(box.width * box.height)}
 
 
-def test_strip_from_ocr_paints_over_pii_pixels(pipeline):
+def _page(rows, width=400, height=200):
+    return build_page(rows, OcrFrame(width=width, height=height, page=1))
+
+
+def test_strip_from_page_paints_over_pii_pixels(pipeline):
     email_box = Box(left=60, top=20, width=120, height=14)
     img = Image.new("RGB", (300, 60), "white")
     ImageDraw.Draw(img).rectangle(
         (email_box.left, email_box.top, email_box.right, email_box.bottom),
         fill=RED,
     )
-    ocr = assemble(
+    page = _page(
         [
             [
                 ("Pay", Box(10, 20, 30, 14), 90.0),
                 ("olga@example.com", email_box, 90.0),
                 ("now", Box(200, 20, 30, 14), 90.0),
             ]
-        ]
+        ],
+        width=300, height=60,
     )
     pmap = PseudonymMap()
-    result = strip_from_ocr(img, ocr, pipeline, pmap)
+    result = strip_from_page(img, page, pipeline, pmap)
 
     assert [r.entity_type for r in result.spans] == ["EMAIL_ADDRESS"]
     # The email's pixels are gone...
@@ -52,19 +57,20 @@ def test_strip_from_ocr_paints_over_pii_pixels(pipeline):
     assert pmap.placeholder_for("EMAIL_ADDRESS", "olga@example.com") == "EMAIL_1"
 
 
-def test_strip_from_ocr_consistent_placeholder_across_lines(pipeline):
+def test_strip_from_page_consistent_placeholder_across_lines(pipeline):
     boxes = [Box(10, 10, 120, 12), Box(10, 40, 120, 12)]
     img = Image.new("RGB", (200, 70), "white")
     for b in boxes:
         ImageDraw.Draw(img).rectangle((b.left, b.top, b.right, b.bottom), fill=RED)
-    ocr = assemble(
+    page = _page(
         [
             [("olga@example.com", boxes[0], 90.0)],
             [("olga@example.com", boxes[1], 90.0)],
-        ]
+        ],
+        width=200, height=70,
     )
     pmap = PseudonymMap()
-    result = strip_from_ocr(img, ocr, pipeline, pmap)
+    result = strip_from_page(img, page, pipeline, pmap)
 
     assert len(result.spans) == 2
     assert len(pmap) == 1  # one placeholder, both occurrences
@@ -146,126 +152,61 @@ def test_grow_clamps_to_image_bounds():
     assert grown == Box(left=93, top=43, width=7, height=7)
 
 
-# --- strip_from_page: the OcrPage seam and the per-block feed --------------
+# --- strip_from_page: the whole page reaches the recognizer as one string --
 
 
-def _page(blocks, lines):
-    from pii.core.ocr_page import OcrFrame, build_layout_page
-
-    return build_layout_page(
-        blocks, lines, OcrFrame(width=400, height=200, page=1)
-    )
-
-
-def _block(id, top, height, kind="text"):
-    from pii.core.ocr_page import OcrBlock
-
-    return OcrBlock(id=id, kind=kind, origin="detected",
-                    box=Box(0, top, 400, height), reading_order=id, page_id=1)
-
-
-def _label_value_page():
-    """A context word ('BSB') in one block, the value it promotes in the
-    next — the shape that separates the two feeds."""
-    lines = [
-        (Box(10, 10, 60, 20), [("BSB", Box(10, 10, 60, 20))], 90.0),
-        (Box(10, 110, 120, 20), [("014-936", Box(10, 110, 120, 20))], 90.0),
-    ]
-    return _page([_block(0, 0, 60), _block(1, 60, 140)], lines)
-
-
-def test_strip_from_page_page_feed_matches_the_flat_path(pipeline):
+def test_context_promotes_across_lines_on_the_whole_page(pipeline):
+    # 'BSB' one line above the digits it promotes. The page is fed to the
+    # recognizer whole, so the promotion fires — this is what the retired
+    # per-block feed gave up, and why it is not coming back without evidence.
     img = Image.new("RGB", (400, 200), "white")
-    page = _page(
-        [_block(0, 0, 200)],
-        [(Box(10, 10, 260, 20),
-          [("Contact", Box(10, 10, 80, 20)),
-           ("olga@example.com", Box(100, 10, 170, 20))], 90.0)],
-    )
-    result = strip_from_page(img, page, pipeline, PseudonymMap(), feed="page")
-    assert [r.entity_type for r in result.spans] == ["EMAIL_ADDRESS"]
-    span = result.spans[0]
-    assert result.ocr.text[span.start : span.end] == "olga@example.com"
+    page = _page([
+        [("BSB", Box(10, 10, 60, 20), 90.0)],
+        [("014-936", Box(10, 110, 120, 20), 90.0)],
+    ])
+    result = strip_from_page(img, page, pipeline, PseudonymMap())
+    assert [r.entity_type for r in result.spans] == ["AU_BSB"]
 
 
-def test_blocks_feed_detects_within_a_block(pipeline):
-    # Isolation must not cost anything when the evidence is inside one block.
+def test_spans_address_the_page_text(pipeline):
     img = Image.new("RGB", (400, 200), "white")
-    page = _page(
-        [_block(0, 0, 60), _block(1, 60, 140)],
-        [
-            (Box(10, 10, 60, 20), [("Hello", Box(10, 10, 60, 20))], 90.0),
-            (Box(10, 110, 260, 20),
-             [("Contact", Box(10, 110, 80, 20)),
-              ("olga@example.com", Box(100, 110, 170, 20))], 90.0),
-        ],
-    )
-    result = strip_from_page(img, page, pipeline, PseudonymMap(), feed="blocks")
+    page = _page([
+        [("Hello", Box(10, 10, 60, 20), 90.0)],
+        [("Contact", Box(10, 110, 80, 20), 90.0),
+         ("olga@example.com", Box(100, 110, 170, 20), 90.0)],
+    ])
+    result = strip_from_page(img, page, pipeline, PseudonymMap())
     assert [r.entity_type for r in result.spans] == ["EMAIL_ADDRESS"]
-    # Offsets address the rebased page text, not the block's own.
     span = result.spans[0]
     assert result.ocr.text[span.start : span.end] == "olga@example.com"
     assert result.ocr.text == "Hello\nContact olga@example.com"
 
 
-def test_blocks_feed_isolates_context_across_a_block_boundary(pipeline):
-    # The measured COST of full isolation, pinned rather than papered over:
-    # 'BSB' promotes the digits below it into AU_BSB (+ context score) when
-    # the page is fed whole, and nothing at all when the label and the value
-    # are separate blocks. Grouping heuristics are deliberately absent until
-    # the real-corpus numbers say which ones are worth it.
+def test_placeholders_are_numbered_in_document_order(pipeline):
     img = Image.new("RGB", (400, 200), "white")
-    page = _label_value_page()
-    whole = strip_from_page(img, page, pipeline, PseudonymMap(), feed="page")
-    assert [r.entity_type for r in whole.spans] == ["AU_BSB"]
-    per_block = strip_from_page(img, page, pipeline, PseudonymMap(),
-                                feed="blocks")
-    assert per_block.spans == []
-
-
-def test_blocks_feed_numbers_placeholders_in_document_order(pipeline):
-    img = Image.new("RGB", (400, 200), "white")
-    page = _page(
-        [_block(0, 0, 60), _block(1, 60, 140)],
-        [
-            (Box(10, 10, 170, 20),
-             [("first@example.com", Box(10, 10, 170, 20))], 90.0),
-            (Box(10, 110, 180, 20),
-             [("second@example.com", Box(10, 110, 180, 20))], 90.0),
-        ],
-    )
+    page = _page([
+        [("first@example.com", Box(10, 10, 170, 20), 90.0)],
+        [("second@example.com", Box(10, 110, 180, 20), 90.0)],
+    ])
     pmap = PseudonymMap()
-    result = strip_from_page(img, page, pipeline, pmap, feed="blocks")
+    result = strip_from_page(img, page, pipeline, pmap)
     assert len(result.spans) == 2
     assert pmap.placeholder_for("EMAIL_ADDRESS", "first@example.com") == "EMAIL_1"
     assert pmap.placeholder_for("EMAIL_ADDRESS", "second@example.com") == "EMAIL_2"
 
 
-def test_blocks_feed_paints_the_right_pixels(pipeline):
+def test_strip_from_page_paints_only_the_detected_pixels(pipeline):
     email_box = Box(left=100, top=110, width=170, height=20)
     img = Image.new("RGB", (400, 200), "white")
     ImageDraw.Draw(img).rectangle(
         (email_box.left, email_box.top, email_box.right, email_box.bottom),
         fill=RED,
     )
-    page = _page(
-        [_block(0, 0, 60), _block(1, 60, 140)],
-        [
-            (Box(10, 10, 60, 20), [("Hello", Box(10, 10, 60, 20))], 90.0),
-            (Box(10, 110, 260, 20),
-             [("Contact", Box(10, 110, 80, 20)),
-              ("olga@example.com", email_box)], 90.0),
-        ],
-    )
-    result = strip_from_page(img, page, pipeline, PseudonymMap(), feed="blocks")
+    page = _page([
+        [("Hello", Box(10, 10, 60, 20), 90.0)],
+        [("Contact", Box(10, 110, 80, 20), 90.0),
+         ("olga@example.com", email_box, 90.0)],
+    ])
+    result = strip_from_page(img, page, pipeline, PseudonymMap())
     assert RED not in _colors(result.image, email_box)
     assert _colors(result.image, Box(10, 10, 60, 20)) == {(255, 255, 255)}
-
-
-def test_strip_from_page_rejects_an_unknown_feed(pipeline):
-    import pytest
-
-    with pytest.raises(ValueError, match="unknown feed"):
-        strip_from_page(Image.new("RGB", (10, 10), "white"),
-                        _label_value_page(), pipeline, PseudonymMap(),
-                        feed="columns")

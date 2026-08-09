@@ -77,7 +77,7 @@ def paint_segments(
                     f"skipping degenerate paint box for {seg.label!r}: "
                     f"raw={box} grown={grown} on {out.width}x{out.height} "
                     "image — PII pixels for this span may survive; check "
-                    "OcrResult.painted_boxes_for_span geometry",
+                    "RecognizerInput.painted_boxes_for_span geometry",
                     RuntimeWarning,
                     stacklevel=2,
                 )

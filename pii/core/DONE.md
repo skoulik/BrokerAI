@@ -1442,3 +1442,70 @@ the move; new completed tasks append to the matching section with their records.
       disambiguation first (surname stems recur inside kept business names). Remaining
       image-tier work (degradation pipeline, reportlab layout source, bbox truth) stays in
       [TODO.md](TODO.md).)*
+
+- [x] **Retire the segmenter layer; layer 0 becomes the default detector** *(2026-08-09,
+      Sergei's call, taken on the VLM report's numbers —
+      [reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md).
+      Current design in [ARCHITECTURE.md](ARCHITECTURE.md) "OCR perception layer" and
+      "Layer 0"; this record is the before/after.*
+
+      **What went.** `ocr_doclayout.py` (PP-DocLayoutV3) and `ocr_ppstructure.py`
+      (PP-StructureV3) with their tests; `OcrBlock`, `OcrLine.block_id`, `build_layout_page`,
+      `_assign` and the orphan-clustering machinery; the per-block recognizer feed
+      (`linearize_blocks`, `rebase`, `--feed` on both `pii` and `pii_eval`); and — a separate
+      redundancy the segmenter had been hiding — the entire flat path (`get_ocr`,
+      `OCR_BACKENDS`, `ocr.OcrWord`, `OcrResult`, `assemble`, `worker_ocr`, `make_paddle_ocr`,
+      `ocr_image_paddle`, `result_to_ocr`, `strip_from_ocr`), whose
+      `boxes_for_span`/`painted_boxes_for_span` were a near-line-for-line duplicate of
+      `RecognizerInput`'s. ~1,700 lines of source and tests. The three layout model
+      directories under `models/paddlex/official_models` (`PP-DocLayoutV3`,
+      `PP-DocLayout_plus-L`, `PP-DocBlockLayout`, 375 MB) were deleted with them.
+
+      **Why.** The whole segmenter existed to reconstruct page structure a VLM reads
+      natively, so once layer 0 became the detector it had no consumer. It was also never a
+      net win on its own axis: on the 31-page real corpus `doclayout:v3 + --feed blocks`
+      scored 8 critical leaks against the line-only path's 9 — it *traded* leaks rather than
+      removing them — and the repayment plan for its known regression (table-cell structure →
+      per-cell feeding → a perception-hierarchy change) was a large programme. Retiring it
+      also closes six open TODO items and restores `_rows` column banding, which fixes the
+      `d11.p2` account-number leak that was live in the shipping default (the panel's label
+      and value land on one assembled line again, so context promotion fires). The adapters
+      are one revert away in git history — the same disposition as Tesseract and Surya.
+
+      **Stale-doc correction found on the way.** `TODO.md` claimed the flat `OcrResult` path
+      was "the only configuration that still bands columns into visual rows". It was not:
+      `ocr_page_paddle` → `build_page(_result_to_rows(...))` goes through the same `_rows`
+      banding. The flat path was reachable-only-by-routing, not behaviourally distinct, which
+      is what made deleting it free.
+
+      **Layer-1 refinement, built in the same change** (the TODO item "Layer-1 refinement of
+      VLM findings", step 2, previously designed-not-built). `PiiPipeline.merge_detections`
+      runs an ordinary layer-1 pass over the same OCR text and merges it with the located
+      layer-0 spans; `_rank` gained a middle tier so a specific class outranks
+      `IDENTIFIER_GENERIC` outranks the `*_INVALID` shadows. That yields refine/validate/union
+      with no new merge machinery. Layer-0 spans are also put through `_in_strip_plan` first —
+      found while wiring it: the VLM path had been stripping **every** ORGANIZATION,
+      ignoring the kept-ORGANIZATION policy, because `strip_from_vlm` never consulted the
+      pipeline at all. Merchant and bank names are kept again, and `--strip-orgs` works.
+
+      **Seam fix, also found while wiring it.** `strip_pdf`'s VLM branch re-entered
+      `strip_image`, which resolves its own OCR engine — so the engine was resolved per page
+      and the pdf-mode test seam was silently bypassed (a monkeypatched fake never applied and
+      real paddle ran). The detector/geometry dispatch now lives once in
+      `image_mode.strip_rendered_page`, which takes an already-resolved engine; `strip_pdf`
+      resolves it once per document and skips it entirely under `--geometry vlm`.
+
+      **Defaults flipped:** `--detector vlm --geometry ocr` for `strip --image`/`--pdf` and
+      for `pii_eval score --modality image/pdf`; `--ocr-backend` collapses to the paddle tiers
+      and defaults to `paddle` (v6_medium). Text and CSV input has no page image, so it
+      resolves to `layers` — only an explicit `--detector vlm` on text input is an error.
+      Consequence accepted knowingly: image/PDF runs now need a llama-server and cost minutes
+      per page. `pii_eval`'s read-back engine is pinned to the default tier regardless
+      (`reread_engine`), because the model under test must not be its own scorer.
+
+      **Ported rather than deleted:** `pii_eval/ocr_report.py` moved off the flat API to
+      `get_ocr_page` + a local `_Word` record (the perception layer carries no per-word
+      confidence — paddle scores lines), closing the migration debt TODO.md had recorded;
+      `tests/pii/core/test_ocr.py` was deleted as a full duplicate of `test_linearization.py`.
+      Fast suite 266 green (was 316 before ~50 tests went with the deleted modules), and it
+      dropped from 23 s to 6.7 s once the pdf-mode seam stopped loading real paddle.)*

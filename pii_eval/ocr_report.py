@@ -36,12 +36,14 @@ import json
 import sys
 import time
 from collections import Counter
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 
 from PIL import ImageFont
 
-from pii.core.ocr import OcrResult, OcrWord, get_ocr
+from pii.core.ocr import Box, get_ocr_page
+from pii.core.ocr_page import OcrPage
 from pii_eval.render import (
     MONO_FONTS,
     PROPORTIONAL_FONTS,
@@ -77,16 +79,42 @@ def _squash(s: str) -> str:
     return "".join(c for c in s.casefold() if c.isalnum())
 
 
-def visual_lines(result: OcrResult) -> list[list[OcrWord]]:
+@dataclass(frozen=True)
+class _Word:
+    """One measured word: what this report needs out of an OcrPage. Kept
+    local because the perception layer carries no per-word confidence — the
+    engine scores LINES — and no assembly index."""
+
+    text: str
+    box: Box
+    conf: float
+    line: int  # index of the engine line the word came from
+
+
+def page_words(page: OcrPage) -> list[_Word]:
+    """Flatten an OcrPage into measured words. Every word of a line carries
+    that line's confidence, which is the resolution paddle actually reports
+    (a documented semantic difference from Tesseract's per-word conf)."""
+    return [
+        _Word(text=w.text, box=w.box, conf=ln.conf or 0.0, line=i)
+        for i, ln in enumerate(page.lines)
+        for w in ln.words
+    ]
+
+
+def visual_lines(words: list[_Word]) -> list[list[_Word]]:
     """Re-bucket OCR words into visual lines by box geometry.
 
     Words sorted by vertical center, grouped while the center stays
     within half a word-height of the group's running mean (page renders
     put ≥1.35 line-heights between baselines, so real lines are far
     apart), then each group sorted left-to-right.
+
+    Deliberately independent of the engine's own line grouping, so
+    `resegmented_lines` can measure the difference between the two.
     """
-    words = sorted(result.words, key=lambda w: w.box.top + w.box.height / 2)
-    lines: list[list[OcrWord]] = []
+    words = sorted(words, key=lambda w: w.box.top + w.box.height / 2)
+    lines: list[list[_Word]] = []
     centers: list[float] = []
     heights: list[float] = []
     for w in words:
@@ -225,12 +253,12 @@ def _conf_bin(conf: float) -> int:
     return min(max(int(conf) // 10, 0), 9)
 
 
-def score_page(truth_text: str, ocr: OcrResult) -> dict:
+def score_page(truth_text: str, words: list[_Word]) -> dict:
     """Align OCR output against the exact drawn text; return the cell's
     fidelity stats. CER can exceed 1.0 at garbage sizes (spurious output
     counts as insertions against the truth-char denominator)."""
     tlines = _norm_lines(truth_text)
-    vlines = visual_lines(ocr)
+    vlines = visual_lines(words)
     olines = [" ".join(w.text for w in line) for line in vlines]
     pairs, lost, spurious = align_lines(tlines, olines)
 
@@ -241,7 +269,7 @@ def score_page(truth_text: str, ocr: OcrResult) -> dict:
     char_errors = 0
     word_errors = 0
 
-    def _tally(word: OcrWord, ok: bool) -> None:
+    def _tally(word: _Word, ok: bool) -> None:
         key = "correct" if ok else "error"
         conf_hist[key][_conf_bin(word.conf)] += 1
         conf_sums[key][0] += word.conf
@@ -291,7 +319,7 @@ def score_page(truth_text: str, ocr: OcrResult) -> dict:
         "truth_words": truth_words,
         "truth_lines": len(tlines),
         "visual_lines": len(vlines),
-        "tsv_lines": len({w.line for w in ocr.words}),
+        "tsv_lines": len({w.line for w in words}),
         "resegmented_lines": sum(
             1 for line in vlines if len({w.line for w in line}) > 1
         ),
@@ -332,7 +360,7 @@ def run(
     seeds = seeds or [42, 7, 123]
     fonts = fonts or ALL_FONTS
     sizes = sizes or SIZES
-    ocr = get_ocr(ocr_backend)
+    ocr = get_ocr_page(ocr_backend)
     out_path = Path(out or default_out(ocr_backend))
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -370,7 +398,7 @@ def run(
                             continue
                         t0 = time.time()
                         page = render_page(text, font_name, size)
-                        stats = score_page(text, ocr(page))
+                        stats = score_page(text, page_words(ocr(page)))
                         row = {
                             "backend": ocr_backend,
                             "seed": seed,

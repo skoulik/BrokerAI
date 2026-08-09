@@ -44,11 +44,22 @@ def _derive_map(input_path: str) -> str:
 
 
 def _build_detector(args):
-    """Construct the layer-0 VLM detector, or None for the default layers path.
+    """Construct the layer-0 VLM detector, or None for the layers path.
 
-    Imported lazily so the default path never pays for it, and so a missing
-    model server only breaks runs that actually asked for one."""
-    if getattr(args, "detector", "layers") != "vlm":
+    Only --image/--pdf have a detector at all: text and CSV input is already
+    text, so there is no page for a vision model to read. `--detector` is
+    therefore resolved per mode — vlm for media, layers for text — and only an
+    EXPLICIT `--detector vlm` on text input is an error.
+
+    Imported lazily, so a missing model server only breaks runs that actually
+    reach for one."""
+    media = getattr(args, "image", False) or getattr(args, "pdf", False)
+    detector = getattr(args, "detector", None)
+    if detector is None:
+        detector = "vlm" if media else "layers"
+    elif detector == "vlm" and not media:
+        raise SystemExit("--detector vlm requires --image or --pdf")
+    if detector != "vlm":
         if getattr(args, "geometry", "ocr") != "ocr":
             raise SystemExit(
                 "--geometry is only meaningful with --detector vlm: the "
@@ -56,8 +67,6 @@ def _build_detector(args):
                 "of their own"
             )
         return None
-    if not (getattr(args, "image", False) or getattr(args, "pdf", False)):
-        raise SystemExit("--detector vlm requires --image or --pdf")
 
     from pii.core.vlm import DEFAULT_URL, VlmDetector
 
@@ -122,7 +131,10 @@ def _page_progress(number: int, count: int) -> None:
 def _debug(args) -> int:
     """`pii debug ocr`: OCR the selected page(s) into OcrPage(s) and dump them
     (json/text) or annotate the raster(s) (overlay). PDFs default to all pages;
-    overlay to a `.pdf` output reconstructs a fresh image-only PDF like strip."""
+    overlay to a `.pdf` output reconstructs a fresh image-only PDF like strip.
+
+    This shows the geometry the strip path paints with, so a value missing
+    from these lines is a value `--geometry ocr` cannot redact."""
     import json
     from dataclasses import replace
 
@@ -187,7 +199,7 @@ def _strip_media(args, pipeline, detector):
 
         pmap = PseudonymMap(args.map)
         result = strip_image(Image.open(args.input), pipeline, pmap,
-                             ocr_backend=args.ocr_backend, feed=args.feed,
+                             ocr_backend=args.ocr_backend,
                              detector=detector,
                              geometry=getattr(args, "geometry", "ocr"))
         result.image.save(args.output)
@@ -217,7 +229,6 @@ def _strip_media(args, pipeline, detector):
         result = strip_pdf(args.input, pipeline, pmap, args.output,
                            dpi=args.dpi or DEFAULT_DPI,
                            ocr_backend=args.ocr_backend,
-                           feed=args.feed,
                            progress=progress,
                            detector=detector,
                            geometry=getattr(args, "geometry", "ocr"))
@@ -284,31 +295,21 @@ def main(argv=None) -> int:
         help="page render resolution for --pdf mode (default 300)",
     )
     p_strip.add_argument(
-        "--ocr-backend", choices=list(OCR_PAGE_BACKENDS),
-        default="doclayout:v3",
-        help="OCR engine for --image/--pdf modes (PaddleOCR; default "
-             "doclayout:v3 = PP-DocLayoutV3 layout blocks + PP-OCRv6_medium "
-             "lines). ppstructure is the other layout backend; the paddle "
-             "tiers are line-only (paddle = v6_medium). Models download to "
+        "--ocr-backend", choices=list(OCR_PAGE_BACKENDS), default="paddle",
+        help="PaddleOCR model tier supplying the GEOMETRY in --image/--pdf "
+             "modes (default paddle = PP-OCRv6_medium). Models download to "
              "models/paddlex on first use. On the GPU paddle wheel the engine "
-             "runs in a worker subprocess (it cannot share a process with the "
-             "NER model); the CPU wheel runs it in-process.",
+             "runs in a worker subprocess (it cannot share a process with "
+             "torch); the CPU wheel runs it in-process.",
     )
     p_strip.add_argument(
-        "--feed", choices=["page", "blocks"], default="blocks",
-        help="what the recognizer is fed in --image/--pdf modes: blocks "
-             "(default; one recognizer call per detected layout block — no "
-             "pattern, context word or NER window reaches across a block "
-             "boundary) or page (the whole page as one string). A line-only "
-             "backend has one block per line, so pair blocks with a layout "
-             "backend",
-    )
-    p_strip.add_argument(
-        "--detector", choices=["layers", "vlm"], default="layers",
-        help="what finds the PII in --image/--pdf modes: layers (default; "
-             "pattern + checksum recognizers and the NER model over OCR text) "
-             "or vlm (a local vision LLM reads the page image directly and "
-             "produces the plan itself, replacing both layers). EXPERIMENTAL",
+        "--detector", choices=["layers", "vlm"], default=None,
+        help="what finds the PII in --image/--pdf modes: vlm (the default "
+             "there; a local vision LLM reads the page image and names the "
+             "values, which layer 1 then refines, validates and extends) or "
+             "layers (pattern + checksum recognizers and the NER model over "
+             "OCR text only). vlm needs a llama-server — see --vlm-url. Text "
+             "and CSV input always uses layers",
     )
     p_strip.add_argument(
         "--geometry", choices=["ocr", "vlm"], default="ocr",
@@ -316,13 +317,14 @@ def main(argv=None) -> int:
              "(default; each detected value is located in the OCR text and "
              "painted with exact word boxes — OCR still runs) or vlm (the "
              "model's own boxes; OCR never runs, faster but measured UNSAFE — "
-             "16%% of boxes clip by >20px, stochastically). Only valid with "
-             "--detector vlm",
+             "16%% of boxes clip by >20px, stochastically, so it is a "
+             "comparison instrument, not a production option). Only valid "
+             "with --detector vlm",
     )
     p_strip.add_argument(
         "--vlm-url", default=None,
-        help="llama-server base URL for --detector vlm "
-             "(default http://localhost:8080)",
+        help="llama-server base URL for --detector vlm (default "
+             "http://localhost:8080, or $PII_VLM_URL)",
     )
     p_strip.add_argument(
         "--columns",
@@ -377,7 +379,7 @@ def main(argv=None) -> int:
     debug_sub = p_debug.add_subparsers(dest="debug_command", required=True)
     p_debug_ocr = debug_sub.add_parser(
         "ocr", help="OCR a page and dump/annotate the OcrPage "
-                    "(blocks, lines, reading order)"
+                    "(lines, words, assembly order)"
     )
     p_debug_ocr.add_argument("input", help="image or PDF file")
     p_debug_ocr.add_argument(
@@ -390,12 +392,8 @@ def main(argv=None) -> int:
              "overlay (annotated raster; requires -o) (default json)",
     )
     p_debug_ocr.add_argument(
-        "--ocr-backend", choices=list(OCR_PAGE_BACKENDS),
-        default="doclayout:v3",
-        help="OcrPage backend: doclayout:v3 (PP-DocLayoutV3 blocks + model "
-             "reading order), ppstructure (PP-StructureV3 — typed blocks + "
-             "pipeline reading order) or the paddle line-only tiers (default "
-             "doclayout:v3)",
+        "--ocr-backend", choices=list(OCR_PAGE_BACKENDS), default="paddle",
+        help="PaddleOCR model tier (default paddle = PP-OCRv6_medium)",
     )
     p_debug_ocr.add_argument(
         "--page", type=int, default=None,

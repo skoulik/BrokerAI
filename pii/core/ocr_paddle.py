@@ -1,10 +1,10 @@
-"""PaddleOCR adapter: image -> OcrResult (the engine-neutral interchange).
+"""PaddleOCR adapter: image -> OcrPage (the perception layer).
 
-The OCR engine behind the `pii.core.ocr.get_ocr` seam (Tesseract was the
+The OCR engine behind the `pii.core.ocr.get_ocr_page` seam (Tesseract was the
 first backend, retired 2026-07-17). PaddleOCR is line-oriented: detection finds text-line regions
 anywhere on the page (no page-layout model), recognition returns one
 string + one confidence per region. Normalization into per-word
-OcrResult follows the 2026-07-16 review findings (record in DONE.md):
+geometry follows the 2026-07-16 review findings (record in DONE.md):
 
 - `rec_texts` line strings are authoritative for the assembled text.
   The `return_word_box` fragments have unreliable boundaries (merged
@@ -42,8 +42,8 @@ OcrResult follows the 2026-07-16 review findings (record in DONE.md):
   GLiNER2's `models/hf-cache`).
 - On the GPU wheel, torch and paddle cannot share a Windows process, so
   the full pipeline drives paddle through a persistent worker subprocess
-  (pii/core/ocr_worker.py); `make_paddle_ocr` picks worker vs in-process
-  by wheel. See that module and the get_ocr seam.
+  (pii/core/ocr_worker.py); `get_ocr_page` picks worker vs in-process by
+  wheel. See that module and the seam in pii/core/ocr.py.
 """
 
 import os
@@ -55,12 +55,10 @@ from PIL import Image
 
 from pii.core.ocr import (
     Box,
-    OcrResult,
     _interpolate,
     _rows,
     _to_box,
     _union,
-    assemble,
 )
 from pii.core.ocr_page import OcrFrame, OcrPage, build_page
 
@@ -132,11 +130,13 @@ def _stub_torch() -> None:
     stub.__pii_stub__ = True
     stub.__version__ = "2.0.0+pii.stub"
     stub.__path__ = []
-    # scipy/sklearn (pulled in by paddlex[ocr] for PP-StructureV3) probe
-    # `issubclass(x, torch.Tensor)`; the __getattr__ sink returns an
-    # _Anything instance, not a class -> TypeError. Present Tensor as a real
-    # empty class so the check cleanly returns False (no tensors live in a
-    # torch-stubbed process). Verified 2026-07-24.
+    # scipy/sklearn probe `issubclass(x, torch.Tensor)`; the __getattr__ sink
+    # returns an _Anything instance, not a class -> TypeError. Present Tensor
+    # as a real empty class so the check cleanly returns False (no tensors
+    # live in a torch-stubbed process). Verified 2026-07-24. Added for the
+    # paddlex[ocr] extras PP-StructureV3 needed; kept after that backend was
+    # retired (2026-08-09) because the extras may still be installed and a
+    # stub that answers one more probe costs nothing.
     stub.Tensor = type("Tensor", (), {})
     dist = _sub("torch.distributed")
     dist.is_available = lambda: False
@@ -188,26 +188,6 @@ def _engine(tier: str = DEFAULT_TIER):
     )
 
 
-def make_paddle_ocr(tier: str = DEFAULT_TIER):
-    """Resolve a tier to an `(image, lang=...) -> OcrResult` callable.
-
-    On the GPU wheel, torch and paddle cannot share a process (module
-    docstring), so OCR is routed through a persistent worker subprocess —
-    the pipeline runs GLiNER2 on torch in-process, and this keeps paddle
-    out of it. On the CPU wheel, paddle coexists with torch (torch just
-    has to import first, which the pipeline already does), so OCR runs
-    in-process — no IPC, and the torch-free fidelity sweep stays fast.
-    The choice is by wheel, not by whether torch happens to be loaded yet,
-    so it never depends on call ordering."""
-    if _gpu_wheel():
-        from pii.core.ocr_worker import worker_ocr
-
-        return lambda image, lang="eng": worker_ocr(tier, image)
-    from functools import partial
-
-    return partial(ocr_image_paddle, tier=tier)
-
-
 def _predict(image: Image.Image, tier: str) -> dict:
     """Run the engine on one image; return the raw PaddleOCR page dict.
 
@@ -220,19 +200,11 @@ def _predict(image: Image.Image, tier: str) -> dict:
     return dict(_engine(tier).predict(bgr, return_word_box=True)[0])
 
 
-def ocr_image_paddle(
-    image: Image.Image, lang: str = "eng", tier: str = DEFAULT_TIER
-) -> OcrResult:
-    """OCR a PIL image with PaddleOCR into an OcrResult (retiring path)."""
-    return result_to_ocr(_predict(image, tier))
-
-
 def ocr_page_paddle(
     image: Image.Image, lang: str = "eng", tier: str = DEFAULT_TIER
 ) -> OcrPage:
-    """OCR a PIL image with PaddleOCR into an OcrPage — line-only perception
-    (one synthetic block per line). Same engine call as ocr_image_paddle;
-    the frame records the raster size and which model produced it."""
+    """OCR a PIL image with PaddleOCR into an OcrPage. The frame records the
+    raster size and which model produced it."""
     frame = OcrFrame(
         width=image.width, height=image.height, page=1,
         backend="paddle", tier=tier,
@@ -244,13 +216,8 @@ def _result_lines(result: dict):
     """Paddle OCR result -> flat `(line_box, words[(word, box)], conf)` list,
     one entry per recognized region, in the engine's own order.
 
-    The line/word normalization (`_region_words`) in exactly one place. Every
-    consumer of a paddle-shaped OCR result goes through here: the line-only
-    path bands these into visual rows (`_result_to_rows`), and the layout
-    backends hand them to `build_layout_page` unbanded — a layout model's
-    blocks already group the lines, so re-banding them by y-centre would
-    fight it. PP-Structure's `overall_ocr_res` has the same shape, so it
-    shares this too (ocr_ppstructure.py)."""
+    The line/word normalization (`_region_words`) in exactly one place;
+    `_result_to_rows` then bands these regions into visual rows."""
     texts = result.get("rec_texts") or []
     scores = result.get("rec_scores") or []
     boxes = result.get("rec_boxes")
@@ -276,26 +243,23 @@ def _result_lines(result: dict):
 
 
 def _result_to_rows(result: dict):
-    """Shared paddle-result -> assembled visual rows: `_result_lines` plus
-    y-center banding. Both result_to_ocr (-> OcrResult, retiring) and
-    result_to_page (-> OcrPage) consume it. Each word carries its region
-    (line) box: the fragment boxes are inset from the glyphs, so painting
-    grows out to it."""
+    """Paddle result -> assembled visual rows: `_result_lines` plus y-center
+    banding. Each word carries its region (line) box: the fragment boxes are
+    inset from the glyphs, so painting grows out to it.
+
+    The banding is load-bearing, not cosmetic — it is what puts a label and
+    its value from two side-by-side detection regions onto ONE assembled
+    line, which is how context promotion reaches an account number sitting in
+    a column beside its own label."""
     return _rows([
         (line_box, [(w, b, conf, line_box) for w, b in words])
         for line_box, words, conf in _result_lines(result)
     ])
 
 
-def result_to_ocr(result: dict) -> OcrResult:
-    """Pure conversion of one PaddleOCR page result into OcrResult."""
-    return assemble(_result_to_rows(result))
-
-
 def result_to_page(result: dict, frame: OcrFrame) -> OcrPage:
-    """Pure conversion of one PaddleOCR page result into an OcrPage — the
-    line-only perception: one synthetic block per line (paddle has no layout
-    model). `frame` supplies the raster/provenance the raw result lacks."""
+    """Pure conversion of one PaddleOCR page result into an OcrPage.
+    `frame` supplies the raster/provenance the raw result lacks."""
     return build_page(_result_to_rows(result), frame)
 
 

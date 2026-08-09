@@ -14,7 +14,7 @@ import pytest
 from PIL import Image
 
 from pii.core.mapping import PseudonymMap
-from pii.core.ocr import Box, OcrResult, OcrWord
+from pii.core.ocr import Box
 from pii.core.vlm import (
     TYPE_MAP,
     VlmDetector,
@@ -187,23 +187,17 @@ def test_repeated_value_maps_to_successive_occurrences():
 # --------------------------------------------------------------- geometry
 
 
-def _ocr(text: str) -> OcrResult:
-    """One word per token, laid out left to right on a single line."""
-    words, cursor, x = [], 0, 0
+def _ocr(text: str):
+    """One word per token, laid out left to right on a single line, through
+    the real perception -> linearization seam."""
+    from pii.core.linearization import linearize
+    from pii.core.ocr_page import OcrFrame, build_page
+
+    row, x = [], 0
     for token in text.split(" "):
-        words.append(
-            OcrWord(
-                text=token,
-                box=Box(x, 0, 10 * len(token), 12),
-                conf=99.0,
-                line=0,
-                char_start=cursor,
-                char_end=cursor + len(token),
-            )
-        )
-        cursor += len(token) + 1
+        row.append((token, Box(x, 0, 10 * len(token), 12), 99.0))
         x += 10 * len(token) + 10
-    return OcrResult(text=text, words=words)
+    return linearize(build_page([row], OcrFrame(width=x, height=12, page=1)))
 
 
 def _has_non_background(image, box) -> bool:
@@ -217,7 +211,7 @@ def _has_non_background(image, box) -> bool:
     return any(px != (255, 255, 255) for px in crop.getdata())
 
 
-def test_ocr_geometry_paints_ocr_word_boxes():
+def test_ocr_geometry_paints_ocr_word_boxes(pipeline):
     from pii.core.image_mode import strip_from_vlm
 
     image = Image.new("RGB", (400, 40), "white")
@@ -225,6 +219,7 @@ def test_ocr_geometry_paints_ocr_word_boxes():
     result = strip_from_vlm(
         image,
         [VlmFinding(text="SERGEI KULIK", entity_type="PERSON")],
+        pipeline,
         PseudonymMap(),
         ocr=ocr,
     )
@@ -234,26 +229,28 @@ def test_ocr_geometry_paints_ocr_word_boxes():
     assert result.ocr is ocr
 
 
-def test_unlocatable_value_warns_and_is_not_silently_dropped():
+def test_unlocatable_value_warns_and_is_not_silently_dropped(pipeline):
     from pii.core.image_mode import strip_from_vlm
 
     with pytest.warns(RuntimeWarning, match="could not be located"):
         result = strip_from_vlm(
             Image.new("RGB", (200, 40), "white"),
             [VlmFinding(text="NOT ON THE PAGE", entity_type="PERSON")],
+            pipeline,
             PseudonymMap(),
             ocr=_ocr("something else entirely"),
         )
     assert result.spans == []
 
 
-def test_vlm_geometry_needs_no_ocr_and_scales_boxes():
+def test_vlm_geometry_needs_no_ocr_and_scales_boxes(pipeline):
     from pii.core.image_mode import strip_from_vlm
 
     image = Image.new("RGB", (1000, 1000), "white")
     result = strip_from_vlm(
         image,
         [VlmFinding(text="X", entity_type="PERSON", box=(100, 200, 300, 260))],
+        pipeline,
         PseudonymMap(),
         ocr=None,
         pad=0,
@@ -265,12 +262,13 @@ def test_vlm_geometry_needs_no_ocr_and_scales_boxes():
     assert not _has_non_background(result.image, (400, 400, 900, 900))
 
 
-def test_vlm_geometry_skips_findings_without_a_box():
+def test_vlm_geometry_skips_findings_without_a_box(pipeline):
     from pii.core.image_mode import strip_from_vlm
 
     result = strip_from_vlm(
         Image.new("RGB", (100, 100), "white"),
         [VlmFinding(text="X", entity_type="PERSON", box=None)],
+        pipeline,
         PseudonymMap(),
         ocr=None,
     )
@@ -284,3 +282,85 @@ def test_identifier_generic_is_stripped_and_has_a_placeholder():
     assert "IDENTIFIER_GENERIC" in DEFAULT_STRIP_ENTITIES
     assert PLACEHOLDER_PREFIXES["IDENTIFIER_GENERIC"] == "ID"
     assert PseudonymMap().placeholder_for("IDENTIFIER_GENERIC", "1938563911") == "ID_1"
+
+
+# ------------------------------------------------ layer-1 refinement (step 2)
+#
+# The VLM emits ONE coarse identifier class on purpose; layer 1 is what turns
+# a digit run into TFN/Medicare/ABN/BSB/account/card, restores the checksum
+# shadows, and backstops what the model missed. All model-free: the stubbed
+# GLiNER2 emits nothing, so what these assert is layer 1 alone.
+
+VALID_TFN = "291 417 774"      # passes TFN mod-11 (mirrors test_invalid.py)
+INVALID_TFN = "291 417 775"    # single-digit typo
+
+
+def _strip(findings, text, pipeline, pmap=None):
+    from pii.core.image_mode import strip_from_vlm
+
+    ocr = _ocr(text)
+    result = strip_from_vlm(
+        Image.new("RGB", (900, 40), "white"), findings, pipeline,
+        pmap or PseudonymMap(), ocr=ocr,
+    )
+    return result, ocr
+
+
+def test_layer1_refines_identifier_generic_into_its_checksummed_class(pipeline):
+    # The whole point of the coarse class: the model says "this is an
+    # identifier", layer 1 says WHICH — so the placeholder is TFN_1, not ID_1.
+    pmap = PseudonymMap()
+    result, _ = _strip(
+        [VlmFinding(text=VALID_TFN, entity_type="IDENTIFIER_GENERIC")],
+        f"TFN {VALID_TFN} on file", pipeline, pmap,
+    )
+    assert [r.entity_type for r in result.spans] == ["AU_TFN"]
+    assert pmap.placeholder_for("AU_TFN", VALID_TFN) == "TFN_1"
+
+
+def test_layer1_restores_the_checksum_invalid_shadow(pipeline):
+    # A signal the VLM structurally cannot produce: it can read a TFN, but
+    # not verify its mod-11 arithmetic.
+    result, _ = _strip(
+        [VlmFinding(text=INVALID_TFN, entity_type="IDENTIFIER_GENERIC")],
+        f"TFN {INVALID_TFN} on file", pipeline,
+    )
+    assert "AU_TFN_INVALID" in {f.entity_type for f in result.invalid}
+    # ...and the value still strips, under the generic class it came in as.
+    assert [r.entity_type for r in result.spans] == ["IDENTIFIER_GENERIC"]
+
+
+def test_layer1_adds_what_the_model_missed(pipeline):
+    # The deterministic recall floor under a stochastic detector: the VLM
+    # reported only the name, but the email still gets stripped.
+    result, ocr = _strip(
+        [VlmFinding(text="SERGEI KULIK", entity_type="PERSON")],
+        "SERGEI KULIK olga@example.com", pipeline,
+    )
+    types = {r.entity_type for r in result.spans}
+    assert types == {"PERSON", "EMAIL_ADDRESS"}
+    for r in result.spans:
+        assert ocr.text[r.start : r.end] in ("SERGEI KULIK", "olga@example.com")
+
+
+def test_kept_organization_from_the_model_is_not_stripped(pipeline):
+    # The prompt carries no institutional carve-outs on purpose, so the model
+    # reports merchant names by design. The kept-ORGANIZATION policy is what
+    # keeps them — applied to layer-0 findings exactly as to layer-1 ones.
+    result, _ = _strip(
+        [VlmFinding(text="WOOLWORTHS", entity_type="ORGANIZATION")],
+        "paid WOOLWORTHS today", pipeline,
+    )
+    assert result.spans == []
+
+
+def test_strip_orgs_still_reaches_model_findings(make_pipeline):
+    # ...and the operator override still works through the same filter.
+    from pii.core.pipeline import DEFAULT_STRIP_ENTITIES
+
+    p = make_pipeline(strip_entities=DEFAULT_STRIP_ENTITIES | {"ORGANIZATION"})
+    result, _ = _strip(
+        [VlmFinding(text="WOOLWORTHS", entity_type="ORGANIZATION")],
+        "paid WOOLWORTHS today", p,
+    )
+    assert [r.entity_type for r in result.spans] == ["ORGANIZATION"]

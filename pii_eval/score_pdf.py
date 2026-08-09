@@ -35,6 +35,7 @@ from pii_eval.score_image import (
     _noise,
     _score_invalid,
     _score_survival,
+    build_detector,
     reread_engine,
     summarize,
 )
@@ -42,8 +43,8 @@ from pii_eval.score_image import (
 
 def score_pdf(corpus: str, threshold: float = 0.4,
               invalid_identifiers: str = "likely",
-              ocr_backend: str = "doclayout:v3",
-              feed: str = "blocks") -> int:
+              ocr_backend: str = "paddle",
+              detector: str = "vlm") -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     truth = json.loads((corpus_path / "truth.json").read_text("utf-8"))
@@ -52,7 +53,8 @@ def score_pdf(corpus: str, threshold: float = 0.4,
     out_dir = corpus_path / "stripped"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ocr = reread_engine(ocr_backend)
+    ocr = reread_engine()
+    vlm = build_detector(detector)
     pipeline = PiiPipeline(threshold=threshold,
                            invalid_identifiers=invalid_identifiers)
 
@@ -64,7 +66,7 @@ def score_pdf(corpus: str, threshold: float = 0.4,
         out_pdf = out_dir / f"{doc['id']}.clean.pdf"
         result = strip_pdf(
             source_dir / doc["source"], pipeline, PseudonymMap(), out_pdf,
-            dpi=dpi, ocr_backend=ocr_backend, feed=feed,
+            dpi=dpi, ocr_backend=ocr_backend, detector=vlm,
             progress=lambda n, c: print(f"  {doc['id']} page {n}/{c} ...",
                                         file=sys.stderr),
         )

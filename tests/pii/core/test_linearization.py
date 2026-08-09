@@ -1,14 +1,13 @@
-"""Linearization behavior: build_page + linearize must reproduce the old
-assemble() text/offsets and the span->box mapping exactly, and the per-block
-feed (linearize_blocks + rebase) must cut the very same characters into
-per-block units without moving a single box.
+"""Linearization behavior: the assembled text, its offsets, and the
+span->box mapping the paint layer depends on.
 
-Mirrors test_ocr.py (the retired assemble-based contract), routed through
-the new perception -> linearization seam. Pure, no OCR engine."""
+This is the whole geometry contract of the strip path — under `--geometry
+ocr` a located value is painted through `painted_boxes_for_span`, so every
+pathology here is a "did PII pixels survive" case. Pure, no OCR engine."""
 
-from pii.core.linearization import linearize, linearize_blocks, rebase
+from pii.core.linearization import linearize
 from pii.core.ocr import Box
-from pii.core.ocr_page import OcrBlock, OcrFrame, build_layout_page, build_page
+from pii.core.ocr_page import OcrFrame, build_page
 
 _FRAME = OcrFrame(width=1000, height=1000, page=1)
 
@@ -178,114 +177,3 @@ def test_painted_without_region_matches_boxes_for_span():
     assert result.painted_boxes_for_span(
         start, len(result.text)
     ) == result.boxes_for_span(start, len(result.text))
-
-
-# --- the per-block feed: same characters, cut into blocks ------------------
-
-
-def _layout_page():
-    """Two detected blocks: a header panel (2 lines) over a table row."""
-    header = OcrBlock(id=0, kind="text", origin="detected",
-                      box=Box(0, 0, 400, 60), reading_order=0, page_id=1)
-    table = OcrBlock(id=1, kind="table", origin="detected",
-                     box=Box(0, 60, 400, 140), reading_order=1, page_id=1)
-    lines = [
-        (Box(10, 10, 200, 20),
-         [("Account", Box(10, 10, 90, 20)), ("Number", Box(110, 10, 100, 20))],
-         90.0),
-        (Box(10, 35, 120, 20), [("90743", Box(10, 35, 120, 20))], 90.0),
-        (Box(10, 80, 260, 20),
-         [("WOOLWORTHS", Box(10, 80, 150, 20)), ("42.10", Box(210, 80, 60, 20))],
-         90.0),
-    ]
-    return build_layout_page([header, table], lines, _FRAME)
-
-
-def test_blocks_one_input_per_block():
-    parts = linearize_blocks(_layout_page())
-    assert [p.block_id for p in parts] == [0, 1]
-    assert [p.text for p in parts] == [
-        "Account Number\n90743",
-        "WOOLWORTHS 42.10",
-    ]
-
-
-def test_blocks_offsets_are_local_to_the_block():
-    # Each input is a standalone recognizer input: its source map addresses
-    # its own text, starting at 0.
-    for part in linearize_blocks(_layout_page()):
-        for w in part.words:
-            assert part.text[w.char_start : w.char_end] == w.text
-        assert min(w.char_start for w in part.words) == 0
-
-
-def test_blocks_keep_page_global_line_numbers():
-    # `line` groups boxes when painting, so it stays a PAGE line index — a
-    # block input must not renumber its lines from zero.
-    parts = linearize_blocks(_layout_page())
-    assert sorted({w.line for w in parts[0].words}) == [0, 1]
-    assert sorted({w.line for w in parts[1].words}) == [2]
-
-
-def test_rebase_reproduces_the_whole_page_assembly():
-    page = _layout_page()
-    merged, offsets = rebase(linearize_blocks(page))
-    whole = linearize(page)
-    assert merged.text == whole.text
-    assert merged.words == whole.words
-    assert offsets == (0, len("Account Number\n90743") + 1)
-
-
-def test_rebase_offsets_map_a_block_span_onto_the_page():
-    # The contract the strip path relies on: a span detected in a block,
-    # shifted by that block's offset, addresses the same pixels as the same
-    # span found in the whole-page assembly.
-    page = _layout_page()
-    parts = linearize_blocks(page)
-    merged, offsets = rebase(parts)
-    local = parts[1].text.index("WOOLWORTHS")
-    end = local + len("WOOLWORTHS")
-    start = local + offsets[1]
-    assert merged.text[start : start + len("WOOLWORTHS")] == "WOOLWORTHS"
-    assert parts[1].painted_boxes_for_span(local, end) == (
-        merged.painted_boxes_for_span(start, start + len("WOOLWORTHS"))
-    )
-    assert parts[1].boxes_for_span(local, end) == linearize(
-        page
-    ).boxes_for_span(start, start + len("WOOLWORTHS"))
-
-
-def test_blocks_on_a_line_only_page_are_lines():
-    # Deliberately dumb: a line-only backend synthesizes one block per line,
-    # so the per-block feed degenerates to a per-line feed. Documented, not
-    # worked around — heuristics come after measurement.
-    parts = linearize_blocks(build_page(
-        [
-            [("TFN:", _box(0), 96.0), ("123", _box(20), 81.0)],
-            [("John", _box(0, top=20), 90.0)],
-        ],
-        _FRAME,
-    ))
-    assert [p.text for p in parts] == ["TFN: 123", "John"]
-
-
-def test_blocks_skip_a_block_with_no_lines():
-    # A detected block the OCR found no line in contributes no input (and no
-    # analyzer call) — but it must not disturb the offsets of the rest.
-    header = OcrBlock(id=0, kind="text", origin="detected",
-                      box=Box(0, 0, 400, 30), reading_order=0, page_id=1)
-    empty = OcrBlock(id=1, kind="image", origin="detected",
-                     box=Box(0, 200, 400, 60), reading_order=1, page_id=1)
-    page = build_layout_page(
-        [header, empty],
-        [(Box(10, 10, 90, 20), [("John", Box(10, 10, 90, 20))], 90.0)],
-        _FRAME,
-    )
-    parts = linearize_blocks(page)
-    assert [p.block_id for p in parts] == [0]
-    assert rebase(parts)[0].text == linearize(page).text
-
-
-def test_rebase_of_nothing_is_empty():
-    merged, offsets = rebase(())
-    assert merged.text == "" and merged.words == () and offsets == ()

@@ -1,23 +1,16 @@
-"""OCR perception hierarchy: an engine-neutral description of a page as the
-OCR/layout engine saw it — blocks of lines of words, with geometry but NO
-linearization.
+"""OCR perception: an engine-neutral description of a page as the OCR engine
+saw it — lines of words, with geometry but NO linearization.
 
 It deliberately carries no character offsets. Where a line lands in an
-assembled string is a *linearization* decision — one of many possible ways
-to concatenate the page — owned by pii.core.linearization, not a property
-of perception. Baking an offset onto a line would tie it to one assembly;
-we intend to try several (combine lines different ways), so the offset lives
-in the linearization's source map instead.
+assembled string is a *linearization* decision, owned by
+pii.core.linearization, not a property of perception — baking an offset onto
+a line would tie it to one assembly.
 
-Every OCR backend normalizes into these types. A layout-capable backend
-(PP-StructureV3, PP-DocLayoutV3) fills real typed blocks + reading order; a
-line-only backend synthesizes one block per line (origin="synthetic"), so a
-line ALWAYS has a block and its page is reachable transitively
-(page.block_of(line)). block_id is therefore total — never None.
-
-Two builders assemble a page from an adapter's normalized parts:
-`build_page` (line-only backends) and `build_layout_page` (layout-capable
-ones — it owns the line->block linkage every such backend needs).
+The layout hierarchy that used to live here (OcrBlock, typed blocks, reading
+order, the line->block linkage) was retired 2026-08-09 along with the layout
+backends: layer 0 reads page structure natively, so nothing consumed it. The
+line ordering that remains is `_rows` visual banding (pii.core.ocr), which is
+what keeps a label and its value on one assembled line. Record in DONE.md.
 """
 
 from dataclasses import dataclass
@@ -48,38 +41,16 @@ class OcrWord:
 class OcrLine:
     """One line of recognized text. `box` is the line's bounding box — see
     `_line_box`: it CONTAINS the glyph ink, so it is the union of the word
-    boxes with their region boxes, not the word boxes alone. `block_id`
-    indexes into OcrPage.blocks (total — every line has a block). `conf` is
-    the native line confidence (0-100) or None if the engine doesn't score
-    lines. `font` is None from any OCR engine (filled only by PDF-traceback,
+    boxes with their region boxes, not the word boxes alone. `conf` is the
+    native line confidence (0-100) or None if the engine doesn't score lines.
+    `font` is None from any OCR engine (filled only by PDF-traceback,
     diagnostics-only)."""
 
     text: str
     box: Box
     words: tuple[OcrWord, ...]
-    block_id: int
     conf: float | None = None
     polygon: tuple | None = None  # reserved (skew); None for now
-    font: object | None = None
-
-
-@dataclass(frozen=True)
-class OcrBlock:
-    """A layout region grouping lines. `kind` is the layout type
-    (text/title/table/footer/…), "unassigned" for a synthetic block.
-    `origin` is "detected" (a layout model found it) or "synthetic" (we
-    fabricated it around a line with no detected block). `reading_order` is
-    the block's position in the page's reading order. `page_id` mirrors the
-    frame's page so a detached block still resolves its coordinate frame."""
-
-    id: int
-    kind: str
-    origin: str  # "detected" | "synthetic"
-    box: Box
-    reading_order: int
-    page_id: int
-    conf: float | None = None
-    polygon: tuple | None = None
     font: object | None = None
 
 
@@ -102,18 +73,13 @@ class OcrFrame:
 @dataclass(frozen=True)
 class OcrPage:
     frame: OcrFrame
-    blocks: tuple[OcrBlock, ...]
     lines: tuple[OcrLine, ...]
-
-    def block_of(self, line: OcrLine) -> OcrBlock:
-        """Resolve a line's block (block_id indexes blocks by id==position)."""
-        return self.blocks[line.block_id]
 
 
 def _line_box(words: list[OcrWord]) -> Box:
     """A line's bounding box: the union of its words' boxes AND their region
-    boxes. Both builders go through here so every backend produces the same
-    rectangle for the same line.
+    boxes. Every line goes through here so the same words always produce the
+    same rectangle.
 
     Region boxes, not word boxes alone, because an engine word box is inset
     from the glyph ink while the detection region box contains it — a line box
@@ -131,18 +97,20 @@ def _line_box(words: list[OcrWord]) -> Box:
 
 
 def build_page(rows, frame: OcrFrame) -> OcrPage:
-    """Build an OcrPage for a line-only backend from assembled visual rows.
+    """Build an OcrPage from assembled visual rows.
 
     `rows` is the output of pii.core.ocr._rows: a list of lines, each a list
     of word items (text, box, conf) or (text, box, conf, region_box). Each
-    non-empty row becomes one OcrLine wrapped in its OWN synthetic block
-    (origin="synthetic", kind="unassigned"), reading order = row order — so
-    line ordering matches today's assembly exactly and block_id is total.
+    non-empty row becomes one OcrLine, in row order — which is the order
+    `pii.core.linearization.linearize` then assembles them in.
+
+    Every row carrying words becomes a line, unconditionally: a dropped line
+    is unredacted PII.
     """
-    rows = [row for row in rows if row]
     lines = []
-    blocks = []
-    for i, row in enumerate(rows):
+    for row in rows:
+        if not row:
+            continue
         words = tuple(
             OcrWord(
                 text=item[0],
@@ -151,100 +119,12 @@ def build_page(rows, frame: OcrFrame) -> OcrPage:
             )
             for item in row
         )
-        line_box = _line_box(words)
         lines.append(
             OcrLine(
                 text=" ".join(w.text for w in words),
-                box=line_box,
+                box=_line_box(words),
                 words=words,
-                block_id=i,
                 conf=row[0][2] if len(row[0]) > 2 else None,
             )
         )
-        blocks.append(
-            OcrBlock(
-                id=i,
-                kind="unassigned",
-                origin="synthetic",
-                box=line_box,
-                reading_order=i,
-                page_id=frame.page,
-            )
-        )
-    return OcrPage(frame=frame, blocks=tuple(blocks), lines=tuple(lines))
-
-
-def _assign(line_box: Box, block_boxes: list[Box]) -> int | None:
-    """Index of the block whose bbox contains the line's centre; failing
-    that, the block with the largest overlap area; None if the line overlaps
-    no block at all (an orphan → its own synthetic block)."""
-    cx = line_box.left + line_box.width / 2
-    cy = line_box.top + line_box.height / 2
-    for j, bb in enumerate(block_boxes):
-        if bb.left <= cx <= bb.right and bb.top <= cy <= bb.bottom:
-            return j
-    best, best_area = None, 0
-    for j, bb in enumerate(block_boxes):
-        ox = max(0, min(line_box.right, bb.right) - max(line_box.left, bb.left))
-        oy = max(0, min(line_box.bottom, bb.bottom) - max(line_box.top, bb.top))
-        if ox * oy > best_area:
-            best, best_area = j, ox * oy
-    return best
-
-
-def build_layout_page(blocks: list[OcrBlock], lines, frame: OcrFrame) -> OcrPage:
-    """Build an OcrPage for a layout-capable backend: detected blocks plus
-    OCR lines linked to them by geometry.
-
-    Shared by every layout backend (PP-StructureV3, PP-DocLayoutV3) because
-    NONE of them reports which lines belong to which block — the linkage is
-    ours to reconstruct, and one implementation means one place where the
-    "never drop a line" invariant lives (a lost line is unredacted PII).
-
-    `blocks` are the DETECTED blocks already in reading order, with
-    `id == reading_order == list position` (each adapter derives that order
-    its own way: PP-Structure sorts by `order_index`, PP-DocLayoutV3's result
-    list is already in model-predicted order). `lines` is a list of
-    `(line_box, words, conf)` where `words` is a list of `(text, Box)` in
-    reading order within the line.
-
-    Each line is assigned to the block containing it (`_assign`); a line
-    inside no block becomes its own synthetic block, appended after the
-    detected run in reading order. Lines are emitted in (block reading order,
-    top, left) order — the layout model's reading order replacing the
-    geometric row-banding of the line-only path.
-    """
-    blocks = list(blocks)
-    block_boxes = [b.box for b in blocks]
-    line_block = []
-    next_ro = len(blocks)
-    for line_box, _words, _conf in lines:
-        det = _assign(line_box, block_boxes)
-        if det is not None:
-            line_block.append(det)
-        else:
-            blocks.append(OcrBlock(
-                id=len(blocks), kind="unassigned", origin="synthetic",
-                box=line_box, reading_order=next_ro, page_id=frame.page))
-            line_block.append(len(blocks) - 1)
-            next_ro += 1
-
-    order = sorted(
-        range(len(lines)),
-        key=lambda k: (blocks[line_block[k]].reading_order,
-                       lines[k][0].top, lines[k][0].left),
-    )
-    out_lines = []
-    for k in order:
-        line_box, words, conf = lines[k]
-        out_words = tuple(
-            OcrWord(text=w, box=b, region_box=line_box) for w, b in words
-        )
-        out_lines.append(OcrLine(
-            text=" ".join(w for w, _b in words),
-            box=_line_box(out_words) if out_words else line_box,
-            words=out_words,
-            block_id=line_block[k],
-            conf=conf,
-        ))
-    return OcrPage(frame=frame, blocks=tuple(blocks), lines=tuple(out_lines))
+    return OcrPage(frame=frame, lines=tuple(lines))

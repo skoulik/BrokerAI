@@ -43,3 +43,11 @@ Completed CLI work. The engineering records for the underlying engine features l
       shared `pii.core.paint` toolkit); the CLI is arg-parsing + renderer selection only (no
       detection). Note: the overlay PDF is **not** redacted (original text with boxes on top) —
       a near-PII local artifact. Engine record in [../core/DONE.md](../core/DONE.md).
+
+- [x] `--detector` / `--geometry` / `--vlm-url` on `strip --image`/`--pdf`, and the
+      **default flip to `--detector vlm --geometry ocr`** *(2026-08-09; engine record in
+      [../core/DONE.md](../core/DONE.md)). `--feed` was removed with the per-block feed, and
+      `--ocr-backend` collapsed to the paddle model tiers (default `paddle`) when the layout
+      backends went. `--detector` uses a `None` sentinel so it can resolve per mode — vlm for
+      media, layers for text/CSV — which keeps a plain text run from demanding a model
+      server.)*

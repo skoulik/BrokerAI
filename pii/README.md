@@ -52,39 +52,42 @@ checksum-invalid identifier controls below.
 
 ## Images
 
-`strip --image` OCRs the input (word-level bounding boxes), runs the
-full text pipeline on the recognized text, and paints each detected
-span's placeholder over its pixels — background-filled boxes with the
-placeholder drawn in, so the output image stays pseudonymized and
-rehydratable, not blacked out. Detection never sees pixels; painting
-happens on the original image (`pii/core/ocr.py` for the engine seam and
-span→box mapping, `pii/core/image_mode.py` for the painting).
+`strip --image` detects the PII on the page, locates each detected value in
+the OCR text, and paints its placeholder over the matching pixels —
+background-filled boxes with the placeholder drawn in, so the output image
+stays pseudonymized and rehydratable, not blacked out. Painting always happens
+on the original image (`pii/core/image_mode.py`).
 
-The OCR engine is **PaddleOCR**. `--ocr-backend` selects it: `doclayout:v3`
-(default) and `ppstructure` are **layout-aware** — they detect layout blocks
-(the structure `debug ocr` shows) on top of the recognized lines — while
-`paddle` (= `paddle:v6_medium`), `paddle:v6_medium` and `paddle:v5_server`
-are line-only model tiers. All of them read lines with the same pinned
-PP-OCR tier, so the choice moves structure, not characters. Models
-auto-download to `models/paddlex` on first use. With the GPU paddle wheel
-the engine and the NER model cannot share a Windows process, so the pipeline
-drives OCR through a persistent worker subprocess
-(`pii/core/ocr_worker.py`); the CPU wheel runs it in-process.
+`--detector` chooses what finds the PII:
 
-`--feed` chooses what the recognizer is fed per page:
+- `vlm` (**default** for `--image`/`--pdf`) — a local vision LLM reads the
+  page image and names the values; the pattern/checksum recognizers then
+  refine each one into its precise class, restore the checksum-invalid
+  shadows, and add anything the model missed. **Needs a running
+  llama-server** — set `--vlm-url` or `$PII_VLM_URL` (default
+  `http://localhost:8080`) — and costs minutes per page.
+- `layers` — the pattern/checksum recognizers and the NER model over the OCR
+  text only. No model server, seconds per page. Text and CSV input always
+  uses this, since there is no page image to read.
 
-- `--feed blocks` (default) — one recognizer pass **per layout block**, so
-  no pattern, context word or NER window reaches across a block boundary.
-  Detection is more focused (a header panel no longer shares an attention
-  window with 40 transaction rows) but strictly local: a label in one block
-  can no longer promote a value in the next. With a line-only backend every
-  line is its own block, which makes the feed per-line.
-- `--feed page` — the whole page as one string. With a line-only backend
-  (`--ocr-backend paddle --feed page`) this is the original flat path.
+`--geometry` (only with `--detector vlm`) chooses where painted boxes come
+from. `ocr` (default) locates each value in the OCR text and paints exact
+word boxes; `vlm` uses the model's own boxes and skips OCR entirely. **Use
+the default**: the model's boxes are measured unsafe — 16% clip by more than
+20 px, stochastically, leaving part of a value legible — so `vlm` is a
+comparison instrument, not a production option. Asking for boxes also costs
+the model ~7% recall, so the safe path is the more accurate one too.
 
-Defaults: `--ocr-backend doclayout:v3 --feed blocks`; the numbers behind that
-choice are in
-[core/reports/2026-07-27-per-block-feed-bakeoff.md](core/reports/2026-07-27-per-block-feed-bakeoff.md).
+The OCR engine is **PaddleOCR**, and it supplies *geometry*, not detection.
+`--ocr-backend` selects the model tier: `paddle` (default, = `paddle:v6_medium`),
+`paddle:v6_medium` or `paddle:v5_server`. Models auto-download to
+`models/paddlex` on first use. With the GPU paddle wheel the engine and torch
+cannot share a Windows process, so the pipeline drives OCR through a
+persistent worker subprocess (`pii/core/ocr_worker.py`); the CPU wheel runs it
+in-process.
+
+The numbers behind these defaults are in
+[core/reports/2026-08-08-vlm-oneshot-qwen36.md](core/reports/2026-08-08-vlm-oneshot-qwen36.md).
 
 ## PDFs
 
@@ -102,14 +105,13 @@ stderr; `--report` prefixes detections with their page number.
 
 ## OCR inspection (debug)
 
-`pii debug ocr <image|pdf>` OCRs the page(s) and dumps the **perceived structure** — blocks,
-lines, reading order — for inspecting what the OCR/layout stage produced (no PII detection, no
-painting). `--format json` (round-trippable), `text` (human summary), or `overlay` (annotated
-raster) — the overlay outlines each line, and each block labelled with its reading-order index
-and kind (blue = detected layout block, amber + "synthetic" tag = fabricated). `--ocr-backend
-doclayout:v3` (default; PP-DocLayoutV3 layout blocks + model-predicted reading order),
-`ppstructure` (PP-StructureV3 blocks + pipeline reading order) or a paddle line-only tier
-(`paddle`, `paddle:v6_medium`, `paddle:v5_server`).
+`pii debug ocr <image|pdf>` OCRs the page(s) and dumps the **perceived structure** — lines,
+words and their boxes — for inspecting what the OCR stage produced (no PII detection, no
+painting). This is the geometry `--geometry ocr` paints with, so a value missing from these
+lines is a value the tool cannot redact. `--format json` (round-trippable), `text` (human
+summary), or `overlay` (annotated raster) — the overlay outlines each word in grey and each
+assembled line in blue with its index, which makes the row banding visible. `--ocr-backend`
+takes the same model tiers as `strip` (`paddle` default).
 
 For PDFs, **all pages** are processed by default (`--page N` selects one; `--dpi` sets the
 render resolution). `overlay` output follows the `-o` extension: `-o out.pdf` reconstructs a

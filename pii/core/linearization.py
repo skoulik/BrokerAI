@@ -6,35 +6,21 @@ the OCR geometry it came from — so a detected span maps back to pixel boxes
 by interval intersection, never re-derived from lengths (the silent-leak
 class from the presidio-image-redactor review).
 
-Character offsets are born HERE, per linearization — not on the perception
-objects. Multiple trial linearizations of one page each get their own
-source map over the same geometry; an offset is a property of the
-(page, assembly) pair, not of a line.
+Character offsets are born HERE — not on the perception objects. An offset
+is a property of the (page, assembly) pair, not of a line, which is why the
+source map and not `OcrLine` carries it.
 
-Two assemblies live here:
-
-- `linearize` (v1) reproduces the historical assembly exactly: every line
-  of the page in page order, words joined by spaces, lines by newlines —
-  ONE input, so the recognizer sees the whole page at once.
-- `linearize_blocks` cuts the same lines at block boundaries: one
-  `RecognizerInput` per block, offsets local to that block. The caller runs
-  the recognizer once per block, so a block is FULLY isolated — no pattern,
-  no context word and no NER attention window reaches across a block
-  boundary. `rebase` folds the per-block inputs (and the spans detected in
-  them) back into one page-level view with global offsets, so painting and
-  reporting are unchanged by the choice of feed.
-
-Both produce the same characters in the same order (`rebase` of the blocks
-is byte-identical to `linearize`); only the unit the recognizer is fed
-changes. Smarter trial linearizations (reading-order variants, column
-merges, overlapping windows) grow behind this seam without touching
-perception or painting.
+There is one assembly: every line of the page in page order, words joined
+by spaces, lines by newlines, so the recognizer sees the whole page at once.
+The per-block feed (`linearize_blocks` / `rebase`) was retired 2026-08-09
+together with the layout backends that produced the blocks; record in
+DONE.md.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from pii.core.ocr import Box, _union
-from pii.core.ocr_page import OcrLine, OcrPage
+from pii.core.ocr_page import OcrPage
 
 
 @dataclass(frozen=True)
@@ -54,19 +40,13 @@ class PlacedWord:
 
 @dataclass(frozen=True)
 class RecognizerInput:
-    """The recognizer's view of a page — or of ONE BLOCK of it: the assembled
-    `text` plus the source map (`words`) that turns a character span back into
-    pixel boxes. Holds the recognized plaintext INCLUDING the PII — a
-    local-only artifact like the pseudonym map.
-
-    `block_id` names the block this input covers (`linearize_blocks`), or is
-    None for a whole-page assembly. `PlacedWord.line` stays PAGE-global in
-    both, so a block input maps spans to boxes exactly as the page input
-    would."""
+    """The recognizer's view of a page: the assembled `text` plus the source
+    map (`words`) that turns a character span back into pixel boxes. Holds
+    the recognized plaintext INCLUDING the PII — a local-only artifact like
+    the pseudonym map."""
 
     text: str
     words: tuple[PlacedWord, ...]
-    block_id: int | None = None
 
     def boxes_for_span(self, start: int, end: int) -> list[Box]:
         """Pixel boxes covering a character span of `text`.
@@ -122,18 +102,18 @@ class RecognizerInput:
         return out
 
 
-def _assemble(
-    numbered: list[tuple[int, OcrLine]], block_id: int | None = None
-) -> RecognizerInput:
-    """Assemble numbered `(page_line_index, line)` pairs into one input:
-    words joined by spaces, lines by newlines, each word's character interval
-    recorded into the source map as it is written (never re-derived from
-    lengths). Offsets start at 0 — they are local to THIS input."""
+def linearize(page: OcrPage) -> RecognizerInput:
+    """Assemble a whole OcrPage into one RecognizerInput.
+
+    Lines in page order; words joined by spaces, lines by newlines. Each
+    word's character interval is recorded into the source map AS IT IS
+    WRITTEN, never re-derived from lengths — that re-derivation is the
+    silent-leak class the source map exists to prevent."""
     words = []
     parts = []
     pos = 0
-    for n, (line_idx, line) in enumerate(numbered):
-        if n:
+    for line_idx, line in enumerate(page.lines):
+        if line_idx:
             parts.append("\n")
             pos += 1
         for word_idx, w in enumerate(line.words):
@@ -152,77 +132,4 @@ def _assemble(
             )
             parts.append(w.text)
             pos += len(w.text)
-    return RecognizerInput(
-        text="".join(parts), words=tuple(words), block_id=block_id
-    )
-
-
-def linearize(page: OcrPage) -> RecognizerInput:
-    """Assemble a whole OcrPage into one RecognizerInput (v1: today's
-    assembly).
-
-    Lines in page order; words joined by spaces, lines by newlines.
-    Byte-identical to the retired `pii.core.ocr.assemble` — only the input
-    (an OcrPage instead of raw word-tuple rows) and the offset's home
-    (the source map instead of the OCR object) have changed."""
-    return _assemble(list(enumerate(page.lines)))
-
-
-def linearize_blocks(page: OcrPage) -> tuple[RecognizerInput, ...]:
-    """Cut the page into one RecognizerInput per block — the per-block feed.
-
-    Blocks are emitted in the order their FIRST line appears in
-    `page.lines` (which a layout backend has already sorted by the block
-    reading order), lines within a block in page order — so the characters
-    and their order are exactly `linearize`'s, only cut into units. A block
-    with no lines contributes nothing.
-
-    Deliberately dumb: every block is a unit, whatever its `kind` or
-    `origin`. On a line-only backend that means one unit per line (every
-    block is synthetic), and an orphan line under a layout backend is its
-    own one-line unit — measure before adding grouping heuristics.
-
-    The caller feeds each input to the recognizer separately, which is what
-    makes the isolation total: layer-1 patterns cannot match across a block
-    boundary, Presidio's context enhancer cannot promote across one, and
-    GLiNER2 never shares an attention window across one. The cost is
-    per-block analyzer calls and the loss of any cross-block context
-    (a label in one block promoting a value in the next)."""
-    groups: dict[int, list[tuple[int, OcrLine]]] = {}
-    for line_idx, line in enumerate(page.lines):
-        groups.setdefault(line.block_id, []).append((line_idx, line))
-    return tuple(
-        _assemble(numbered, block_id=block_id)
-        for block_id, numbered in groups.items()
-    )
-
-
-def rebase(
-    inputs: tuple[RecognizerInput, ...] | list[RecognizerInput],
-) -> tuple[RecognizerInput, tuple[int, ...]]:
-    """Concatenate per-block inputs into one page-level input, and report
-    each part's character offset in it.
-
-    Returns `(page_input, offsets)`: parts joined by a newline — the same
-    separator `_assemble` puts between lines — so the result is byte-
-    identical to `linearize(page)` for the inputs `linearize_blocks(page)`
-    produced. Add `offsets[i]` to a span detected in `inputs[i]` and it
-    addresses the page input; that is how per-block detection results
-    become one page-wide plan with document-order offsets, leaving painting
-    and reporting indifferent to which feed produced them."""
-    words: list[PlacedWord] = []
-    parts: list[str] = []
-    offsets: list[int] = []
-    pos = 0
-    for i, ri in enumerate(inputs):
-        if i:
-            parts.append("\n")
-            pos += 1
-        offsets.append(pos)
-        words.extend(
-            replace(w, char_start=w.char_start + pos, char_end=w.char_end + pos)
-            for w in ri.words
-        )
-        parts.append(ri.text)
-        pos += len(ri.text)
-    return RecognizerInput(text="".join(parts), words=tuple(words)), tuple(offsets)
+    return RecognizerInput(text="".join(parts), words=tuple(words))

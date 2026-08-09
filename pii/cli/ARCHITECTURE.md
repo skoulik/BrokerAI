@@ -14,13 +14,14 @@ Three subcommands (`pii/cli/__init__.py`, `main()`):
 | `strip` | Replace PII with placeholders; extends the pseudonym map. Modes: text (default), `--csv` (per-cell), `--image` (OCR → paint), `--pdf` (render → OCR → paint → reassemble). |
 | `analyze` | Report detections on stdout, change nothing. |
 | `rehydrate` | Restore original values in a cloud answer from the map (`--map` required). |
-| `debug ocr` | OCR one page and dump the perceived `OcrPage` — blocks, lines, reading order — as `--format` json/text/overlay. Diagnostics only, no detection. |
+| `debug ocr` | OCR one page and dump the perceived `OcrPage` — lines, words, assembly order — as `--format` json/text/overlay. Diagnostics only, no detection. |
 
 `strip`/`analyze` accept `-` for stdin; `strip` writes stdout or `-o FILE`. Flags cover
 threshold, `--strip-orgs`, `--report`, CSV column selection, `--dpi` (PDF render
-resolution), `--ocr-backend`, and the three checksum-invalid identifier controls
-(`--invalid-identifiers`, `--log-invalid-identifiers`, `--mask-invalid-identifiers`).
-Full usage is in [../README.md](../README.md).
+resolution), `--detector`/`--geometry`/`--vlm-url`, `--ocr-backend`, and the three
+checksum-invalid identifier controls (`--invalid-identifiers`,
+`--log-invalid-identifiers`, `--mask-invalid-identifiers`). Full usage is in
+[../README.md](../README.md).
 
 ## How it maps to `pii.core`
 
@@ -61,6 +62,15 @@ not imported from here — `cli` and `gui` never depend on each other.
 - **Mode guards.** `--csv`, `--image` and `--pdf` are mutually exclusive; `--image`/`--pdf`
   require `-o` (an output file path). Enforced with `parser.error` **before** pipeline
   construction, so bad invocations fail instantly instead of after the model load.
+- **`--detector` resolves per mode (2026-08-09).** Its argparse default is `None`, not a
+  detector name, because the right default differs by input: `vlm` for `--image`/`--pdf`,
+  `layers` for text and CSV, which have no page image for a vision model to read. Only an
+  *explicit* `--detector vlm` on text input is an error. A sentinel rather than a literal
+  default is what lets the CLI tell "the user asked for this" from "nobody said" — with
+  `default="vlm"` a plain `pii strip file.txt` would demand a model server.
+- **VlmError becomes a message, not a traceback.** A missing or unreachable llama-server is an
+  operator problem, so `_strip_media` catches `VlmError` and re-raises as `SystemExit` with the
+  text. This matters more since the flip: it is now the failure mode of the *default* path.
 - **PDF mode reporting.** `--report` prefixes each detection with its page (`p3`), and a
   `page N/M ...` heartbeat goes to stderr — OCR + NER make multi-page documents slow enough
   to want one.

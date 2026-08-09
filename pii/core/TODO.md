@@ -6,66 +6,46 @@ plan are in [ROADMAP.md](ROADMAP.md); completed tasks and their engineering reco
 Front-end tasks live with their component: [../cli/TODO.md](../cli/TODO.md),
 [../gui/TODO.md](../gui/TODO.md).
 
-Grouped by theme. Suggested order on the image/PDF track (2026-07-14, amended 2026-07-18;
-fidelity sweep + bake-off rounds 1 AND 2 + Tesseract retirement + **PDF mode (2026-07-18)**
-done — see DONE.md and reports/; round 2 evaluated and retired Surya 2 same-day, docTR
-dropped unevaluated): demo on the reference documents → degradation tier → one-pass VLM
-experiment (future session; owns the next engine-shaped decision).
+Grouped by theme. Read the direction note below first — the 2026-08-09 segmenter retirement
+closed a whole section of this file, and the ordering that preceded it is history (records in
+DONE.md and reports/).
 
-## Direction change — 2026-08-08, read before picking anything up below
+## Direction — 2026-08-09, read before picking anything up below
 
-The one-pass VLM landed and changed what is worth building. On the evidence in
-[reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md), Sergei's
-verdict is that this is "the most promising result so far and the avenue worth developing", and
-the agreed shape is:
+The segmenter is retired and layer 0 is the default detector (record in
+[DONE.md](DONE.md), design in [ARCHITECTURE.md](ARCHITECTURE.md)). What that settled:
 
-- **The layout/perception layer is not needed** — the VLM reads spatial structure natively,
-  which is why it got `d11.p2`'s account number right where the shipping default leaks it. That
-  makes most of the "OCR perception / linearization" section below, the 2026-07-25 session plan,
-  and the whole table-structure programme **expected retirements rather than planned work**.
-- **GLiNER2 (and spaCy with it) are not needed** — beaten on this corpus at things they
-  structurally cannot do. The "Experiments — GLiNER2 tuning" section is in the same position.
-- **Layer-1 validation stays**, narrowed to classifier / checksum / recall floor. Whether that
-  means presidio or our own code is postponed — note it *inverts* the "Stop duplicating
+- **The layout/perception layer is gone** — with it, the whole "OCR perception / linearization"
+  programme (orphan clustering, trial linearizations, table-cell structure, layout thresholds,
+  region detection) and the layout half of issue #8a. The VLM reads spatial structure natively.
+- **Layer 1 stays**, in the narrowed role it now actually has: classifier, checksum validator,
+  and deterministic recall floor over layer 0's findings (`merge_detections`). Whether that
+  means presidio or our own code is still open — note it *inverts* the "Stop duplicating
   Presidio's checksum arithmetic" item below, whose proposed fix is to delegate *to* presidio.
-- **PaddleOCR stays.** VLM boxes are stochastically unreliable, so OCR supplies geometry;
+- **PaddleOCR stays** and supplies geometry: VLM boxes are stochastically unreliable, so
   `--geometry ocr` is production and `--geometry vlm` is a comparison instrument only.
+- **GLiNER2 (and spaCy with it) are the next retirement candidate** — beaten on this corpus at
+  things they structurally cannot do — but the decision has NOT been taken. They still run as
+  part of the layer-1 union, which preserves cross-layer disagreement as a signal the tier-3
+  metrics plan wants. The "Experiments — GLiNER2 tuning" section below is on hold behind that
+  decision, not active work.
 
-Nothing is deleted yet, because the VLM path is opt-in and layer-1 refinement is not built —
-if it stalls, the items below are still the plan. Retire them only once the VLM path is the
-default and measured on the leak gate.
-
-## Session plan — set by Sergei 2026-07-25, in this order (SUPERSEDED — see above)
-
-After eyeballing the whole sensitive corpus on the new `doclayout:v3` default ("almost there
-in terms of layout understanding"). Each step below has a fuller entry further down; this is
-the running order, and it is deliberately layout-first-then-back-to-e2e:
-
-1. ~~**Root-cause the remaining orphans.**~~ First cluster classified 2026-07-27 (record kept
-   in the orphan item below); the rest is folded into steps 3/4.
-2. ~~**Back to e2e: teach the GLiNER feeder about blocks — feed lines per block.**~~ **DONE
-   2026-07-27** (`--feed blocks`; record in DONE.md, evidence in
-   reports/2026-07-27-per-block-feed-bakeoff.md). −4 critical leaks against its own backend
-   control at no time cost. It also moved step 4 to the front of the queue: see below.
-3. **Multiple trial linearizations with overlaps.** Several assemblies of the same page,
-   windows overlapping so an entity split across a boundary is caught by at least one trial —
-   the reason offsets live per-linearization in the source map, never on perception. Now also
-   the mitigation for the per-block feed's known cost (a label in one block can no longer
-   promote a value in the next): a whole-page trial unioned with the per-block trial gets both.
-   Needs a merge rule for spans living in different offset spaces — union in *word* space via
-   the source maps, not in character space.
-4. **Table structure and other heuristics — now the top item, and it carries a known leak.**
-   Cell/row/column structure for the 45 detected `table` blocks (`TableCellsDetection` first —
-   non-generative geometry — with SLANeXt structure only if logical spans/headers turn out to
-   be needed), plus the remaining statement-row heuristics. Promoted because the 2026-07-27
-   feed bake-off traced a real leak to it: lines inside a block are emitted in `(top, left)`
-   order, so a multi-column header panel emits a value before its own label and context
-   promotion never fires (`d11.p2`'s account number, evidence in the report). That leak is
-   **live in the shipping default** since `doclayout:v3` + `--feed blocks` was adopted — it
-   was accepted knowingly (net 8 leaks vs the old default's 9), and this item is the repayment.
-   Same defect as issue #8a below.
+**Now the top open risk: throughput.** ~3 min/page is a research profile, so the serving /
+quantization item below is what stands between this and a usable product.
 
 ## Next up — image/PDF path
+
+- [ ] **Hybrids that deliberately use the VLM's own boxes** (Sergei, 2026-08-09 — postponed,
+      recorded so the idea is not lost). `--geometry ocr` can only redact what OCR can read, so
+      it has two structural blind spots: a value the model reads correctly but `locate()` cannot
+      find in the OCR text (digit damage breaking the squash), and content with no OCR text at
+      all — the model boxed a **logo** correctly, and barcodes are graphics. In exactly those
+      cases the model's box is the only geometry there is. Sketch: use OCR geometry wherever a
+      value locates, and fall back to the (padded) VLM box only for the unlocatable residue —
+      which is already counted and warned about. The measured box distribution is bimodal
+      (median excellent, 16% clipping >20 px), so the fallback must be padded generously and
+      probably reported differently from a clean redaction. Interacts with the barcode-masking
+      item below, which this could partly subsume.
 
 - [ ] Belt-and-braces text-layer scan (*decide later*, split out of the PDF mode task when it
       shipped 2026-07-18): additionally scan any existing source text layer to catch text the
@@ -116,11 +96,9 @@ the running order, and it is deliberately layout-first-then-back-to-e2e:
       `0->@` (the top pair, Consolas slashed zero), `J->3`, `1->2`, `4->8`, `W->H`; decide
       per-pair whether to widen the squash classes (over-merging is recall-safe — it can
       only over-report leaks). Re-run the image-tier gate after.
-- [ ] OCR engine choice — *decide later:* PaddleOCR (current, v6_medium default; the
-      last classic-OCR candidate standing after rounds 1–2) vs the one-pass VLM pipeline
-      below. Decide on benchmark numbers from real bank statements/scans (needs the image
-      eval tier for ground truth). The engine seam is the parallel-lists word-box dict in
-      `pii/core/ocr.py` (each backend is an adapter normalizing into it).
+- [x] ~~OCR engine choice — PaddleOCR vs a one-pass VLM~~ — **decided 2026-08-09: both, in
+      different roles.** The VLM detects, PaddleOCR supplies geometry (and remains the eval
+      harness's independent read-back instrument). Record in [DONE.md](DONE.md).
 - [x] ~~**One-pass VLM pipeline**~~ — **DONE 2026-08-08**, shipped as layer 0
       (`--detector vlm`). Record in [DONE.md](DONE.md), design in
       [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0", evidence in
@@ -128,18 +106,12 @@ the running order, and it is deliberately layout-first-then-back-to-e2e:
       Verdict: detection excellent, grounding stochastically unreliable, so **PaddleOCR stays
       and supplies geometry**. The follow-ups it spawned are the next three items.
 
-- [ ] **Layer-1 refinement of VLM findings** (step 2, designed 2026-08-08, not built — Sergei
-      paused implementation). Today every VLM-detected identifier strips as
-      `IDENTIFIER_GENERIC` (`ID_n`), so the VLM path forks placeholder identity against the
-      layers path (the same account number is `ACCOUNT_1` under `--detector layers` and `ID_2`
-      under `--detector vlm`) and the `*_INVALID` classes are absent. Layer 1 should run
-      alongside and do three jobs: **refine** (adopt layer 1's precise type where a layer-1
-      span overlaps a VLM span), **validate** (restore the checksum-invalid shadows — the
-      signal a VLM structurally cannot produce), and **union** (add layer-1 findings the VLM
-      missed, as a deterministic recall floor). Needs an overlap rule rather than trusting
-      layer 1 blindly: it classified the AFSL number `237502` as a phone. Production is
-      `--geometry ocr`, so OCR text — and therefore recognizer *context* — is always
-      available, which is why one refinement mechanism suffices.
+- [x] ~~**Layer-1 refinement of VLM findings**~~ — **DONE 2026-08-09** as
+      `PiiPipeline.merge_detections` + a three-tier `_rank`. Record in [DONE.md](DONE.md),
+      design in [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0".
+      *Not yet measured on the corpus* — the refinement is unit-tested but no leak-gate run
+      has been made against it, so the first `pii_eval score --modality pdf` on the real
+      corpus is the outstanding validation.
 
 - [ ] **Serving / llama.cpp tuning job** (scoped 2026-08-08, deferred to its own session).
       ~176 s/page at Q8_0 is a research profile, not a product one — a 50-page submission
@@ -186,18 +158,10 @@ the running order, and it is deliberately layout-first-then-back-to-e2e:
         `{"rec_polys", "rec_texts"}` — the SAME keys `_result_lines` already consumes, so the
         adapter would be small. Per-page quantization is 1/1000 of the page (~2.3 px vertically
         on a 300 dpi A4).
-      Better idea than either, if picked up (Sergei's, 2026-07-25): run spotting **per detected
-      block** using the layout blocks we now have — quantization becomes 1/1000 of the crop,
-      sub-1500px crops get a free 2× upscale before the encoder (attacking the vision-token
-      starvation that killed Surya), generations stay short (page-wide runs risk
-      `truncate_repetitive_content` silently dropping repeated statement lines), and the
-      line→block linkage becomes exact instead of reconstructed. The pipeline will not do this
-      itself — prompt choice is hardcoded per block label — so we would crop and batch the
-      crops through `predict([...])` ourselves. Two risks to design for: text outside every
-      detected block never gets read (mitigate with a det-only PP-OCR coverage sweep), and
-      glyphs flush against a crop edge read worse (pad crops; painting stays on original
-      pixels). Keep the Surya round-2 lessons in view — silent omission is the VLM failure mode
-      that matters for redaction.
+      A per-detected-block spotting variant was sketched 2026-07-25 and **died with the layout
+      backends** (2026-08-09) — it needed blocks to crop by. If revived, it would have to
+      detect its own crops. Keep the Surya round-2 lessons in view either way: silent omission
+      is the VLM failure mode that matters for redaction.
 - [ ] Watch for **a PP-OCRv6 server tier** (none in paddlex 3.7.2 — tiny/small/medium only);
       if released, benchmark it with the ocr-report sweep against v6_medium — v6_medium
       already dominates, a v6_server should only strengthen it. Add it to `MODEL_TIERS`.
@@ -214,139 +178,9 @@ the running order, and it is deliberately layout-first-then-back-to-e2e:
       presidio-image-redactor chain in DONE.md). Preprocessed image feeds OCR only; painting
       stays on original pixels. Needs the eval degradation tier to measure.
 
-## OCR perception / linearization (2026-07-24)
-
-The OcrPage / linearization / PP-StructureV3 backend / `debug ocr` layer shipped (record in
-DONE.md; design in ARCHITECTURE.md "OCR perception layer"); it runs alongside the untouched
-`OcrResult` strip path. Open follow-ups:
-
-- [ ] **Root-cause the remaining orphan lines** (Sergei, 2026-07-25 — step 1 of the session
-      plan; he eyeballed the whole sensitive corpus on `doclayout:v3` and some orphans "look
-      suspicious"): 20 orphan lines survive corpus-wide (down from 117 under `ppstructure`).
-      An orphan means PP-DocLayoutV3 emitted no block covering that line — `_assign` already
-      falls back to largest-overlap, so it is never a linkage bug. Per-page counts from the
-      bake-off: d02.p5 6, d11.p4 4, d02.p4 3, d03.p1 2, d09.p2 2, then singles on d02.p2,
-      d03.p2, d10.p1. Classify each before fixing: page furniture the model deliberately
-      ignores vs a real detection miss vs a line whose box straddles two blocks. Candidate
-      fixes, in increasing order of commitment — the orphan-clustering item below (adapter-side,
-      no model change), a threshold nudge (0.2 halves orphans to 2 corpus-wide but merges
-      blocks larger — sweep in reports/2026-07-25-layout-bakeoff-doclayoutv3.md), or nothing if
-      they are all furniture. Note orphans are *not* a leak by themselves (every line still
-      reaches the recognizer in its own synthetic block) — they are a structure-quality signal,
-      and they matter more once feeding is per-block (step 2), because an orphan then becomes a
-      one-line context-free window. **Since 2026-07-27 that "once" is now** — under
-      `--feed blocks` an orphan line IS a one-line analyzer call with no context whatsoever,
-      which is exactly the regime the `BSB`-alone unit test shows detects nothing. Orphan
-      clustering therefore stopped being a tidiness item and became a recall item.
-
-      **First cluster classified (2026-07-27, `Statements - 1114.pdf` p2 at 200 dpi — a real
-      detection miss, not furniture):** 16 of 53 lines orphan, and they are exactly the top
-      header panel — the addressee block (`THE DIRECTOR` / `25 OAKLANDS WAY` / `PAKENHAM` /
-      `VIC 3810`) and the account panel (`Account Number : 162-097111-4`, statement period,
-      statement number, page). V3 *does* see the panel: running the model directly on the same
-      raster, it emits `table [6,67,1593,292]` covering the whole thing — at score **0.296**,
-      against the shipped `threshold: 0.3`. It misses by 0.004. The whole page sits on the cut
-      (the seven surviving blocks score 0.38–0.46; at the un-overridden 0.5 default V3 detects
-      *nothing* here). Page-local sweep: 0.3 → 7 blocks, 0.2 → 8 (panel recovered), 0.1 → 8,
-      **0.05 → 2 page-sized blobs** — `layout_merge_bboxes_mode: union` chaining low-score
-      boxes. So the cliff below the useful range is real but is not where a nudge would sit.
-
-      **The cost is reading order, not the orphaning as such.** Orphan blocks are appended
-      *after* the detected run and `linearize` walks lines in emission order, so the address and
-      account number are emitted at the very END of the page string, after the whole transaction
-      table, and interleaved between the two columns in paddle's detection order (`THE DIRECTOR`
-      / `Account Number` / `: 162-097111-4` / `25 OAKLANDS WAY` / …). The multi-line address is
-      shredded. **A threshold nudge alone does not fix this** — the panel comes back as one
-      full-width block and lines within a block sort by `(top, left)`, so the two columns still
-      alternate. Whatever the fix, it has to reach column structure, which points at the
-      orphan-clustering item and step 3 rather than at the threshold. (For contrast,
-      `ppstructure` reports 0 orphans on this page only because it emits 2 blocks total, one
-      `table [0,67,1587,931]` swallowing the panel *and* the transaction table — no structure to
-      be orphaned from.)
-- [ ] **Multiple trial linearizations with overlaps** (Sergei, 2026-07-25 — step 3 of the
-      session plan): run several assemblies of the same page and union the findings, with the
-      windows overlapping so an entity broken by one trial's boundary is intact in another.
-      This is what the source map was designed for (offsets per linearization, never on
-      perception); relates to the existing GLiNER2 cell-isolation windows and person-fragment
-      coalescing, which are the same problem at a smaller scale. Since the per-block feed
-      landed (2026-07-27) this is also its safety net — a whole-page trial recovers the
-      cross-block context per-block feeding gives up. Open design question: spans from two
-      trials live in different offset spaces, so the union has to happen in *word* space
-      through the source maps.
-- [ ] **Finish the strip migration onto `OcrPage`/`RecognizerInput`** and retire
-      `OcrResult`/`assemble`. Landed 2026-07-27: `image_mode.strip_from_page` +
-      `strip_image`/`strip_pdf` routing, so both feeds run over `OcrPage` today. Remaining:
-      make it the *only* path — the `OcrPage` path is the default since 2026-07-27, but the
-      flat `OcrResult` path stays reachable (`--ocr-backend paddle --feed page`) and is worth
-      keeping until intra-block column structure repays the `d11` regression (step 4), since
-      it is the only configuration that still bands columns into visual rows; the worker's
-      strip path still speaks the bare-tier spec; and the harness still resolves through
-      `get_ocr`
-      (`OCR_BACKENDS`, line-only) in `ocr_report` and in the scorers' *read-back*
-      (`score_image.reread_engine` — deliberately pinned there, so a backend/feed comparison
-      measures with a constant instrument; only `ocr_report` is a real migration debt).
-- [ ] **Font traceback** (diagnostics-only): fill `OcrLine.font` / `OcrBlock.font` from the PDF
-      text layer (pymupdf `get_text("dict")` spans matched to line boxes) — `None` from any OCR
+- [ ] **Font traceback** (diagnostics-only): fill `OcrLine.font` from the PDF text layer
+      (pymupdf `get_text("dict")` spans matched to line boxes) — `None` from any OCR engine.
       engine. Must never feed the strip decision (we deliberately distrust the text layer).
-- [ ] **`kind="table"` blocks** (parked 2026-07-24; more urgent since 2026-07-25 — the
-      `doclayout:v3` default returns ~2× as many table blocks, 45 vs 24 corpus-wide): with
-      table-structure recognition off, table text arrives as ordinary lines under a `table`
-      block — verify that's enough for PII on real table-heavy statements (interacts with the
-      "statement tables" item above); only reach for `child_blocks`/cell structure if it isn't.
-      Observed on the real ANZ statement (2026-07-24): the balance-summary `table` block was
-      detected cleanly, but its lines interleave label/value in reading order (a stray `$0.00`
-      mid-run) — within-table line ordering may need work if per-block feeding relies on it.
-      Re-check on V3's blocks, whose table boxes are larger (the BSB/account label-value panel
-      is now one `table` block, so the interleaving question applies to it too).
-
-      **Measured cost, 2026-07-27 (feed bake-off): a leak that is live in the shipping
-      default.** Lines inside a block sort by `(top, left)`, so a
-      three-column header panel interleaves — `d11.p2` emits `': 162-097111-4'` *before*
-      `'THE DIRECTOR'` and `'Account Number'`, all 15 lines inside one correctly detected
-      `table` block — and the account number's context promotion never fires, leaking it under
-      both feeds (the flat `paddle` path survives only because `_rows` bands side-by-side
-      regions into one visual line). Cell geometry gives line→(row, column), which is the
-      fix; it is the same defect as issue #8a in the Detection pipeline section below.
-
-      **Model inventory for internal table structure** (researched 2026-07-25, nothing built —
-      step 4 of the session plan). PP-DocLayoutV3 itself gives none of this: its 25 classes
-      include exactly one table-related label (`table`), no cell/row/column/header. paddlex
-      ships it as three separate models, all reachable standalone the way `LayoutDetection` is:
-      `TableClassification` (`PP-LCNet_x1_0_table_cls`, wired vs wireless router),
-      **`TableCellsDetection`** (`RT-DETR-L_wired_table_cell_det` / `…_wireless_…`) → per-cell
-      BOXES, non-generative — the one to try first, since cell geometry alone gives
-      line→(row, column) by the same containment discipline we already own; and
-      `TableStructureRecognition` (`SLANet`, `SLANet_plus`, `SLANeXt_wired`, `SLANeXt_wireless`)
-      → an HTML token sequence with `<thead>`/`colspan`/`rowspan` plus per-token boxes, i.e.
-      logical spans and header/body, but *generated* (hallucination/truncation risk on the long
-      many-row tables statements are full of, and its training distribution is scientific
-      tables). `TableRecognitionPipelineV2` orchestrates all three and exposes `cell_box_list`,
-      `pred_html`, `table_ocr_pred` (OCR split per cell) and `split_ocr_bboxes_by_table_cells`
-      (splits a line box spanning ≥k cells — exactly the statement-row operation). **Consume it
-      ourselves, not via PP-Structure**: the 2026-07-25 finding that table recognition "would
-      not change blocks" was about switching it on *inside* PP-StructureV3, which only writes
-      `block.content = pred_html` (never read by our adapter) and blinds the `num_of_lines`
-      cross-check. Open design question it forces: cells need a level between block and line
-      (or a parent/child relation on `OcrBlock`) — a perception-hierarchy change, and per-block
-      feeding then becomes per-*cell* feeding.
-- [ ] **Decide the layout `text` threshold** — *moot on the default path since 2026-07-25*,
-      kept for the `ppstructure` backend only. PaddleX's shipped per-class cut drops
-      label/value header panels whole, so their lines arrive as one-line synthetic blocks —
-      59 orphan lines over the 31-page real corpus, 22 on one statement page.
-      `_layout_thresholds({"text": 0.33})` cuts that to 19 while *raising* the block count
-      (393 → 398), and turns the panel into two ordinary `text` blocks. The `doclayout:v3`
-      backend (now default) returns that panel as a detected `table` block with no tuning at
-      all — 20 orphan lines corpus-wide — so this only matters if `ppstructure` is revived.
-      Still open on the adapter side, and it applies to BOTH backends: cluster adjacent orphan
-      lines into one synthetic block and insert them in reading order by geometry, rather than
-      one-per-line appended after every detected block.
-- [ ] **CPU-wheel PP-Structure**: `_structure_engine` sets `device="cpu"` off the GPU wheel but
-      is untested there; check the paddle 3.3.x oneDNN PIR-executor crash (the `enable_mkldnn`
-      lever plain PaddleOCR needs) doesn't bite PP-Structure.
-- [ ] **`use_region_detection`** defaults on (downloads `PP-DocBlockLayout`); evaluate whether
-      the coarser region grouping helps reading order on multi-column statements or can be
-      dropped to save a model.
-
 ## Detection pipeline
 
 - [ ] **User-editable keep-list ("do not strip") mechanism** (Sergei, 2026-07-18): a
@@ -457,20 +291,18 @@ DONE.md; design in ARCHITECTURE.md "OCR perception layer"); it runs alongside th
       the AuAccountNumberRecognizer context-promotion idiom) vs a GLiNER2 label (label
       competition risk — see the labels-per-pass experiment). Dual coverage on landing:
       pytest + a pii_eval probe with a truth type per the established convention.
-- [ ] OCR column segmentation for label/value header blocks (issue #8a, 2026-07-22).
-      Two-column page headers (ANZ: left 'Postal Address' → address lines, right 'Trading
-      Account Number' → '314811') band into single assembled lines by design — side-by-side
-      cells ARE one visual row — so the text reads '24 STACEY DRIVE, CARRICKALINGA SA 5204
-      314811' and GLiNER2 emits the WHOLE line as one ADDRESS span (0.99; its addr-split pass
-      even scores the bare '314811' as a locality line at 0.45). Everything strips, so no
-      leak — the damage is aliasing ('314811' hides in ADDRESS_n instead of getting the
-      consistent ACCOUNT_n it gets elsewhere) and label/value association (the account's
-      label sits one row up in its own column, out of pattern/context reach). Fix class:
-      detect column structure in the OCR layer and isolate columns as separate segments —
-      the RECORD_SEPARATOR cell-isolation precedent (csv_mode → GLiNER2 windows) is the
-      mechanism to reuse. Scope decision needed: header blocks only, or general multi-column
-      handling (interacts with _rows and the transaction-table banding that MUST stay
-      row-wise).
+- [ ] Label/value header columns alias into one span (issue #8a, 2026-07-22; **rescoped
+      2026-08-09**). Two-column page headers (ANZ: left 'Postal Address' → address lines,
+      right 'Trading Account Number' → '314811') band into single assembled lines by design —
+      side-by-side cells ARE one visual row — so the text reads '24 STACEY DRIVE,
+      CARRICKALINGA SA 5204 314811' and GLiNER2 emits the WHOLE line as one ADDRESS span
+      (0.99). Everything strips, so no leak — the damage is aliasing ('314811' hides in
+      ADDRESS_n instead of getting the consistent ACCOUNT_n it gets elsewhere).
+      **This is now a `--detector layers` problem only:** the VLM reads the two columns as
+      what they are, and layer 1 types the account number from the string. The old fix class
+      (detect column structure in the OCR layer and isolate columns as segments) went with the
+      segmenter and is not coming back — if this matters on the layers path, it needs a
+      cheaper mechanism, and if the layers path is eventually retired it closes by itself.
 - [ ] Slim the Presidio NLP engine: exclude `parser` and `ner` from the en_core_web_sm
       pipeline. Presidio loads the model with bare `spacy.load()` (spacy_nlp_engine.py, no
       component exclusions), so every analyzed text pays for the full 6-component pipeline;

@@ -39,7 +39,7 @@ import pymupdf
 from PIL import Image
 
 from pii.core.mapping import PseudonymMap
-from pii.core.ocr import OCR_BACKENDS, get_ocr, get_ocr_page
+from pii.core.ocr import get_ocr_page
 
 # 300 DPI is the scanning-industry default for OCR of small print;
 # statements ship 7-9pt body text, which at the synthetic tier's 150 DPI
@@ -80,8 +80,8 @@ class PdfPageResult:
     the recognized plaintext INCLUDING the PII — local-only artifact."""
 
     number: int  # 1-based page number
-    # OcrResult (flat path) or RecognizerInput (OcrPage path); None when the
-    # VLM supplied geometry directly and OCR never ran.
+    # A page-level RecognizerInput; None when the VLM supplied geometry
+    # directly and OCR never ran.
     ocr: object | None
     spans: list  # applied detections; offsets into ocr.text
     invalid: list
@@ -100,39 +100,30 @@ def strip_pdf(
     pmap: PseudonymMap,
     out_path: str | Path,
     dpi: int = DEFAULT_DPI,
-    ocr_backend: str = "doclayout:v3",
-    feed: str = "blocks",
+    ocr_backend: str = "paddle",
     progress: Callable[[int, int], None] | None = None,
     detector=None,
     geometry: str = "ocr",
 ) -> PdfStripResult:
     """Strip a PDF page by page and write a fresh, image-only PDF.
 
-    Each page: render at `dpi` -> OCR -> full text pipeline -> paint
-    placeholders on the pixels -> embed into a new page of the output
-    document at the source page's physical size (points). Pages stream
-    through one pipeline/OCR engine and one shared `pmap`, so memory
-    stays flat and placeholders are consistent across the document.
-
-    `feed` selects the recognizer's unit — "page" (the whole page as one
-    string) or "blocks" (one call per layout block; needs an OcrPage
-    backend, see image_mode.strip_from_page).
+    Each page: render at `dpi` -> detect -> paint placeholders on the pixels
+    -> embed into a new page of the output document at the source page's
+    physical size (points). Pages stream through one pipeline/OCR engine and
+    one shared `pmap`, so memory stays flat and placeholders are consistent
+    across the document.
 
     `progress(page_number, page_count)` is called before each page is
-    processed (OCR + NER make pages slow enough to want a heartbeat).
+    processed (OCR + the model make pages slow enough to want a heartbeat).
     """
     # heavy: the analysis stack
-    from pii.core.image_mode import strip_from_ocr, strip_from_page, strip_image
+    from pii.core.image_mode import _needs_ocr, strip_rendered_page
 
-    flat = feed == "page" and ocr_backend in OCR_BACKENDS
-    if detector is not None:
-        # The VLM path owns its own OCR decision (none at all under
-        # geometry="vlm"), so engines are resolved per page inside strip_image.
-        flat = False
-    elif flat:
-        ocr_engine = get_ocr(ocr_backend)
-    else:
-        page_engine = get_ocr_page(ocr_backend)
+    # Resolved ONCE for the document, not per page — and skipped entirely on
+    # the one path that never reads pixels through OCR (geometry="vlm").
+    page_engine = (
+        get_ocr_page(ocr_backend) if _needs_ocr(detector, geometry) else None
+    )
     pages: list[PdfPageResult] = []
     out_doc = pymupdf.open()
     with pymupdf.open(path) as doc:
@@ -140,19 +131,10 @@ def strip_pdf(
             if progress:
                 progress(number, doc.page_count)
             image = _render_page(page, dpi)
-            if detector is not None:
-                result = strip_image(
-                    image, pipeline, pmap,
-                    ocr_backend=ocr_backend,
-                    detector=detector,
-                    geometry=geometry,
-                )
-            elif flat:
-                result = strip_from_ocr(image, ocr_engine(image), pipeline, pmap)
-            else:
-                result = strip_from_page(
-                    image, page_engine(image), pipeline, pmap, feed=feed
-                )
+            result = strip_rendered_page(
+                image, pipeline, pmap, ocr_engine=page_engine,
+                detector=detector, geometry=geometry,
+            )
             buf = io.BytesIO()
             result.image.save(buf, "JPEG", quality=_JPEG_QUALITY)
             out_page = out_doc.new_page(

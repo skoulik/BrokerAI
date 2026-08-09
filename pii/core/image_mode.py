@@ -1,10 +1,4 @@
-"""Image stripping: OCR -> text pipeline -> paint placeholders on pixels.
-
-The image path reuses the WHOLE text pipeline (all detection layers,
-overlap merging, invalid-identifier collection) by running it on the
-OCR-assembled text, then mapping each merged span back to pixel boxes
-(pii.core.ocr.OcrResult.painted_boxes_for_span) and painting on the ORIGINAL
-image — detection never sees pixels, painting never sees raw analyzer results.
+"""Image stripping: detect -> locate in the OCR text -> paint placeholders.
 
 Painting is pseudonymization, not blank redaction: each box is filled
 with the page background color and the span's placeholder (PERSON_1) is
@@ -16,30 +10,32 @@ The drawing toolkit itself (`Segment` / `paint_segments` / fill / frame)
 lives in `pii.core.paint`, shared with the OCR-debug overlay; the names used
 by callers and the eval harness are re-exported here for backward compat.
 
-Two feeds reach the pipeline, selected by `feed`:
+Two detectors reach the painting path, and they differ only in what produces
+the plan — everything from `_paint_plan` down is shared:
 
-- "page" — the whole page as one string (the historical assembly), either
-  from the flat `OcrResult` path (`strip_from_ocr`) or from an `OcrPage`
-  linearized whole (`strip_from_page`);
-- "blocks" — one recognizer call per layout block (`strip_from_page`), so
-  nothing detects across a block boundary. The per-block results are
-  rebased into one page-level view before painting, so everything
-  downstream of detection is identical either way.
+- `detector=None` (`strip_from_page`) — the layered path: OCR the page,
+  linearize it, run the whole text pipeline on that string.
+- a `VlmDetector` (`strip_from_vlm`) — layer 0 reads the page image and names
+  the values; each is located in the OCR text and refined by layer 1.
 
-The OcrResult/RecognizerInput in the returned ImageStripResult contains the
-recognized plaintext INCLUDING the PII — like the pseudonym map, it is a
-local-only artifact.
+Painting geometry comes from OCR word boxes in both cases (the VLM's own
+boxes are measured unsafe — see `pii.core.vlm`), so detection never decides
+pixels and painting never sees raw analyzer results.
+
+The RecognizerInput in the returned ImageStripResult contains the recognized
+plaintext INCLUDING the PII — like the pseudonym map, it is a local-only
+artifact.
 """
 
 import warnings
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from PIL import Image
 from presidio_analyzer import RecognizerResult
 
-from pii.core.linearization import linearize, linearize_blocks, rebase
+from pii.core.linearization import RecognizerInput, linearize
 from pii.core.mapping import PseudonymMap
-from pii.core.ocr import OCR_BACKENDS, Box, OcrResult, get_ocr, get_ocr_page
+from pii.core.ocr import Box, get_ocr_page
 from pii.core.ocr_page import OcrPage
 from pii.core.paint import Segment, paint_segments
 from pii.core.pipeline import InvalidFinding, PiiPipeline
@@ -54,11 +50,9 @@ from pii.core.paint import _FRAME_COLOR, _grow  # noqa: F401
 @dataclass
 class ImageStripResult:
     image: Image.Image  # redacted RGB copy
-    # Recognized text + word boxes — near-PII, local-only. An OcrResult on
-    # the flat path, a page-level RecognizerInput on the OcrPage path; both
-    # answer .text and .painted_boxes_for_span, which is all callers use.
-    # None when the VLM supplied geometry directly and OCR never ran — callers
-    # that report span text must handle that.
+    # Recognized text + word boxes — near-PII, local-only. A page-level
+    # RecognizerInput, or None when the VLM supplied geometry directly and OCR
+    # never ran — callers that report span text must handle that.
     ocr: object | None
     spans: list  # applied detections; offsets into ocr.text
     invalid: list[InvalidFinding]
@@ -73,55 +67,61 @@ def strip_image(
     pipeline: PiiPipeline,
     pmap: PseudonymMap,
     lang: str = "eng",
-    ocr_backend: str = "doclayout:v3",
-    feed: str = "blocks",
+    ocr_backend: str = "paddle",
     detector=None,
     geometry: str = "ocr",
     pad: int = DEFAULT_PAD,
 ) -> ImageStripResult:
-    """OCR the image and replace detected PII with painted placeholders.
+    """Detect the PII on the page and replace it with painted placeholders.
 
-    Defaults to layout perception + the per-block feed (one recognizer call
-    per layout block). `feed="page"` on a flat backend name keeps the
-    historical `OcrResult` path; any other combination goes through the
-    `OcrPage` perception layer.
+    `detector` (a `pii.core.vlm.VlmDetector`) makes layer 0 the detector: the
+    model reads the page image and names the values, and layer 1 then refines
+    and extends them. `geometry` chooses where the boxes come from: "ocr"
+    locates each value in the OCR text (exact word boxes; OCR still runs),
+    "vlm" uses the model's own boxes and skips OCR altogether. See
+    `pii.core.vlm` for why "ocr" is the production path.
 
-    `detector` (a `pii.core.vlm.VlmDetector`) replaces layers 1+2 entirely —
-    the model reads the page image and produces the plan itself. `geometry`
-    then chooses where the boxes come from: "ocr" locates each value in the
-    OCR text (exact word boxes; OCR still runs), "vlm" uses the model's own
-    boxes and skips OCR altogether. See `pii.core.vlm` for why "ocr" is the
-    safe default."""
-    if detector is not None:
-        findings = detector.detect(image)
-        if geometry == "vlm":
-            return strip_from_vlm(image, findings, pmap, ocr=None, pad=pad)
-        if geometry != "ocr":
-            raise ValueError(f"unknown geometry: {geometry!r}")
-        # Whole-page linearization: the VLM detects across the entire page, so
-        # per-block offsets would have nothing to rebase against.
-        ocr = linearize(get_ocr_page(ocr_backend)(image, lang=lang))
-        return strip_from_vlm(image, findings, pmap, ocr=ocr, pad=pad)
-
-    # OCR_BACKENDS are the flat (OcrResult) engine names; the OcrPage
-    # backends are a superset, so only this combination stays on the old path.
-    if feed == "page" and ocr_backend in OCR_BACKENDS:
-        ocr = get_ocr(ocr_backend)(image, lang=lang)
-        return strip_from_ocr(image, ocr, pipeline, pmap)
-    page = get_ocr_page(ocr_backend)(image, lang=lang)
-    return strip_from_page(image, page, pipeline, pmap, feed=feed)
+    With `detector=None` the layered path runs instead: OCR the page,
+    linearize it, and feed the whole page string to the text pipeline."""
+    ocr_engine = None
+    if _needs_ocr(detector, geometry):
+        engine = get_ocr_page(ocr_backend)
+        ocr_engine = lambda im: engine(im, lang=lang)  # noqa: E731
+    return strip_rendered_page(
+        image, pipeline, pmap, ocr_engine=ocr_engine, detector=detector,
+        geometry=geometry, pad=pad,
+    )
 
 
-def strip_from_ocr(
+def _needs_ocr(detector, geometry: str) -> bool:
+    """Whether OCR has to run at all. Only one configuration skips it —
+    a VLM detector painting its own boxes."""
+    return detector is None or geometry != "vlm"
+
+
+def strip_rendered_page(
     image: Image.Image,
-    ocr: OcrResult,
     pipeline: PiiPipeline,
     pmap: PseudonymMap,
+    ocr_engine=None,
+    detector=None,
+    geometry: str = "ocr",
+    pad: int = DEFAULT_PAD,
 ) -> ImageStripResult:
-    """Strip against an existing OCR result (separate seam so the OCR
-    engine bake-off and the PDF page loop can reuse the painting path)."""
-    spans, invalid = pipeline.detect(ocr.text)
-    return _paint_plan(image, ocr, spans, invalid, pmap)
+    """Strip one already-rendered page against an ALREADY-RESOLVED OCR engine
+    (`image -> OcrPage`, or None only when `geometry="vlm"` and OCR never
+    runs).
+
+    The detector/geometry dispatch lives here, in one place, so `strip_pdf`
+    can resolve the engine once per document instead of once per page — and
+    so both entry points share exactly one decision about what runs."""
+    if detector is not None:
+        if geometry not in ("ocr", "vlm"):
+            raise ValueError(f"unknown geometry: {geometry!r}")
+        findings = detector.detect(image)
+        ocr = None if geometry == "vlm" else linearize(ocr_engine(image))
+        return strip_from_vlm(image, findings, pipeline, pmap, ocr=ocr, pad=pad)
+    return strip_from_page(image, ocr_engine(image), pipeline, pmap)
 
 
 def strip_from_page(
@@ -129,76 +129,47 @@ def strip_from_page(
     page: OcrPage,
     pipeline: PiiPipeline,
     pmap: PseudonymMap,
-    feed: str = "blocks",
 ) -> ImageStripResult:
-    """Strip against an OcrPage — the perception-layer seam.
-
-    `feed="blocks"` runs the pipeline once per layout block and rebases
-    every result into the page-level view; `feed="page"` linearizes the
-    whole page and runs it once (the historical assembly over the new
-    perception layer). Detection is the only thing that differs: both end
-    up with one page text, one document-ordered plan and one painting pass.
-
-    Blocks are processed in reading order and spans within a block in
-    document order, so placeholder numbering stays document order."""
-    if feed == "blocks":
-        parts = linearize_blocks(page)
-    elif feed == "page":
-        parts = (linearize(page),)
-    else:
-        raise ValueError(f"unknown feed: {feed!r}")
-    # A block with no recognized characters gets no analyzer call — it is a
-    # skipped model invocation, not a skipped line (blank parts still take
-    # their place in the rebase, so offsets and page text stay exact).
-    detected = [
-        pipeline.detect(part.text) if part.text.strip() else ([], [])
-        for part in parts
-    ]
-    ocr, offsets = rebase(parts)
-    spans = [
-        RecognizerResult(
-            entity_type=r.entity_type,
-            start=r.start + offset,
-            end=r.end + offset,
-            score=r.score,
-        )
-        for offset, (part_spans, _) in zip(offsets, detected)
-        for r in part_spans
-    ]
-    invalid = [
-        replace(f, start=f.start + offset, end=f.end + offset)
-        for offset, (_, part_invalid) in zip(offsets, detected)
-        for f in part_invalid
-    ]
+    """Strip against an OcrPage through the layered detector — a separate
+    seam so the PDF page loop and the eval harness reuse the painting path
+    without re-running OCR."""
+    ocr = linearize(page)
+    spans, invalid = pipeline.detect(ocr.text)
     return _paint_plan(image, ocr, spans, invalid, pmap)
 
 
 def strip_from_vlm(
     image: Image.Image,
     findings: list[VlmFinding],
+    pipeline: PiiPipeline,
     pmap: PseudonymMap,
-    ocr: OcrResult | None = None,
+    ocr: RecognizerInput | None = None,
     pad: int = DEFAULT_PAD,
 ) -> ImageStripResult:
-    """Strip against VLM findings — the alternative-detector seam.
+    """Strip against layer-0 findings — the VLM detector seam.
 
-    Geometry comes from one of two places, and which one is decided by whether
-    `ocr` was supplied:
+    Geometry comes from one of two places, decided by whether `ocr` was
+    supplied:
 
     - `ocr` given  → each value is located in the OCR text and painted through
       `painted_boxes_for_span`. OCR word boxes are exact, so this is the safe
-      path. A value that cannot be located is a detection we cannot paint —
-      i.e. a leak — so it warns loudly rather than disappearing.
-    - `ocr` None   → the model's own `bbox_2d` is used and OCR never runs.
-      Measured unsafe (see `pii.core.vlm`): 16% of boxes clip by >20 px,
-      stochastically, and the tail includes real account numbers.
+      path — and because the OCR text is there, layer 1 runs on it too
+      (`merge_detections`): it refines IDENTIFIER_GENERIC into the precise
+      checksummed class, restores the `*_INVALID` shadows the VLM cannot
+      produce, and adds what the model missed. A value that cannot be located
+      is a detection we cannot paint — i.e. a leak — so it warns loudly
+      rather than disappearing.
+    - `ocr` None   → the model's own `bbox_2d` is used and OCR never runs, so
+      there is no text for layer 1 to refine against either. Measured unsafe
+      (see `pii.core.vlm`): 16% of boxes clip by >20 px, stochastically, and
+      the tail includes real account numbers.
 
     Returns spans only on the OCR path — the VLM-geometry path has no text to
     take offsets into, so `ImageStripResult.ocr` is None there."""
     if ocr is None:
         return _paint_vlm_boxes(image, findings, pmap, pad)
 
-    spans, taken, unlocated = [], [], []
+    detected, taken, unlocated = [], [], []
     for finding in findings:
         found = locate(ocr.text, finding.text, taken)
         if found is None:
@@ -206,7 +177,7 @@ def strip_from_vlm(
             continue
         start, end = found
         taken.append((start, end))
-        spans.append(
+        detected.append(
             RecognizerResult(
                 entity_type=finding.entity_type, start=start, end=end, score=1.0
             )
@@ -219,8 +190,8 @@ def strip_from_vlm(
             RuntimeWarning,
             stacklevel=2,
         )
-    spans.sort(key=lambda r: (r.start, r.end))
-    return _paint_plan(image, ocr, spans, [], pmap)
+    spans, invalid = pipeline.merge_detections(detected, ocr.text)
+    return _paint_plan(image, ocr, spans, invalid, pmap)
 
 
 def _paint_vlm_boxes(image, findings, pmap, pad) -> ImageStripResult:
