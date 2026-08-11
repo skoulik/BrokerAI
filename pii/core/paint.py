@@ -51,6 +51,7 @@ def paint_segments(
     style: str = "fill",
     color=_FRAME_COLOR,
     width: int = 3,
+    chip: str = "above",
 ) -> Image.Image:
     """Paint every segment onto a copy of the image. The input image is not
     mutated.
@@ -59,9 +60,14 @@ def paint_segments(
     color and the label drawn into it — the content is gone.
     style="frame" (review): each box gets an outline rectangle (`color`,
     `width`) with the label on a chip above it — the content stays readable
-    underneath. The ground-truth renderer and the OCR-debug overlay use this."""
+    underneath. The ground-truth renderer and the debug overlay use this.
+    `chip="none"` draws the outline only, for annotations that would be
+    illegible labelled: the debug overlay outlines every OCR word on the page,
+    and a chip on each would bury the page under its own labels."""
     if style not in ("fill", "frame"):
         raise ValueError(f"unknown paint style: {style!r}")
+    if chip not in ("above", "none"):
+        raise ValueError(f"unknown chip setting: {chip!r}")
     out = image.convert("RGB")
     fill = _background_color(out)
     ink = (0, 0, 0) if _luminance(fill) > 127 else (255, 255, 255)
@@ -85,7 +91,7 @@ def paint_segments(
             if style == "fill":
                 _paint(out, grown, seg.label, fill, ink)
             else:
-                _frame(out, grown, seg.label, color, width)
+                _frame(out, grown, seg.label, color, width, chip)
     return out
 
 
@@ -115,16 +121,20 @@ def _paint(image, box: Box, label: str, fill, ink) -> None:
     image.paste(layer, (box.left, box.top))
 
 
-def _frame(image, box: Box, label: str, color=_FRAME_COLOR, width: int = 3) -> None:
-    """Outline the box and, when `label` is non-empty, write it on a chip
-    above (inside the top edge when there is no room above)."""
+def _frame(
+    image, box: Box, label: str, color=_FRAME_COLOR, width: int = 3,
+    chip: str = "above",
+) -> None:
+    """Outline the box and, when `label` is non-empty and `chip` asks for one,
+    write it on a chip above (inside the top edge when there is no room
+    above)."""
     draw = ImageDraw.Draw(image)
     draw.rectangle(
         (box.left, box.top, box.right - 1, box.bottom - 1),
         outline=color,
         width=width,
     )
-    if not label:
+    if not label or chip == "none":
         return
     size = min(max(int(box.height * 0.45), 14), 30)
     font = _font(size)

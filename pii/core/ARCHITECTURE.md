@@ -54,7 +54,7 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `ocr_page.py` | Perception: `OcrPage` → `OcrLine` → `OcrWord` + `OcrFrame`. Geometry only, no character offsets |
 | `linearization.py` | `OcrPage` → `RecognizerInput`: the flat page string plus the source map that turns a span back into pixel boxes |
 | `ocr_paddle.py` | PaddleOCR adapter: line-oriented det/rec → per-word `OcrPage`; picks worker vs in-process by wheel |
-| `ocr_debug.py` | `pii debug ocr` renderers over an `OcrPage`: JSON, text summary, annotated overlay |
+| `debug_overlay.py` | `strip --debug` renderers: the ocr / layer-0 / layer-1 diagnostic layers drawn onto the page a run processed |
 | `paint.py` | The drawing toolkit (`Segment`, `paint_segments`, fill/frame styles), shared by strip and the debug overlay |
 | `image_mode.py` | Image front/back-end: layer-0 detect, locate in the OCR text, paint placeholders onto the original pixels |
 | `pdf_mode.py` | PDF render + reassembly legs: pages → pixels → image pipeline per page → fresh image-only PDF (`pdf_to_images`, `strip_pdf`) |
@@ -611,14 +611,35 @@ purpose, which is why it is as small as it is — the layout/segmenter half of i
   on the GPU paddle wheel, in-process on the CPU wheel (the DLL rules in `ocr_paddle.py`). Strip,
   diagnostics and the eval harness all go through it, so there is *no* second OCR path and the
   diagnostics exercise exactly the transport release uses. A worker spec is simply a model tier.
-- **Diagnostics (`ocr_debug.py`, `pii debug ocr`).** Renderers over an `OcrPage`: round-trippable
-  JSON, a human text summary, and an annotated **overlay** raster (word boxes grey, assembled
-  lines blue and numbered — the `_rows` banding made visible). Drawing reuses the shared toolkit
-  in `pii.core.paint`, so the OCR-only debug path doesn't drag in the analysis stack. PDFs process
-  **all pages** by default; an `overlay` to a `.pdf` reconstructs a fresh image-only PDF via
-  `pdf_mode.rebuild_pdf` — strip's reassembly discipline, but *not* redacted (original text +
-  boxes), a near-PII local artifact. What it shows is the geometry strip will paint with, so a
-  value missing from these lines can only be redacted from the model's own box (locator tier 3).
+- **Diagnostics are a by-product of a real run (`debug_overlay.py`, `strip --debug`).** Four
+  independently selectable layers — **one per pipeline STAGE** — drawn onto the page the run
+  processed: `ocr` (word boxes, assembled line boxes numbered — the `_rows` banding made
+  visible), `layer-0` (what the model itself produced: its class on its own `bbox_2d`, and
+  nothing where it gave no box, so a `--geometry ocr` run draws an empty layer), `locate` (what
+  `locator.py` then did with each finding — the resolved span, chipped with the tier that
+  resolved it), `layer-1` (the merged plan: the boxes actually painted, the class after
+  refinement, and each span's source — `L0` / `DOC` borrowed from the document / `L1`
+  pattern-only). Drawing reuses `pii.core.paint`; the module loads no model, so a GUI can render
+  a page without the strip stack.
+  **The layer-0 / locate split is the point, not tidiness (Sergei, 2026-08-11).** Layer 0 is the
+  VLM alone with its rough boxes; which tier placed a value is decided *after* it, from the OCR
+  text with that box as a search constraint. An overlay that chipped the tier onto the model's
+  box would file the locator's answer under layer 0's name — and, worse, had to substitute
+  located geometry wherever the model gave no box. Drawn apart, the two rectangles over one value
+  ARE the "a box is a search constraint, not paint geometry" invariant, and a finding nothing
+  could place shows as a layer-0 box with no `locate` box over it: the unredacted-detection
+  signal, visible by absence rather than by a word.
+  **One file per layer, never combined.** Four layers on a dense statement page collide into
+  noise, and the pair most worth comparing overlaps by construction; separate files diff page by
+  page in any viewer (`DebugSpec.paths` inserts the layer name before the extension).
+  **Attached to `strip` rather than a standalone command, deliberately (2026-08-11).** Every
+  artifact it draws already exists inside a run that paid minutes per page for the model; a
+  separate command would pay twice *and* would show its own re-run rather than the run that
+  produced the output — which is precisely how the OCR-only `pii debug ocr` it replaces went
+  stale. On PDFs the overlay is built inside sweep 2 from the CACHED raster (`strip_pdf`,
+  `DebugSpec`): the model's boxes live in that raster's coordinate space, and annotating a
+  re-render would reintroduce the assumption the page cache exists to kill. The companion file is
+  the original page with boxes on top — *not* redacted, a near-PII local artifact like the map.
 
 **Why the layout/segmenter layer went (2026-08-09, Sergei).** `OcrBlock`, the two layout backends
 (PP-StructureV3 and PP-DocLayoutV3), the reconstructed line→block linkage, orphan clustering and

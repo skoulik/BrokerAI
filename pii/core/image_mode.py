@@ -45,7 +45,7 @@ from pii.core.detection import Detection
 
 from pii.core.grouping import Grouping, group_findings
 from pii.core.linearization import RecognizerInput, linearize
-from pii.core.locator import locate_borrowed, locate_findings
+from pii.core.locator import Placement, locate_borrowed, locate_findings
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box, get_ocr_page
 from pii.core.paint import Segment, paint_segments
@@ -102,6 +102,12 @@ class ImageStripResult:
     # front-end can print the vote each class was elected from — the election
     # can KEEP a value some page reported as PII, so it has to be auditable.
     groups: tuple = ()
+    # Every layer-0 finding with the tier that placed it (locator.Placement) —
+    # the record `pii.core.debug_overlay` draws the layer-0 view from. Kept
+    # whole rather than split into the outcome lists above, because the
+    # question a debug overlay answers is per-finding: this value, this class,
+    # placed THIS way. The lists remain the reporting path.
+    placements: list = field(default_factory=list)
 
 
 @dataclass
@@ -351,6 +357,7 @@ def strip_from_vlm(
         unlocated_painted_elsewhere=[p.finding for p in painted_elsewhere],
         borrowed=borrowed_only,
         groups=grouping.groups,
+        placements=placed.placements,
     )
 
 
@@ -359,31 +366,40 @@ def _paint_vlm_boxes(image, findings, pmap, pad, grouping) -> ImageStripResult:
     no borrowing either: there is no page text to search."""
     width, height = image.size
     segments = []
+    placements = []
     for finding in findings:
-        if finding.box is None:
-            continue
-        x1, y1, x2, y2 = finding.box
-        left = max(int(x1 / 1000 * width) - pad, 0)
-        top = max(int(y1 / 1000 * height) - pad, 0)
-        right = min(int(x2 / 1000 * width) + pad, width)
-        bottom = min(int(y2 / 1000 * height) + pad, height)
-        if right <= left or bottom <= top:
+        box = None
+        if finding.box is not None:
+            x1, y1, x2, y2 = finding.box
+            left = max(int(x1 / 1000 * width) - pad, 0)
+            top = max(int(y1 / 1000 * height) - pad, 0)
+            right = min(int(x2 / 1000 * width) + pad, width)
+            bottom = min(int(y2 / 1000 * height) + pad, height)
+            if right > left and bottom > top:
+                box = Box(left, top, right - left, bottom - top)
+        # Recorded either way: every finding gets a placement, so a debug
+        # overlay of this regime shows the ones whose box was missing or
+        # degenerate as unplaced rather than omitting them silently.
+        placements.append(
+            Placement(finding=finding, kind="box" if box else None, box=box)
+        )
+        if box is None:
             continue
         segments.append(
             Segment(
                 label=pmap.placeholder_for(finding.entity_type, finding.text),
-                boxes=[Box(left, top, right - left, bottom - top)],
+                boxes=[box],
             )
         )
     return ImageStripResult(
         image=paint_segments(image, segments), ocr=None, spans=[], invalid=[],
-        segments=segments, groups=grouping.groups,
+        segments=segments, groups=grouping.groups, placements=placements,
     )
 
 
 def _paint_plan(
     image, ocr, spans, invalid, pmap, extra=(), box_geometry=(), unlocated=(),
-    unlocated_painted_elsewhere=(), borrowed=(), groups=(),
+    unlocated_painted_elsewhere=(), borrowed=(), groups=(), placements=(),
 ) -> ImageStripResult:
     """Allocate a placeholder per span and paint it over the span's pixels.
     Spans arrive in document order, which is the numbering order. `extra`
@@ -402,4 +418,5 @@ def _paint_plan(
         box_geometry=list(box_geometry), unlocated=list(unlocated),
         unlocated_painted_elsewhere=list(unlocated_painted_elsewhere),
         borrowed=list(borrowed), groups=tuple(groups),
+        placements=list(placements),
     )

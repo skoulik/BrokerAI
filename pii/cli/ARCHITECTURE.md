@@ -7,21 +7,21 @@ the three-component split; boundary and dependency rules are in the umbrella
 
 ## Surface
 
-Three subcommands (`pii/cli/__init__.py`, `main()`):
+Three subcommands (`pii/cli/__init__.py`, `main()`) — the `debug` namespace was retired
+2026-08-11, its job now done by `strip --debug`:
 
 | Command | Does |
 |---|---|
 | `strip` | Replace PII with placeholders; extends the pseudonym map. Modes: text (default), `--csv` (per-cell), `--image` (OCR → paint), `--pdf` (render → OCR → paint → reassemble). |
 | `analyze` | Report detections on stdout, change nothing. |
 | `rehydrate` | Restore original values in a cloud answer from the map (`--map` required). |
-| `debug ocr` | OCR one page and dump the perceived `OcrPage` — lines, words, assembly order — as `--format` json/text/overlay. Diagnostics only, no detection. |
 
 `strip`/`analyze` accept `-` for stdin; `strip` writes stdout or `-o FILE`. Flags cover
 threshold, `--strip-orgs`, `--report`, CSV column selection, `--dpi` (PDF render
-resolution), `--detector`/`--geometry`/`--vlm-url`, `--ocr-backend`, and the three
-checksum-invalid identifier controls (`--invalid-identifiers`,
-`--log-invalid-identifiers`, `--mask-invalid-identifiers`). Full usage is in
-[../README.md](../README.md).
+resolution), `--detector`/`--geometry`/`--vlm-url`, `--ocr-backend`, `--debug`/`--debug-out`
+(diagnostic overlays), and the three checksum-invalid identifier controls
+(`--invalid-identifiers`, `--log-invalid-identifiers`, `--mask-invalid-identifiers`). Full
+usage is in [../README.md](../README.md).
 
 ## How it maps to `pii.core`
 
@@ -80,9 +80,15 @@ not imported from here — `cli` and `gui` never depend on each other.
 - **PDF mode reporting.** `--report` prefixes each detection with its page (`p3`), and a
   `page N/M ...` heartbeat goes to stderr — OCR + NER make multi-page documents slow enough
   to want one.
-- **`debug` is a diagnostics namespace (2026-07-24).** `debug ocr` calls `get_ocr_page` and the
-  `pii.core.ocr_debug` renderers (json/text/overlay) — the CLI only parses args, loads the page
-  (`_load_debug_page`: PDF page render or image), and picks the renderer; all OcrPage logic
-  lives in core, so a future GUI reuses it. `--format overlay` requires `-o`, guarded before the
-  engine loads. Room for further `debug <what>` dumps later. Engine design in
-  [../core/ARCHITECTURE.md](../core/ARCHITECTURE.md) "OCR perception layer".
+- **`--debug` rides on a real run (2026-08-11), replacing the `debug` namespace.** The CLI
+  parses the layer list (`pii.core.debug_overlay.parse_layers`) and resolves the destination
+  **before** the model server is touched — a typo'd layer name must not surface after minutes of
+  detection with the artifact unwritable — then either draws the overlays itself (`--image`: the
+  front-end still holds the page it passed in) or hands `strip_pdf` a `DebugSpec` (`--pdf`: the
+  pixels live in the run's page cache and are gone by the time a result comes back). Either way
+  it is **one file per layer** (`DebugSpec.paths`); rejected on text/CSV like `--geometry`, and
+  for the same reason: there is no page. `--debug-out` is a base path defaulting to the OUTPUT
+  with `.debug` inserted, so a run's artifacts stay together and a re-run with different flags
+  overwrites its own overlays. The not-redacted warning prints once, with every path listed under
+  it — once per file, four identical warnings would train the operator to skip them. Engine
+  design in [../core/ARCHITECTURE.md](../core/ARCHITECTURE.md) "Diagnostics".

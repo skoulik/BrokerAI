@@ -1342,6 +1342,58 @@ the move; new completed tasks append to the matching section with their records.
       improvement. Battery throttling doubles everything. OCR is 1.4 s/page warm, so overlapping
       it with the VLM call would save <1% and was declined.
 
+- [x] **Retire `ocr_debug.py` for an end-to-end debug mode** *(2026-08-11, Sergei's call:
+      "retire the half-stale ocr_debug.py... instead I need an e2e debug mode... independently
+      turnable on/off")*.
+
+      `pii debug ocr` and `pii/core/ocr_debug.py` are gone, with the `debug` CLI namespace, the
+      round-trippable OcrPage JSON/text dumps (consumed by nothing but their own test), and
+      `pdf_mode.rebuild_pdf` — the only caller of which was that command. Replaced by
+      `pii/core/debug_overlay.py` + `strip --debug=<layers>` (`ocr`, `layer-0`, `locate`,
+      `layer-1`, or `all`; `--debug-out` overrides the derived base path), which annotates the
+      page a real strip run processed and writes it beside the output, **one file per layer**.
+
+      Five decisions worth keeping:
+
+      - **Attached to `strip`, not a command of its own.** Everything it draws is a by-product
+        of a run that already paid minutes per page for the model. A standalone command pays
+        twice and, worse, shows a re-run rather than the run that produced the output — the
+        exact way `debug ocr` went stale (it could only ever show perception, never a detection).
+      - **Drawn on the cached raster inside sweep 2**, never on a re-render, for the same reason
+        the page cache exists: the model's `bbox_2d` lives in the coordinate space of the pixels
+        it was shown.
+      - **`layer-1` draws the merged plan with provenance** (`L0` / `DOC` borrowed from another
+        page / `L1` pattern-only) rather than layer 1's own hits in isolation, because the merged
+        plan is what is actually painted. Compared against `layer-0` it shows the pipeline's two
+        characteristic moves directly: an `IDENTIFIER_GENERIC` under an `AU_TFN L0` is layer 1
+        refining a coarse class; a `… L1` with nothing under it is the deterministic recall floor
+        catching what the model missed.
+      - **`layer-0` and `locate` are separate layers** *(Sergei, mid-review: "I thought that
+        level-0 is VLM alone with its rough boxes")* — and he was right. The first cut chipped
+        the placement tier onto the model's box, which files the LOCATOR's verdict under layer
+        0's name; worse, where the model gave no box (the whole `--geometry ocr` regime) that
+        layer silently fell back to drawing located span geometry, so its rectangles were not
+        layer 0's at all. Split: `layer-0` is the model's class on the model's box and nothing
+        else (empty under `--geometry ocr`, which is the truth about that regime), `locate` is
+        the resolved span chipped with its tier (`exact`/`squash`/`fuzzy`/`box`/`dup`). The split
+        pays for itself twice — the two rectangles over one value ARE the "search constraint, not
+        paint geometry" invariant, and an unplaced finding now reads as a `layer-0` box with no
+        `locate` box over it, i.e. by absence, with no tier word needed for it.
+      - **One file per layer, never one page carrying all of them** *(Sergei, after seeing a real
+        overlay: "The output is cluttered if enabled more than 1 layer")*. Combined, four layers
+        on a statement page collide into noise, and the pair most worth comparing (the model's
+        box vs the pixels painted) overlaps by construction. `DebugSpec.paths` inserts the layer
+        name before the extension, so the set sorts together and each file says what is in it.
+
+      `ImageStripResult` now carries the whole `LocateResult` (`placements`), which is what the
+      `locate` layer draws. `paint._frame` grew `chip="none"` for the OCR word boxes — a chip on
+      every word would bury the page under its own labels; the per-layer files removed the need
+      for the above/below chip stacking the first cut had. Model-free tests in
+      `tests/pii/core/test_debug_overlay.py` (layer selection, per-layer isolation by colour,
+      provenance, the tier geometry fallbacks, the unplaced-draws-nothing rule, path naming) plus
+      the strip_pdf per-layer companion tests; verified end-to-end on a synthetic eval page and a
+      2-page PDF.
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

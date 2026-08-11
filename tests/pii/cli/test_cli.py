@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pii.cli import _derive_map, main
+from pii.cli import _derive_debug_out, _derive_map, main
 
 
 def test_derive_map_sits_next_to_input():
@@ -35,15 +35,25 @@ def test_pdf_requires_output():
         main(["strip", "doc.pdf", "--pdf"])
 
 
-def test_debug_ocr_overlay_requires_output():
-    # parser.error fires before any OCR engine loads.
-    with pytest.raises(SystemExit):
-        main(["debug", "ocr", "page.png", "--format", "overlay"])
+def test_derive_debug_out_sits_beside_the_output():
+    assert _derive_debug_out("out/statement.clean.pdf") == str(
+        Path("out/statement.clean.debug.pdf")
+    )
+    assert _derive_debug_out("page.png") == "page.debug.png"
 
 
-def test_debug_requires_subcommand():
+def test_debug_rejects_text_input():
+    # There is no page to draw on; guarded before the model server is touched.
     with pytest.raises(SystemExit):
-        main(["debug"])
+        main(["strip", "doc.txt", "--debug", "all", "--map", "m.json"])
+
+
+def test_debug_rejects_an_unknown_layer():
+    # The 'level-0' spelling is the plausible typo — it must fail loudly
+    # rather than produce an overlay missing the layer that was asked for.
+    with pytest.raises(SystemExit):
+        main(["strip", "doc.pdf", "--pdf", "-o", "out.pdf",
+              "--debug", "ocr,level-0"])
 
 
 @pytest.mark.parametrize(

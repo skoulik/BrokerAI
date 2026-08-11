@@ -163,11 +163,26 @@ quantization item below is what stands between this and a usable product.
       page interleaves other column content between the value's parts, so no *contiguous*
       word window matches — `_fuzzy_windows` only considers contiguous slices of the source
       map, by design (a non-contiguous window would let a span swallow unrelated text). Worth
-      confirming against `pii debug ocr` on that page before choosing a fix. Options: allow a
+      confirming against `strip --debug=ocr,layer-0` on that page before choosing a fix — the
+      layer-0 chips name the tier, so a tier-3 fallback is visible as `box` next to the OCR
+      lines that should have matched it. Options: allow a
       window to skip a bounded number of intervening words when the skipped text is itself
       part of no other finding; or split a long layer-0 value on its own line breaks and
       locate the pieces independently, which fits the "one box per line" painting model
       already in use. Recall is not lost either way — this is exact geometry vs approximate.
+
+- [ ] **A painted box started INSIDE its word and left two characters legible** *(seen
+      2026-08-11 on the first `--debug` run, `pii_eval/corpora/image/s123/loan_04.png` at 150 dpi,
+      Qwen3-VL-8B)*. The page ends "previously resided in Kew." and the output reads
+      "resided in Ke" followed by a narrow `ADDRESS_9` — the paint box covers only the tail of
+      the word. The layer-1 overlay shows the red box beginning mid-word, so this is geometry,
+      not detection: the value WAS located and painted, just not over all of its pixels.
+      `boxes_for_span` is supposed to make this impossible (a word partially covered by a span
+      still yields its whole box), so the suspect is either the word/region split OCR produced
+      for that token or the neighbour-midpoint pull-back in `painted_boxes_for_span`. Reproduce
+      with `strip --debug=ocr,layer-1` and read the word boxes on that line. Note the value is a
+      bare suburb, which layer 0 typed ADDRESS — worth deciding separately whether that should
+      strip at all (see "No standalone place-name detection" in ARCHITECTURE.md).
 
 - [ ] **Measure the hybrid against the `ocr` baseline on the 31-page real corpus** — the
       A/B the design was argued from but has NOT been run: `python -m pii_eval score

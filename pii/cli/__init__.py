@@ -2,9 +2,10 @@
 
     python -m pii strip document.txt -o document.clean.txt
     python -m pii strip statement.pdf --pdf -o statement.clean.pdf
+    python -m pii strip statement.pdf --pdf -o statement.clean.pdf \
+        --debug=ocr,layer-0,layer-1   # + statement.clean.debug.pdf
     python -m pii analyze document.txt
     python -m pii rehydrate cloud_answer.txt --map statement.pii_map.json
-    python -m pii debug ocr statement.pdf --format overlay -o ocr.png
 
 strip/analyze accept '-' to read stdin. The pseudonym map defaults to
 per-document — <input>.pii_map.json next to the input file — so each
@@ -19,6 +20,7 @@ import sys
 from pathlib import Path
 
 from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
+from pii.core.debug_overlay import DEBUG_LAYERS, parse_layers
 from pii.core.ocr import OCR_PAGE_BACKENDS
 # stdlib-only module, so importing it here costs nothing on the default path
 from pii.core.vlm import DEFAULT_GEOMETRY, DEFAULT_URL, GEOMETRIES, VlmError
@@ -41,6 +43,19 @@ def _derive_map(input_path: str) -> str:
     """Per-document map default: statement.pdf -> statement.pii_map.json,
     next to the input document."""
     return str(Path(input_path).with_suffix(".pii_map.json"))
+
+
+def _derive_debug_out(output_path: str) -> str:
+    """Debug overlay base default: statement.clean.pdf ->
+    statement.clean.debug.pdf, which `DebugSpec.paths` then turns into one file
+    per layer (statement.clean.debug.locate.pdf, ...).
+
+    Derived from the OUTPUT, not the input: the operator already chose where
+    this run's artifacts land, and the set belongs together — a run of the
+    same document with different flags overwrites its own overlays instead of
+    the previous run's."""
+    out = Path(output_path)
+    return str(out.with_suffix(f".debug{out.suffix}"))
 
 
 def _build_detector(args):
@@ -184,93 +199,22 @@ def _report_invalid(findings, file=None) -> None:
         print(f"  {f.entity_type:<22} {value!r}  [{f.rule}]", file=file)
 
 
-def _debug_page_images(path: str, is_pdf: bool, page, dpi: int):
-    """Yield (page_number, RGB image) for the selected pages: a single image
-    file, one PDF page (`--page N`), or all PDF pages (`--page` unset)."""
-    from PIL import Image
+def _debug_note(spec) -> None:
+    """List the debug artifacts — and the warning that goes with all of them.
 
-    if not is_pdf:
-        yield 1, Image.open(path).convert("RGB")
-        return
-    import pymupdf
-
-    from pii.core.pdf_mode import _render_page
-
-    with pymupdf.open(path) as doc:
-        if page is not None:
-            if not 1 <= page <= doc.page_count:
-                raise SystemExit(
-                    f"page {page} out of range (1..{doc.page_count})")
-            yield page, _render_page(doc[page - 1], dpi)
-        else:
-            for number, pg in enumerate(doc, 1):
-                yield number, _render_page(pg, dpi)
-
-
-def _page_progress(number: int, count: int) -> None:
-    print(f"page {number}/{count} ...", file=sys.stderr)
-
-
-def _debug(args) -> int:
-    """`pii debug ocr`: OCR the selected page(s) into OcrPage(s) and dump them
-    (json/text) or annotate the raster(s) (overlay). PDFs default to all pages;
-    overlay to a `.pdf` output reconstructs a fresh image-only PDF like strip.
-
-    This shows the geometry the strip path paints with, so a value missing
-    from these lines is a value `--geometry ocr` cannot redact."""
-    import json
-    from dataclasses import replace
-
-    from pii.core import ocr_debug
-    from pii.core.ocr import get_ocr_page
-
-    ocr_fn = get_ocr_page(args.ocr_backend)
-    is_pdf = args.input.lower().endswith(".pdf")
-    out_is_pdf = bool(args.output) and args.output.lower().endswith(".pdf")
-
-    def ocr_of(number, image):
-        # The engine can't know the source path / PDF page / render dpi —
-        # record them on the frame for the dump.
-        page = ocr_fn(image)
-        return replace(page, frame=replace(
-            page.frame,
-            page=number if is_pdf else 1,
-            dpi=args.dpi if is_pdf else None,
-            source=args.input,
-        ))
-
-    if args.format == "overlay":
-        if is_pdf and out_is_pdf:
-            from pii.core.pdf_mode import rebuild_pdf
-            rebuild_pdf(
-                args.input, args.output,
-                lambda n, im: ocr_debug.draw_overlay(im, ocr_of(n, im)),
-                dpi=args.dpi,
-                pages=None if args.page is None else {args.page},
-                progress=_page_progress,
-            )
-            print(f"wrote overlay PDF -> {args.output}", file=sys.stderr)
-            return 0
-        imgs = list(_debug_page_images(args.input, is_pdf, args.page, args.dpi))
-        if len(imgs) != 1:
-            raise SystemExit(
-                "overlay to an image needs a single page — pass --page N, or "
-                "give a .pdf output path to annotate all pages")
-        number, image = imgs[0]
-        ocr_debug.draw_overlay(image, ocr_of(number, image)).save(args.output)
-        print(f"wrote overlay -> {args.output}", file=sys.stderr)
-        return 0
-
-    pages = [ocr_of(n, im) for n, im
-             in _debug_page_images(args.input, is_pdf, args.page, args.dpi)]
-    if args.format == "text":
-        _write(args.output, "\n".join(ocr_debug.page_to_text(p) for p in pages))
-    else:
-        payload = (ocr_debug.page_to_dict(pages[0]) if len(pages) == 1
-                   else [ocr_debug.page_to_dict(p) for p in pages])
-        _write(args.output,
-               json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-    return 0
+    The overlays are drawn on the ORIGINAL page, so they carry the very text
+    the output does not. Warned once per run rather than once per file (four
+    identical warnings train an operator to skip them), but every path is
+    named: an operator who forgets which of these files is the safe one has a
+    breach, not an inconvenience."""
+    paths = spec.paths()
+    print(
+        f"wrote {len(paths)} debug overlay(s) — NOT redacted, they show the "
+        f"original page; keep them local, like the map file:",
+        file=sys.stderr,
+    )
+    for layer, path in paths:
+        print(f"  {layer:<8} -> {path}", file=sys.stderr)
 
 
 def _strip_media(args, pipeline, detector):
@@ -281,12 +225,28 @@ def _strip_media(args, pipeline, detector):
         from pii.core.image_mode import strip_image
 
         pmap = PseudonymMap(args.map)
-        result = strip_image(Image.open(args.input), pipeline, pmap,
+        image = Image.open(args.input).convert("RGB")
+        result = strip_image(image, pipeline, pmap,
                              ocr_backend=args.ocr_backend,
                              detector=detector,
                              geometry=getattr(args, "geometry", DEFAULT_GEOMETRY))
         result.image.save(args.output)
         pmap.save()
+        if args.debug:
+            # Drawn here rather than inside the core call: on a single page the
+            # front-end still holds the pixels the run used, so there is no
+            # cache to reach into (unlike --pdf, where strip_pdf owns them).
+            from pii.core.debug_overlay import (
+                DebugSpec,
+                draw_layers,
+                page_debug,
+            )
+
+            spec = DebugSpec(layers=args.debug, path=args.debug_out)
+            record = page_debug(result)
+            for layer, path in spec.paths():
+                draw_layers(image, record, [layer]).save(path)
+            _debug_note(spec)
         if args.report:
             if result.ocr is not None:
                 print(f"{len(result.spans)} entities detected:", file=sys.stderr)
@@ -319,14 +279,23 @@ def _strip_media(args, pipeline, detector):
             print(f"page {number}/{count} {phases.get(phase, phase)} ...",
                   file=sys.stderr)
 
+        debug_spec = None
+        if args.debug:
+            from pii.core.debug_overlay import DebugSpec
+
+            debug_spec = DebugSpec(layers=args.debug, path=args.debug_out)
+
         pmap = PseudonymMap(args.map)
         result = strip_pdf(args.input, pipeline, pmap, args.output,
                            dpi=args.dpi or DEFAULT_DPI,
                            ocr_backend=args.ocr_backend,
                            progress=progress,
                            detector=detector,
-                           geometry=getattr(args, "geometry", DEFAULT_GEOMETRY))
+                           geometry=getattr(args, "geometry", DEFAULT_GEOMETRY),
+                           debug=debug_spec)
         pmap.save()
+        if debug_spec is not None:
+            _debug_note(debug_spec)
         if args.report:
             total = sum(len(p.spans) for p in result.pages)
             print(f"{total} entities detected:", file=sys.stderr)
@@ -427,6 +396,27 @@ def main(argv=None) -> int:
              "the detector",
     )
     p_strip.add_argument(
+        "--debug", metavar="LAYERS", default=None,
+        help="also write ANNOTATED copies of the page(s) beside the output, "
+             "ONE FILE PER LAYER (--image/--pdf only): a comma-separated list "
+             f"of {', '.join(DEBUG_LAYERS)}, or 'all' — one layer per pipeline "
+             "stage. ocr = word and assembled line boxes; layer-0 = what the "
+             "model named, its class on its own box (empty under --geometry "
+             "ocr, which asks for no boxes); locate = where each finding was "
+             "placed and by which tier (exact/squash/fuzzy/box/dup — a layer-0 "
+             "box with nothing over it was placed by nothing, i.e. not "
+             "redacted); layer-1 = the spans actually painted, their refined "
+             "class and where each came from (L0/DOC/L1). The overlay is drawn "
+             "on the ORIGINAL page and is NOT redacted — keep it local, like "
+             "the map file",
+    )
+    p_strip.add_argument(
+        "--debug-out", metavar="BASE", default=None,
+        help="base path for the annotated copies; the layer name is inserted "
+             "before the extension (default: the output path with '.debug' "
+             "before its extension, e.g. statement.clean.debug.locate.pdf)",
+    )
+    p_strip.add_argument(
         "--columns",
         help="comma-separated column names to process (CSV mode; default all)",
     )
@@ -479,44 +469,7 @@ def main(argv=None) -> int:
              "default to guess here)",
     )
 
-    p_debug = sub.add_parser(
-        "debug", help="diagnostics: inspect the OCR perception layer"
-    )
-    debug_sub = p_debug.add_subparsers(dest="debug_command", required=True)
-    p_debug_ocr = debug_sub.add_parser(
-        "ocr", help="OCR a page and dump/annotate the OcrPage "
-                    "(lines, words, assembly order)"
-    )
-    p_debug_ocr.add_argument("input", help="image or PDF file")
-    p_debug_ocr.add_argument(
-        "-o", "--output",
-        help="output file (default stdout; required for --format overlay)",
-    )
-    p_debug_ocr.add_argument(
-        "--format", choices=["json", "text", "overlay"], default="json",
-        help="json (round-trippable OcrPage), text (human summary), or "
-             "overlay (annotated raster; requires -o) (default json)",
-    )
-    p_debug_ocr.add_argument(
-        "--ocr-backend", choices=list(OCR_PAGE_BACKENDS), default="paddle",
-        help="PaddleOCR model tier (default paddle = PP-OCRv6_medium)",
-    )
-    p_debug_ocr.add_argument(
-        "--page", type=int, default=None,
-        help="1-based page number for PDF input (default: all pages)",
-    )
-    p_debug_ocr.add_argument(
-        "--dpi", type=int, default=200,
-        help="PDF render resolution (default 200)",
-    )
-
     args = parser.parse_args(argv)
-
-    if args.command == "debug":
-        if (args.debug_command == "ocr" and args.format == "overlay"
-                and (not args.output or args.output == "-")):
-            parser.error("--format overlay requires -o OUTPUT (an image path)")
-        return _debug(args)
 
     if args.command == "rehydrate":
         pmap = PseudonymMap(args.map)
@@ -534,6 +487,21 @@ def main(argv=None) -> int:
             parser.error("--image requires -o OUTPUT (an image file path)")
         if args.pdf and (not args.output or args.output == "-"):
             parser.error("--pdf requires -o OUTPUT (a PDF file path)")
+        if args.debug is not None:
+            # Layers are parsed and the destination resolved here, before the
+            # model server is touched: a typo'd layer name must not surface
+            # after minutes of detection with the artifact already unwritable.
+            if not (args.image or args.pdf):
+                parser.error(
+                    "--debug applies to --image/--pdf only: the overlay is "
+                    "drawn on page pixels, and text input has no page"
+                )
+            try:
+                args.debug = parse_layers(args.debug)
+            except ValueError as exc:
+                parser.error(str(exc))
+            if not args.debug_out:
+                args.debug_out = _derive_debug_out(args.output)
         if args.map is None:
             if args.input == "-":
                 parser.error(

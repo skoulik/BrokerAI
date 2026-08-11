@@ -67,3 +67,22 @@ Completed CLI work. The engineering records for the underlying engine features l
       filter deduplicates an identical warning from the same line and a second page with the
       same residue would otherwise report nothing. The same `--geometry` flag was added to
       `pii_eval score`, so the hybrid-vs-ocr A/B is one flag.)*
+
+## Debug overlays replace the `debug` namespace *(2026-08-11)*
+
+- [x] `strip --debug=<layers>` / `--debug-out` — annotate the page(s) a run processed with any
+      combination of `ocr`, `layer-0`, `locate`, `layer-1` (or `all`), **one file per layer**,
+      written beside the output (`--debug-out` is a BASE: the layer name is inserted before the
+      extension, defaulting to the output path with `.debug` in it —
+      `statement.clean.debug.locate.pdf`). `--image` draws in the CLI (the front-end still holds
+      the page); `--pdf` hands `strip_pdf` a `DebugSpec`, because the pixels live in the run's
+      page cache. Layers are parsed and the destination resolved by `parser.error` **before** the
+      model server is touched — a typo'd layer must not surface after minutes of detection — and
+      `--debug` is rejected on text/CSV like `--geometry`, there being no page. The not-redacted
+      warning prints once per run with every path listed under it, rather than once per file:
+      four identical warnings train an operator to skip them.
+
+- [x] `debug ocr` and the whole `debug` subcommand namespace **retired**, with
+      `pii.core.ocr_debug`. It could only show perception, never a detection, and it showed its
+      own re-run rather than the run that produced the output. Engine record and the three
+      design decisions in [../core/DONE.md](../core/DONE.md).

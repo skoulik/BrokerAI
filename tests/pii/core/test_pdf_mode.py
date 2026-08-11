@@ -8,6 +8,8 @@ text layer, painted pixels, clean metadata, per-page results — and, for the
 VLM detector, that the OCR seam is used for GEOMETRY while the injected
 detector supplies the values."""
 
+from pathlib import Path
+
 import pymupdf
 
 import pii.core.pdf_mode as pdf_mode
@@ -45,40 +47,6 @@ def test_pdf_to_images_pages_carry_content(tmp_path):
         colors = {c for _, c in img.getcolors(img.width * img.height)}
         assert (255, 255, 255) in colors  # page background
         assert len(colors) > 1  # ...and drawn text
-
-
-def test_rebuild_pdf_reassembles_all_pages_clean(tmp_path):
-    # The debug-overlay PDF path: render every page, run a per-page image
-    # transform, reassemble a fresh image-only PDF (no text layer, no source
-    # metadata) — same discipline as strip_pdf, exercised with an identity
-    # transform (no OCR).
-    src = tmp_path / "src.pdf"
-    _make_pdf(src, pages=3)
-    seen = []
-
-    def transform(number, image):
-        seen.append((number, image.size))
-        return image
-
-    out = tmp_path / "out.pdf"
-    pdf_mode.rebuild_pdf(src, out, transform, dpi=96)
-    assert [n for n, _ in seen] == [1, 2, 3]
-    doc = pymupdf.open(out)
-    assert doc.page_count == 3
-    assert doc[0].get_text().strip() == ""  # image-only: no text layer
-    assert not doc.metadata.get("title") and not doc.metadata.get("author")
-
-
-def test_rebuild_pdf_page_filter(tmp_path):
-    src = tmp_path / "src.pdf"
-    _make_pdf(src, pages=4)
-    seen = []
-    pdf_mode.rebuild_pdf(
-        src, tmp_path / "out.pdf",
-        lambda n, im: (seen.append(n) or im), dpi=72, pages={2, 4},
-    )
-    assert seen == [2, 4]
-    assert pymupdf.open(tmp_path / "out.pdf").page_count == 2
 
 
 def test_pdf_page_count(tmp_path):
@@ -188,6 +156,62 @@ def test_strip_pdf_paints_over_pii_pixels(tmp_path, pipeline, monkeypatch,
 
 def _near_red(colors):
     return any(r > 200 and g < 100 and b < 100 for r, g, b in colors)
+
+
+def test_strip_pdf_writes_one_companion_per_layer(
+    tmp_path, pipeline, monkeypatch, no_findings
+):
+    """One file per requested layer, each the full document, each unredacted.
+
+    Three properties, all load-bearing: a file per layer (combined, four layers
+    on a statement page are unreadable), every page present in each (a
+    companion that silently skipped a page would hide exactly the page a leak
+    is on), and drawn on the ORIGINAL raster — the red block the strip painted
+    over is still red here. The redacted output must be unaffected by asking."""
+    from pii.core.debug_overlay import DebugSpec
+
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr)
+    src = tmp_path / "doc.pdf"
+    out = tmp_path / "doc.clean.pdf"
+    layers = ("ocr", "layer-0", "locate", "layer-1")
+    spec = DebugSpec(layers=layers, path=tmp_path / "doc.clean.debug.pdf")
+    _make_marked_pdf(src, pages=2)
+    strip_pdf(src, pipeline, PseudonymMap(), out, dpi=72,
+              detector=no_findings, debug=spec)
+
+    written = spec.paths()
+    assert [layer for layer, _ in written] == list(layers)
+    assert [Path(p).name for _, p in written] == [
+        "doc.clean.debug.ocr.pdf", "doc.clean.debug.layer-0.pdf",
+        "doc.clean.debug.locate.pdf", "doc.clean.debug.layer-1.pdf",
+    ]
+
+    inner = Box(EMAIL_BOX.left + 6, EMAIL_BOX.top + 6,
+                EMAIL_BOX.width - 12, EMAIL_BOX.height - 12)
+    for _layer, path in written:
+        with pymupdf.open(path) as doc:
+            assert doc.page_count == 2
+            for page in doc:
+                assert (round(page.rect.width), round(page.rect.height)) == A4
+                assert page.get_text().strip() == ""  # image-only, like strip
+            info = {k: v for k, v in doc.metadata.items()
+                    if k not in ("format", "encryption")}
+            assert not any(info.values())
+        # Unredacted: the pixels the clean output painted over are intact.
+        assert _near_red(_colors(next(pdf_to_images(path, dpi=72)), inner))
+    # ...and the clean output is still redacted.
+    assert not _near_red(_colors(next(pdf_to_images(out, dpi=72)), inner))
+
+
+def test_strip_pdf_writes_no_companion_without_a_debug_spec(
+    tmp_path, pipeline, monkeypatch, no_findings
+):
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr)
+    src = tmp_path / "doc.pdf"
+    _make_marked_pdf(src, pages=1)
+    strip_pdf(src, pipeline, PseudonymMap(), tmp_path / "doc.clean.pdf",
+              dpi=72, detector=no_findings)
+    assert list(tmp_path.glob("*.debug.*")) == []
 
 
 def test_strip_pdf_reports_page_text_and_offsets(tmp_path, pipeline,

@@ -6,6 +6,12 @@ document first and each page stripped against what all of them know.
 The rendered pages live in a temporary on-disk cache in between — see
 `strip_pdf` for why they are cached rather than rendered twice.
 
+`strip_pdf` optionally writes a second, ANNOTATED document beside the
+redacted one (`debug=DebugSpec(...)`, `pii.core.debug_overlay`): the same
+pages with the diagnostic layers drawn on them, unredacted. Same
+fresh-document reassembly, so nothing of the source structure survives
+there either — but it shows the original text, and is near-PII.
+
 
 PDFs are treated as images (core/TODO.md): render pages to pixels, run
 the image path on each page, reassemble. Rationale for pixels-first:
@@ -46,6 +52,7 @@ from typing import Callable, Iterator
 import pymupdf
 from PIL import Image
 
+from pii.core.debug_overlay import DebugSpec, draw_layers, page_debug
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import get_ocr_page
 
@@ -127,6 +134,7 @@ def strip_pdf(
     *,
     detector,
     geometry: str = "hybrid",
+    debug: DebugSpec | None = None,
 ) -> PdfStripResult:
     """Strip a PDF in two sweeps and write a fresh, image-only PDF.
 
@@ -154,6 +162,15 @@ def strip_pdf(
     `progress(page_number, page_count, phase)` is called before each page,
     with phase "read" or "redact" — two sweeps really are two passes over the
     document, and a run measured in minutes per page needs to say which.
+
+    `debug` (a `pii.core.debug_overlay.DebugSpec`) additionally writes one
+    annotated companion PDF **per requested layer**: the same pages,
+    UNREDACTED, with that layer's diagnostics drawn on them. They are produced
+    here rather than by the caller because the pixels to annotate are the ones
+    this run held — the cached raster the model was shown. Annotating a
+    re-render would put the boxes in a coordinate space that is only *assumed*
+    to match. The companions show original text with boxes on top, so they are
+    near-PII: local only.
     """
     # heavy: the analysis stack
     from pii.core.grouping import group_findings
@@ -186,6 +203,14 @@ def strip_pdf(
         grouping = group_findings([read.findings for read in reads])
 
         out_doc = pymupdf.open()
+        # One document per requested layer — see DebugSpec for why they are not
+        # combined. Opened together and written page by page, so a run produces
+        # them in one pass over the cached rasters.
+        debug_docs = (
+            [(layer, path, pymupdf.open()) for layer, path in debug.paths()]
+            if debug is not None
+            else []
+        )
         for index, read in enumerate(reads):
             number = index + 1
             if progress:
@@ -200,11 +225,20 @@ def strip_pdf(
                 ocr=read.ocr, grouping=grouping,
             )
             cached.unlink()
-            buf = io.BytesIO()
-            result.image.save(buf, "JPEG", quality=_JPEG_QUALITY)
             width, height = sizes[index]
-            out_page = out_doc.new_page(width=width, height=height)
-            out_page.insert_image(out_page.rect, stream=buf.getvalue())
+            _embed_page(out_doc, result.image, width, height)
+            if debug_docs:
+                # Drawn on `image`, the page as rendered — NOT on result.image,
+                # which is the redacted copy. The whole point is to read the
+                # original text under the boxes.
+                record = page_debug(result)
+                for layer, _, doc in debug_docs:
+                    _embed_page(
+                        doc,
+                        draw_layers(image, record, [layer]),
+                        width,
+                        height,
+                    )
             pages.append(
                 PdfPageResult(
                     number=number,
@@ -225,6 +259,10 @@ def strip_pdf(
         out_doc.set_metadata({})
         out_doc.save(out_path, garbage=4, deflate=True)
         out_doc.close()
+        for _, path, doc in debug_docs:
+            doc.set_metadata({})
+            doc.save(path, garbage=4, deflate=True)
+            doc.close()
     return PdfStripResult(pages=pages, groups=grouping.groups)
 
 
@@ -232,37 +270,12 @@ def _cache_path(cache: Path, number: int) -> Path:
     return cache / f"page-{number:04d}.png"
 
 
-def rebuild_pdf(
-    src_path: str | Path,
-    out_path: str | Path,
-    transform: Callable[[int, Image.Image], Image.Image],
-    dpi: int = DEFAULT_DPI,
-    pages: set[int] | None = None,
-    progress: Callable[[int, int], None] | None = None,
-) -> None:
-    """Render each source page to `dpi`, run `transform(page_number, image)`
-    -> RGB image, and embed the result into a fresh image-only PDF at the
-    source page's physical size.
+def _embed_page(doc, image: Image.Image, width: float, height: float) -> None:
+    """Append `image` to `doc` as a full-bleed page of the source page's
+    physical size. The one place a page image enters a PDF, so the clean output
+    and the debug companion are encoded identically."""
+    buf = io.BytesIO()
+    image.convert("RGB").save(buf, "JPEG", quality=_JPEG_QUALITY)
+    page = doc.new_page(width=width, height=height)
+    page.insert_image(page.rect, stream=buf.getvalue())
 
-    Same fresh-document discipline as strip_pdf — no text layer, annotations
-    or metadata from the source survive — but generic in the per-page image
-    transform, so the debug overlay (and any other page-image annotation)
-    reassembles a PDF through one code path. `pages` (a set of 1-based page
-    numbers, None = all) selects which pages to include."""
-    out_doc = pymupdf.open()
-    with pymupdf.open(src_path) as doc:
-        for number, page in enumerate(doc, 1):
-            if pages is not None and number not in pages:
-                continue
-            if progress:
-                progress(number, doc.page_count)
-            annotated = transform(number, _render_page(page, dpi)).convert("RGB")
-            buf = io.BytesIO()
-            annotated.save(buf, "JPEG", quality=_JPEG_QUALITY)
-            out_page = out_doc.new_page(
-                width=page.rect.width, height=page.rect.height
-            )
-            out_page.insert_image(out_page.rect, stream=buf.getvalue())
-    out_doc.set_metadata({})
-    out_doc.save(out_path, garbage=4, deflate=True)
-    out_doc.close()

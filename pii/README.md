@@ -35,7 +35,8 @@ python -m pii strip scan.png --image -o scan.clean.png
 python -m pii strip statement.pdf --pdf -o statement.clean.pdf
 python -m pii analyze document.txt            # show detections, change nothing
 python -m pii rehydrate cloud_answer.txt --map statement.pii_map.json
-python -m pii debug ocr statement.pdf --format overlay -o ocr.png  # inspect OCR
+python -m pii strip statement.pdf --pdf -o statement.clean.pdf \
+    --debug=ocr,layer-0,layer-1               # + an annotated copy, see below
 ```
 
 `strip`/`analyze` accept `-` for stdin. The pseudonym map is
@@ -148,22 +149,39 @@ pass consumes them) rather than being rendered again, so what gets
 painted is exactly what the model looked at. `--report` prefixes
 detections with their page number and prints the entity groups.
 
-## OCR inspection (debug)
+## Debug overlays
 
-`pii debug ocr <image|pdf>` OCRs the page(s) and dumps the **perceived structure** — lines,
-words and their boxes — for inspecting what the OCR stage produced (no PII detection, no
-painting). This is the geometry the strip path paints with, so a value missing from these
-lines can only be redacted from the model's own box. `--format json` (round-trippable), `text` (human
-summary), or `overlay` (annotated raster) — the overlay outlines each word in grey and each
-assembled line in blue with its index, which makes the row banding visible. `--ocr-backend`
-takes the same model tiers as `strip` (`paddle` default).
+`--debug=<layers>` on `strip --image`/`--pdf` writes annotated copies of the page(s) beside the
+output, showing how the run reached its decisions. There is one layer per **pipeline stage**,
+each independently selectable (`--debug=all` for every one), and **each layer gets its own
+file** — combined, they are unreadable on a real statement page:
 
-For PDFs, **all pages** are processed by default (`--page N` selects one; `--dpi` sets the
-render resolution). `overlay` output follows the `-o` extension: `-o out.pdf` reconstructs a
-fresh image-only PDF with every page annotated (same reassembly as `--pdf` strip — no source
-structure survives), `-o out.png` annotates a single page. **The overlay PDF is not redacted** —
-it shows the original text with boxes drawn on top, so it (and any json/text dump) is near-PII:
-keep it local, like the map file.
+| layer | drawn | tells you |
+|---|---|---|
+| `ocr` | word boxes (grey) and assembled line boxes, numbered (blue) | what OCR perceived, and how rows were banded — the geometry painting can use at all |
+| `layer-0` | the model's own `bbox_2d` (magenta), labelled with its class | what the LLM named and as which class — nothing else. Empty under `--geometry ocr`, which never asks the model for boxes |
+| `locate` | where the value was actually placed (orange), labelled with the tier | which route tied the model's string to pixels: `exact` / `squash` / `fuzzy` (matched inside the box, OCR damage) / `box` (no OCR text matched — the model's padded box is the only geometry) / `dup` (already covered by a wider finding) |
+| `layer-1` | the boxes actually painted (red), labelled `CLASS source` | the final plan: the class after refinement, and where the span came from — `L0` the model found it here, `DOC` another page (or another occurrence) did, `L1` only a pattern/checksum did |
+
+Compared across files they explain the pipeline's characteristic moves: an `IDENTIFIER_GENERIC`
+on `layer-0` under an `AU_TFN L0` on `layer-1` is layer 1 refining a coarse class; a `… L1` with
+nothing under it on `layer-0` is the deterministic recall floor catching what the model missed;
+and a `layer-0` box with **no box at the same place on `locate`** is a detection nothing could
+place — an unredacted value, the one thing not to miss. The difference between the `layer-0` and
+`locate` rectangles is the design in [core/ARCHITECTURE.md](core/ARCHITECTURE.md) made visible:
+the model's box is a search constraint, never paint geometry.
+
+Files are named from the clean output with `.debug` and the layer inserted before the extension
+— `statement.clean.pdf` → `statement.clean.debug.ocr.pdf`, `…debug.locate.pdf`, and so on;
+`--debug-out` overrides the base. Each PDF is a fresh image-only document with every page
+annotated, the same reassembly as `--pdf` strip.
+
+**The overlay is not redacted.** It is drawn on the original page — that is the point, you are
+reading the text under the boxes — so it is near-PII: keep it local, like the map file.
+
+There is no separate OCR-inspection command; the overlay comes from a real strip run, so what
+it shows is what that run did rather than a re-run that may differ (`pii debug ocr` was retired
+2026-08-11).
 
 ## Checksum-invalid identifiers
 
