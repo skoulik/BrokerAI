@@ -65,6 +65,118 @@ quantization item below is what stands between this and a usable product.
       of a value can genuinely sit in two places. The finding therefore stays counted on
       `unlocated`. Record in [DONE.md](DONE.md).
 
+- [ ] **A borrowed value cannot be matched through OCR damage** (Sergei, 2026-08-11, on
+      reviewing the document-wide grouping: *"Limit 1 is what bothers me. But let's see how it
+      goes with current implementation first."* — so this is a **watch item, deliberately not
+      built**). `locator.locate_borrowed` matches exact-or-squash only, because no box
+      constrains a value borrowed onto another page and page-wide edit distance always finds
+      something, somewhere, wrong (ARCHITECTURE, "A page is not the unit of truth").
+      Consequence: a value the model named on page 1 will not be recovered on page 4 if OCR
+      damaged it *there*.
+
+      **The gap is narrower than it sounds**, which is why it is worth measuring before
+      designing for it: it needs BOTH failures at once on the same page — OCR damage AND the
+      VLM not reporting the value on that page. Where the model does report it, its own box
+      licenses the fuzzy tier and the damage is already absorbed.
+
+      **What would tell us it is real:** in a `--modality pdf` run, a leaked truth value whose
+      value belongs to an entity group. That means the document knew it and the page still let
+      it through — either this, or the page had no OCR text for it at all. The cheap
+      instrumentation is one column in the scorer: for each leaked entity, whether its value is
+      in a group. Until that number exists this item is a suspicion, not a finding.
+
+      Candidate fixes if it does bite, in increasing order of risk: require a fuzzy borrowed
+      match to be UNIQUE on the page (a needle that matches two places is rejected outright);
+      restrict fuzzy windows to lines that already contain another confirmed group member (a
+      statement header block); or accept page-wide fuzzy for identifier-shaped values only,
+      where the confusion table is the strict cross-class one and a false match is far less
+      likely than for prose. Whichever is chosen, it must not weaken the box-constrained rule
+      that governs `locate_findings`.
+
+- [ ] **Run the TEXT layer-0 pass over the OCR'd page text as well** (Sergei, 2026-08-11,
+      raised while reviewing the borrowed-matching limit above — *"an independent text-only
+      detection pass to run on the OCR-ed text... could fix the reverse failure where the OCR
+      finds the text but the VLM does not flag it"*). Written down, not designed.
+
+      **The two gaps are mirror images.** Grouping propagates what the VLM found SOMEWHERE in
+      the document; this would catch what the VLM found NOWHERE, on text OCR read perfectly
+      well. Two detectors reading the same page through different senses fail differently — the
+      vision pass can lose small print or a dense table to its own token resolution, where a
+      language model reading the characters cannot. And the two compose: a value the text pass
+      catches on page 4 joins the same entity group, so it propagates back to pages 1-3 for
+      free.
+
+      **Most of the plumbing already exists.** `text_llm.TextDetector` is the same model and the
+      same five-class vocabulary, `linearize(OcrPage).text` is the string layer 1 already runs
+      on, and its findings would land in that same offset space — so `locate_in_text` places
+      them exactly (the model quotes from the string it was handed), the source map turns those
+      spans into pixel boxes by interval intersection, and `merge_detections` unions them like
+      any other layer-0 source. **No geometry problem at all**, which is the striking part: this
+      pass needs no box, no locator tier and no fallback.
+
+      **It is cheap as an addition, and potentially transformative as a REPLACEMENT** (Sergei:
+      *"it will also work faster — if used instead of image pass"*). The measured ~300 s/page is
+      dominated by image prefill (~130 s per vision call, 74%, and the two vision passes do not
+      share it — see the serving item); a page of text is a few thousand tokens with no image to
+      ingest.
+
+      **The shape of the feature is two INDEPENDENT switches, not a three-way mode** (Sergei,
+      2026-08-11): vision and text are each on or off, and the operator balances speed against
+      quality by choosing. Three legal combinations:
+
+      1. **Vision only** — today. Best on layout and on anything without a text layer; ~300 s/page.
+      2. **Vision + text** — the union above. Best recall, most expensive.
+      3. **Text only** — OCR → linearize → text layer 0 + layer 1 → paint. Structurally the
+         pre-2026-08-08 architecture with a far better semantic detector in place of GLiNER2,
+         and it would be **one to two orders of magnitude faster**, which would settle the
+         serving/throughput item outright rather than adding to it.
+
+      Guardrails that must be built with the switches, not after them:
+
+      - **Both off must be refused at the front-end**, loudly. It is the `--no-ner` patterns-only
+        regime retired 2026-07-15 as unsafe, and the standing rule is that a strip entry point
+        always takes a detector — it must not become reachable by turning two flags off.
+      - **Turning vision off is a knowingly reduced redaction, not a free speedup**, and the
+        run output has to say so. What is given up is listed above (no-OCR-text content, native
+        layout reading); an operator choosing speed should see that in the report, and a
+        stripped document's trustworthiness now depends on which modalities ran.
+      - **`--geometry vlm` and text-only are mutually exclusive** — that path never runs OCR, so
+        there is no text for the text pass to read. Reject the combination rather than silently
+        forcing one.
+      - Open: the CLI surface (two boolean flags vs one `--layer0 vision,text` list), and
+        whether the default is both (recall-first) or vision-only (today's behaviour preserved).
+
+      What regime 3 gives up is specific and known, which is what makes it measurable: content
+      with **no OCR text at all** (logos, barcodes, handwriting — locator tier 3 today, and the
+      only geometry that exists for it comes from the model's own box), and the VLM's **native
+      reading of spatial structure**, which is why the segmenter was retired — a linearized page
+      bands side-by-side columns into one line, and issue #8a is exactly what that costs.
+
+      **The A/B that decides it has a precedent to copy**: hold layer 1 constant, vary only the
+      semantic detector over the same pages, score per class — the shape of
+      [reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md),
+      which retired layer 2 on exactly that evidence. The multi-page rendered corpus can run all
+      three regimes over identical pixels.
+
+      Known risks to design against when it is picked up:
+      - **It inherits OCR damage and OCR omissions.** Anything OCR dropped or mangled is
+        invisible to it, and this is precisely what regime 3 is betting against: under vision +
+        text the vision pass covers that residue, under text only nothing does. So the OCR
+        fidelity numbers stop being a background quality metric and become the floor under
+        detection itself.
+      - **`_rows` banding is load-bearing but visually false.** The linearized page interleaves
+        side-by-side columns into one line on purpose (it is how context promotion reaches a
+        value in a column beside its own label), so this pass would read lines that do not
+        exist visually — exactly the aliasing in issue #8a below, which the VLM reading pixels
+        does not have. Whether that costs precision is measurable.
+      - **Over-strip.** Two semantic detectors unioned is more false positives by construction;
+        recall-first accepts that, and the real-corpus over-strip axis is where it shows.
+      - **The vote.** Its findings would vote in the entity groups. Whether a text-modality
+        opinion should weigh the same as a vision one is a real question, and it interacts with
+        the vote's ability to un-redact.
+      - Whether it runs on every page or only as a backstop where the vision pass found little
+        — cheaper, but unpredictable in exactly the cases that matter.
+
 - [ ] **A value wrapped across lines/columns falls to tier 3 instead of matching** (same run).
       The model returned an address and a vehicle description as single long strings; both
       landed on tier 3, i.e. painted from the model's box rather than exact word boxes, even
