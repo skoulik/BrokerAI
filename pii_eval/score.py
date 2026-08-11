@@ -25,6 +25,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
+from pii_eval.build import CORPUS_KEEP_FILE
 from pii.core.csv_mode import strip_csv
 from pii.core.text_mode import strip_text
 
@@ -137,8 +138,12 @@ def score(corpus: str, threshold: float = 0.4,
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "truth.json").read_text("utf-8"))
     layer0 = build_text_detector()
+    # The corpus's own keep list, not the shipped one: the keep axis must
+    # measure the tool against what this generator emits (see
+    # pii_eval/entity_keep.txt).
     pipeline = PiiPipeline(threshold=threshold,
-                           invalid_identifiers=invalid_identifiers)
+                           invalid_identifiers=invalid_identifiers,
+                           entity_keep=CORPUS_KEEP_FILE)
 
     all_entities = []
     all_invalid = []

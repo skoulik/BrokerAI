@@ -16,11 +16,13 @@ original PII — treat it as sensitive and never share it.
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
 from pii.core.debug_overlay import DEBUG_LAYERS, parse_layers
+from pii.core.entity_keep import load_keep
 from pii.core.ocr import OCR_PAGE_BACKENDS
 # stdlib-only module, so importing it here costs nothing on the default path
 from pii.core.vlm import DEFAULT_GEOMETRY, DEFAULT_URL, GEOMETRIES, VlmError
@@ -339,7 +341,15 @@ def main(argv=None) -> int:
     )
     p_strip.add_argument(
         "--strip-orgs", action="store_true",
-        help="also replace organization names (kept by default)",
+        help="replace every organization name, ignoring the keep list",
+    )
+    p_strip.add_argument(
+        "--entity-keep", metavar="FILE", default=None,
+        help="values to keep unredacted: a file of one regex per line, in "
+             "optional [ENTITY_TYPE] sections (default: $PII_ENTITY_KEEP, else "
+             "the shipped list of institutions and common merchants). What is "
+             "NOT matched is stripped — keeping is opt-in, because an unknown "
+             "name may be the account holder's own company or trust",
     )
     p_strip.add_argument("--threshold", type=float, default=0.4)
     p_strip.add_argument(
@@ -520,14 +530,27 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
 
-    strip_entities = set(DEFAULT_STRIP_ENTITIES)
+    # Where the keep list comes from is a front-end decision (pii.core reads no
+    # environment); a bad path or a bad pattern in it must stop the run here,
+    # before a document is processed against a list that is not what the
+    # operator thinks it is.
+    keep_path = (
+        getattr(args, "entity_keep", None) or os.environ.get("PII_ENTITY_KEEP")
+    )
+    try:
+        entity_keep = load_keep(keep_path)
+    except ValueError as exc:
+        raise SystemExit(f"pii: {exc}") from None
     if getattr(args, "strip_orgs", False):
-        strip_entities.add("ORGANIZATION")
+        # Expressed as data: --strip-orgs simply drops that section, so
+        # "ignore the keep list for organizations" needs no second code path.
+        entity_keep = entity_keep.without("ORGANIZATION")
     pipeline = PiiPipeline(
         threshold=args.threshold,
-        strip_entities=strip_entities,
+        strip_entities=set(DEFAULT_STRIP_ENTITIES),
         invalid_identifiers=args.invalid_identifiers,
         mask_invalid=mask_invalid,
+        entity_keep=entity_keep,
     )
     detector = _build_detector(args)
     if getattr(args, "image", False) or getattr(args, "pdf", False):

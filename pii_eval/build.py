@@ -6,6 +6,13 @@ annotation types use the pii pipeline's entity names (pii/core/pipeline.py).
 """
 
 from dataclasses import dataclass, asdict
+from pathlib import Path
+
+# The keep list the scorers run against — the corpus's own, never the shipped
+# one. An organization survives only by being on a keep list (2026-08-11), so
+# the over-strip axis is only meaningful against a list that names what THIS
+# generator emits. See pii_eval/entity_keep.txt.
+CORPUS_KEEP_FILE = Path(__file__).with_name("entity_keep.txt")
 
 # Entity types whose leak is an automatic acceptance failure (pii/ROADMAP.md:
 # scoring is recall-first and severity-weighted). PERSON_JOINT joined
@@ -76,9 +83,11 @@ class Doc:
         return self.pii(value, "ORGANIZATION", strip_expected=False)
 
     def private_org(self, value: str) -> "Doc":
-        # account-holder private entity (PTY LTD / TRUST / ...) — stripped by
-        # org_policy, unlike merchant/institution orgs (.org). Own truth type
-        # so it scores on the recall/leak axis, not the over-strip axis.
+        # The account holder's own entity (PTY LTD / TRUST / ...). Stripped
+        # because no keep list names it (pii.core.entity_keep) — which is now
+        # true of ANY unrecognized organization; before 2026-08-11 it needed a
+        # legal-form marker to strip at all. Own truth type so it scores on the
+        # recall/leak axis, not the over-strip axis.
         return self.pii(value, "ORGANIZATION_PRIVATE", strip_expected=True)
 
     def page_break(self) -> "Doc":

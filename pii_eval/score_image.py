@@ -36,6 +36,7 @@ from pii.core.image_mode import strip_image
 from pii.core.linearization import linearize
 from pii.core.ocr import get_ocr_page
 from pii.core.vlm import DEFAULT_GEOMETRY
+from pii_eval.build import CORPUS_KEEP_FILE
 from pii_eval.score import _norm
 
 # Classic OCR confusion pairs, collapsed to one representative per class.
@@ -221,8 +222,12 @@ def score_image(corpus: str, threshold: float = 0.4,
     source = (corpus_path / manifest["source"]).resolve()
     truth = json.loads((source / "truth.json").read_text("utf-8"))
     truth_by_file = {d["file"]: d for d in truth["docs"]}
+    # The corpus's own keep list, not the shipped one: the keep axis must
+    # measure the tool against what this generator emits (see
+    # pii_eval/entity_keep.txt).
     pipeline = PiiPipeline(threshold=threshold,
-                           invalid_identifiers=invalid_identifiers)
+                           invalid_identifiers=invalid_identifiers,
+                           entity_keep=CORPUS_KEEP_FILE)
 
     all_entities = []
     all_invalid = []

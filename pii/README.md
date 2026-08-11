@@ -48,9 +48,54 @@ stdin input always need an explicit `--map` (there is no input document
 to derive it from). **The map contains the original PII — it is
 gitignored and must never leave the machine.**
 
-Flags: `--strip-orgs` (organization names are kept by default — merchant
-names carry analytical value), `--threshold` (default 0.4), and the
-checksum-invalid identifier controls below.
+Flags: `--entity-keep` / `--strip-orgs` (see [the keep
+list](#the-keep-list-what-survives) below), `--threshold` (default 0.4), and
+the checksum-invalid identifier controls below.
+
+## The keep list: what survives
+
+**A detected value is replaced unless the keep list matches it, and a match
+exempts only what it covers.** That list — institutions, card networks,
+utilities and common merchants — is a plain file of one regex per line, so it
+is tuned per document set rather than in code:
+
+```
+python -m pii strip statement.pdf --pdf -o out.pdf --entity-keep my_keeps.txt
+```
+
+Resolution: `--entity-keep FILE`, else `$PII_ENTITY_KEEP`, else the shipped
+`pii/core/data/entity_keep.txt`. `--strip-orgs` ignores the list's
+`ORGANIZATION` section and replaces every organization name.
+
+Sections scope patterns to one class (`[PHONE_NUMBER]`, `[ADDRESS]`, …); lines
+before the first section are `ORGANIZATION`, the common case. A class the file
+does not mention keeps nothing — **silence means strip**.
+
+A detected span is often wider than the name on the list — a model reads a
+whole statement narrative field as one organization — so the match is
+**subtracted**, not treated as a pass for everything around it:
+
+```
+FROM SK BUSINESS TRUS ANZ HIGHETT LOAN   ->   FROM ORG_1 ANZ ORG_2
+WOOLWORTHS NEWTOWN 4821 AU               ->   WOOLWORTHS ORG_3
+www.anz.com                              ->   www.anz.com
+```
+
+The match grows to its whitespace-delimited token (so `www.anz.com` survives
+whole rather than becoming `ORG.ANZ.ORG`), and a leftover fragment under four
+alphanumeric characters is left alone — `ANZ App` and `TO ANZ LN` keep their
+connectives instead of shredding into placeholders.
+
+Why keeping is opt-in rather than the reverse: an unrecognized organization may
+be the account holder's own company or trust, which identifies them as surely
+as their surname, and a real statement mangles the evidence that used to prove
+it — one printed `SK BUSINESS TRUST` as `SK BUSINESS TRUS` in a fixed-width
+field and the truncated name was kept three times on a page. An over-strip
+costs analytical value; an under-strip is a breach. The cost is real: a
+merchant you never listed becomes `ORG_n`, so grow the file from what your
+documents actually contain. The shipped `[PHONE_NUMBER]` section shows the
+shape of the next case — an institution's `1300` support line — commented out,
+because on a business account the holder's own service line is identifying too.
 
 ## Images
 
@@ -239,12 +284,13 @@ logged 44 noise findings over 11 docs.
    in financial documents.
 3. **Local-LLM audit pass** — planned.
 
-Behaviour worth knowing when running the tool: `DATE_TIME` and
-`ORGANIZATION` are detected but **kept** by default (transaction dates and
-merchant names are the analytical substance of a statement; `DATE_OF_BIRTH`
-is stripped); some over-stripping is the accepted recall-first cost — every
-ambiguity resolves toward stripping. The design rationale behind all of this
-lives in [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
+Behaviour worth knowing when running the tool: `DATE_TIME` is detected but
+**kept** (transaction dates; `DATE_OF_BIRTH` is stripped), and everything else
+detected is replaced unless [the keep list](#the-keep-list-what-survives)
+names it — which is how merchant and institution names survive. Some
+over-stripping is the accepted recall-first cost: every ambiguity resolves
+toward stripping. The design rationale behind all of this lives in
+[core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 
 ## Performance
 

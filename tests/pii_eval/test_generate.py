@@ -113,8 +113,8 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     ), "no colliding-surname draw in corpus"
 
     # Account-holder private entities: a trust and a PTY LTD name must appear
-    # as strip-expected ORGANIZATION_PRIVATE (org_policy, 2026-07-21) — the
-    # reverse of the old keep-org stance.
+    # as strip-expected ORGANIZATION_PRIVATE — no keep list names them
+    # (pii.core.entity_keep), the reverse of the old keep-org stance.
     private = [e["value"] for e in by_type["ORGANIZATION_PRIVATE"]]
     assert any("TRUST" in v for v in private), "no trust name as private-org"
     assert any("PTY LTD" in v for v in private), "no PTY LTD name as private-org"
@@ -199,8 +199,9 @@ def test_the_account_name_is_reprinted_truncated(tmp_path):
     """The specimen that motivated fuzzy borrowed matching (2026-08-11): a
     value printed in full on one page and TRUNCATED to a fixed-width field on
     another. Both certain matching tiers miss it — the known value is a strict
-    superstring of what the page prints — and the truncation removes the
-    legal-form marker org_policy keys on, so layer 1 cannot rescue it either.
+    superstring of what the page prints — so the probe isolates the fuzzy
+    borrowed tier. (Until 2026-08-11 the truncation also removed the
+    legal-form marker the org policy keyed on, which made it a leak outright.)
     """
     corpus = generate(str(tmp_path / "c"), seed=42, docs=3)
     truth = json.loads((corpus / "truth.json").read_text("utf-8"))

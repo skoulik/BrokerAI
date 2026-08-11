@@ -435,14 +435,20 @@ class JointNameRule(PatternRule):
 class AtfTailRule(PatternRule):
     """The trustee clause of '<company> ATF <trust name>' lines — issue #9.
     Real statements truncate the account-name field mid-word ('SK MANAGEMENT
-    VICTORIA PTY LTD ATF SK BU'), which defeats both a model's confidence on
-    the truncated fragment and org_policy's marker matching ('TRU'/'BU' are not
-    'TRUST'). The connector itself is the one reliable signal, so the
+    VICTORIA PTY LTD ATF SK BU'), which defeats a model's confidence on the
+    truncated fragment. The connector itself is the one reliable signal, so the
     mechanical form is owned at layer 1: match 'ATF' / 'as trustee(s) for' plus
-    the rest of the line (capped) as one ORGANIZATION span. org_policy then
-    strips it as a private entity — 'atf'/'trustee' are marker words — so the
-    trust name is covered no matter where the doc cut it off. A false 'ATF' hit
-    in prose costs an over-strip of one line tail (safe direction)."""
+    the rest of the line (capped) as one ORGANIZATION span, so the trust name
+    is covered no matter where the document cut it off. A false 'ATF' hit in
+    prose costs an over-strip of one line tail (safe direction).
+
+    What made this rule necessary has changed and it is worth being precise
+    about: it used to also supply the EVIDENCE that the span was private, since
+    the old policy stripped an organization only when it carried a legal-form
+    marker and 'TRU'/'BU' are not 'TRUST'. Since 2026-08-11 an organization
+    strips unless the keep list exempts it, so a detected trust fragment needs
+    no marker. The rule survives for the other half of its job — CREATING the
+    span over a fragment layer 0 may not report at all."""
 
     entity = "ORGANIZATION"
     patterns = (

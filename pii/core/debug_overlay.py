@@ -23,7 +23,11 @@ annotating the SAME pixels the run processed, and each written to ITS OWN file
   with the class after refinement and with where the span came from — `L0` the
   model found it here, `DOC` the document lent it (another page, or another
   occurrence of a value named once), `L1` a pattern/checksum caught what the
-  model missed.
+  model missed. Values that were detected and then EXEMPTED by the keep list
+  are drawn here too, in a muted outline chipped `skipped`: they are not
+  painted, and "found, then skipped" appeared on no layer at all until this
+  was added — the state an operator is looking at when a value they expected
+  redacted is still readable.
 
 The layer-0 / locate split is load-bearing rather than tidiness (Sergei,
 2026-08-11): layer 0 is the VLM alone with its rough boxes, and which tier
@@ -70,6 +74,7 @@ _LINE_COLOR = (30, 120, 220)  # blue — assembled line boxes, numbered
 _LAYER0_COLOR = (190, 40, 190)  # magenta — the model's own view
 _LOCATE_COLOR = (235, 140, 0)  # orange — where the locator put it
 _LAYER1_COLOR = (220, 30, 30)  # red — the strip painter's own frame color
+_SKIPPED_COLOR = (120, 130, 140)  # slate — detected, then kept by policy
 
 # Placement.kind -> what the locate chip says. There is deliberately no entry
 # for `None`: a finding nothing could place has no honest geometry, so it draws
@@ -128,6 +133,7 @@ class PageDebug:
     placements: tuple = ()  # pii.core.locator.Placement — layer 0
     spans: tuple = ()  # the merged strip plan — what was painted
     borrowed: tuple = ()  # spans this page owes to the rest of the document
+    skipped: tuple = ()  # detected, then exempted by the keep list
 
 
 def parse_layers(spec: str) -> tuple[str, ...]:
@@ -160,6 +166,7 @@ def page_debug(result) -> PageDebug:
         placements=tuple(result.placements),
         spans=tuple(result.spans),
         borrowed=tuple(result.borrowed),
+        skipped=tuple(getattr(result, "skipped", ())),
     )
 
 
@@ -192,6 +199,12 @@ def draw_layers(
             color=_LOCATE_COLOR, width=2,
         )
     if "layer-1" in wanted and debug.ocr is not None:
+        # Skipped first, so a painted span drawn over one is what reads on top:
+        # the plan is the stronger fact.
+        out = paint_segments(
+            out, _skipped_segments(debug), margin=0, style="frame",
+            color=_SKIPPED_COLOR, width=2,
+        )
         out = paint_segments(
             out, _layer1_segments(debug), margin=0, style="frame",
             color=_LAYER1_COLOR, width=3,
@@ -281,6 +294,21 @@ def _layer1_segments(debug: PageDebug) -> list[Segment]:
             debug.ocr.painted_boxes_for_span(span.start, span.end),
         )
         for span in debug.spans
+    ]
+
+
+def _skipped_segments(debug: PageDebug) -> list[Segment]:
+    """Detected, then exempted by the keep list — NOT painted.
+
+    Drawn with the boxes the span would have been painted with, so the outline
+    marks the pixels that stayed readable and the chip names the class that was
+    let through."""
+    return [
+        Segment(
+            f"{span.entity_type} skipped",
+            debug.ocr.painted_boxes_for_span(span.start, span.end),
+        )
+        for span in debug.skipped
     ]
 
 

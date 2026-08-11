@@ -31,7 +31,7 @@ from pathlib import Path
 from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
 from pii.core.pdf_mode import pdf_to_images, strip_pdf
 from pii.core.vlm import DEFAULT_GEOMETRY
-from pii_eval.build import CRITICAL
+from pii_eval.build import CORPUS_KEEP_FILE, CRITICAL
 from pii_eval.score_image import (
     _noise,
     _score_invalid,
@@ -55,8 +55,12 @@ def score_pdf(corpus: str, threshold: float = 0.4,
 
     ocr = reread_engine()
     vlm = build_detector(geometry)
+    # The corpus's own keep list, not the shipped one: the keep axis must
+    # measure the tool against what this generator emits (see
+    # pii_eval/entity_keep.txt).
     pipeline = PiiPipeline(threshold=threshold,
-                           invalid_identifiers=invalid_identifiers)
+                           invalid_identifiers=invalid_identifiers,
+                           entity_keep=CORPUS_KEEP_FILE)
 
     all_entities = []
     all_invalid = []

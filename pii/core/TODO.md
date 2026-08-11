@@ -430,6 +430,83 @@ quantization item below is what stands between this and a usable product.
       engine. Must never feed the strip decision (we deliberately distrust the text layer).
 ## Detection pipeline
 
+- [ ] **A span the keep list splits produces fragments that never rejoin the group they came
+      from** *(Sergei, 2026-08-11, on seeing `FROM SK BUSINESS TRUS ANZ HIGHETT LOAN` strip to
+      `FROM ORG_5 ANZ ORG_6`: "I think we should run re-grouping after splits. Highett is not an
+      organization, it is an address...")*. To think about, not yet designed.
+
+      Grouping runs in sweep 1, on layer-0 findings; `apply_keep` splits spans in sweep 2. So a
+      fragment inherits its parent's class and its own placeholder, and nothing reconsiders
+      either. Two symptoms on one real page, both measured:
+
+      - **Wrong class.** `HIGHETT LOAN` is the tail of a narrative field naming a suburb, kept
+        as ORGANIZATION because the span it was cut from was one. Re-running the existing
+        grouping would NOT fix it: `type_for('HIGHETT LOAN')` is None, because nothing in the
+        document types Highett as an address — layer 0 called the whole line an organization,
+        and layer 1 has no place-name detection *by design* (see "No standalone place-name
+        detection" in ARCHITECTURE.md). Fixing this needs either knowledge the tool deliberately
+        refuses (a gazetteer) or a fresh layer-0 call per fragment. Note the class decides a
+        placeholder label here, not whether anything is redacted.
+      - **Split placeholder.** `sk business trust -> ORG_2` and `sk business trus -> ORG_5` in
+        the same map: one entity, two placeholders. `type_for('SK BUSINESS TRUS')` is also None,
+        and the reason is a constant — `GROUP_BUDGET` is 0.9 while a single deletion costs 1.0,
+        so a document-truncated form is not considered the same entity as its full form.
+
+      **The sharp version of that second symptom, and the part worth thinking about first: a
+      value MATCHED as a borrowed occurrence does not join the group of the needle that matched
+      it** *(Sergei, 2026-08-11)*. Two components already disagree about whether these are one
+      entity, measured on the same pair of strings:
+
+          needle 'skbusinesstrust' (15)  vs  page 'skbusinesstrus'   edit distance 1.0
+            locator.borrowed_budget  = 3.0  -> MATCHES, and paints it
+            grouping.GROUP_BUDGET    = 0.9  -> NOT the same entity, so a new placeholder
+
+      So `locate_borrowed` redacts the truncated printing *because it is the known value*, and
+      the map then records it as a different value. Whichever way it is resolved, the two
+      budgets answering one question ("is this the same entity?") with different numbers is the
+      thing to look at — `grouping.py` already carries the same warning about
+      `fuzzy.identifier_shaped`, which is deliberately shared with the locator "because the
+      locator asks the same question when it matches a borrowed value and the two must not
+      disagree". Note the budgets are tuned against different risks (a wrong group election
+      mislabels a whole document-wide entity; a wrong borrowed match is additive over-strip), so
+      the fix is probably not simply one constant — a borrowed match could instead CARRY its
+      needle's identity to the span it produced, which is the information the map is missing.
+
+      The second symptom is not really about splits at all, which is why this needs thought
+      before code: the map keys on the SURFACE FORM, so `olga kulik -> PERSON_1` and
+      `kulik olga -> PERSON_3` are already two placeholders for one person today. Grouping
+      elects the class and never unifies the placeholder. Levers: re-key fragments against the
+      grouping after splitting; key the pseudonym map on the group rather than the string, which
+      unifies placeholders across every variant but makes rehydration restore one canonical form
+      where the document printed several.
+
+      **Whatever the fix, it must treat borrowed items GENTLY — no greedy group expansion**
+      *(Sergei, 2026-08-11)*. `_cluster` is single-link union-find, so a group is transitive by
+      construction: every member's matching surface is the group's. Two consequences bound the
+      design space, and they rule out the lever that looks smallest.
+
+      - **Do not make a borrowed match a member.** A matched variant would become a needle, that
+        needle would match the next mangled printing, and so on — a feedback loop where each hop
+        is inside budget while the endpoints are arbitrarily far apart. The member set would stop
+        being "what the model actually saw" and become "everything anything matched". A borrowed
+        occurrence should attach as a SATELLITE instead: it takes the group's placeholder and
+        class, contributes no needle, casts no vote (it is a consequence of the needle, not an
+        independent observation), and never moves the canonical form. Its distance must always
+        be measured against that canonical form, never against another satellite.
+      - **Do not raise `GROUP_BUDGET` past 1.0 to unify the placeholders.** That was the obvious
+        lever and it is the dangerous one. At 0.9 a single deletion (1.0) cannot join anything,
+        which is exactly what keeps truncation chains apart today — measured on the four
+        progressive truncations of one name:
+
+              GROUP_BUDGET=0.9  ->  4 groups, sizes [1, 1, 1, 1]
+              GROUP_BUDGET=1.0  ->  1 group,  size  [4]      # SK BUSINESS TR joins TRUST
+              GROUP_BUDGET=1.5  ->  1 group,  size  [4]
+
+        One hop at a time under single link, so the group's canonical form can drift to an
+        arbitrary prefix. Identifiers are protected against digit-for-digit drift by
+        `IDENTIFIER_COSTS` pricing that at infinity, but truncation is deletions — they would
+        chain too.
+
 - [x] ~~**Retire `ocr_worker.py`**~~ — **DONE 2026-08-09.** The check this item demanded
       ("verify, do not assume") is what caught the wrong assumption: GLiNER2 was the only
       *direct* torch consumer, but spaCy/thinc import real torch eagerly, so the pipeline was

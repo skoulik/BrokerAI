@@ -155,9 +155,10 @@ continuation pages**: the same entity under two surface forms, which is
 what the document-wide grouping has to recognize. The continuation header
 also reprints the account name **truncated** to a fixed-width field
 (`ORGANIZATION_TRUNCATED`) — the shape that defeats exact and squash
-matching outright, and which layer 1 cannot rescue either because the
-truncation removes the legal-form marker `org_policy` keys on, so the
-probe isolates the fuzzy borrowed tier and nothing else. `render` writes
+matching outright, so the probe isolates the fuzzy borrowed tier and
+nothing else. (Until 2026-08-11 the truncation also removed the legal-form
+marker the organization policy keyed on, which made this an outright leak;
+keeping is now a keep-list decision — `pii/core/entity_keep.py`.) `render` writes
 one PNG per page *and* assembles them into a PDF per document, so both
 modalities run over identical pixels.
 

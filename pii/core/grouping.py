@@ -53,10 +53,14 @@ from pii.core import fuzzy
 from pii.core.vlm import VlmFinding, squash_map
 
 # Tie-break order for the vote, most-strip-worthy first. Only the ordering
-# matters, and only two positions are load-bearing: PERSON first (its leak is
-# an automatic acceptance failure — pii_eval.build.CRITICAL), and ORGANIZATION
-# last, because it is the one class layer 0 emits that is KEPT by default and
-# must therefore never win a tie. Types absent from this tuple rank last.
+# matters, and only PERSON's position is load-bearing now: its leak is an
+# automatic acceptance failure (pii_eval.build.CRITICAL), so it must win a tie.
+# ORGANIZATION stays last as the most over-emitted class, but the reason it was
+# put there is gone — it used to be the one class layer 0 emits that was KEPT
+# by default, so a tie it won meant no redaction at all. Since 2026-08-11 every
+# class strips unless the keep list exempts the value (pii.core.entity_keep),
+# so this ordering decides a PLACEHOLDER LABEL, not whether anything is
+# redacted. Types absent from this tuple rank last.
 CLASS_PRIORITY = (
     "PERSON",
     "IDENTIFIER_GENERIC",

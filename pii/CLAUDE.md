@@ -55,6 +55,12 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   from a window BEFORE the match only. Every sub-threshold pattern (bare account numbers, PayID
   digit runs, the `context` invalid tier) exists only because that promotion exists, so changing
   a constant silently re-tunes all of them. Pinned in `tests/pii/core/test_engine.py`.
+- **Keeping takes positive evidence; stripping takes none.** A detected value is replaced
+  unless the keep list matches it (`entity_keep.py`, `data/entity_keep.txt`). Never invert this
+  back into "strip only what looks private": the old rule needed a legal-form marker as
+  evidence, and a fixed-width statement field printed `SK BUSINESS TRUST` as `SK BUSINESS TRUS`,
+  destroying the evidence while keeping the identifying name — kept three times on one page
+  (2026-08-11). A mangled fragment cannot fake presence on a list someone wrote down.
 - **A label is evidence, not part of the value.** Labeled identifier patterns match the label
   as a LOOKBEHIND. A span covering "TFN: 123 456 782" keys the pseudonym map on a different
   string than a bare occurrence of the same TFN, forking one identifier into TFN_1 and TFN_2.

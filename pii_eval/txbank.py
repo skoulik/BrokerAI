@@ -39,9 +39,12 @@ too (2026-07-15 review round):
   legal-form marker ('HARVEY AND MILLER HOLDINGS'); the recognizer's
   surname-slot guard must keep them from being mis-split into joint PERSON
   names. Marker-bearing joint-org names ('... PTY LTD') moved to
-  AND_ORGS_PRIVATE / ORGANIZATION_PRIVATE (org_policy strips them, 2026-07-21):
-  the recognizer's corporate-tail guard still keeps them off the PERSON path,
-  but the strip decision is now org_policy's, not a keep.
+  AND_ORGS_PRIVATE / ORGANIZATION_PRIVATE (strip-expected, 2026-07-21): the
+  recognizer's corporate-tail guard still keeps them off the PERSON path, but
+  the strip decision is the keep list's. Since 2026-08-11 an organization
+  strips unless a keep list names it, so ORGANIZATION_AND stays keep-expected
+  only because pii_eval/entity_keep.txt lists it — the probe measures the
+  surname-slot guard, not the keep policy.
 - ORGANIZATION_AND_BARE — the documented recall-first sacrifice: org
   names in the joint-name shape with no corporate marker anywhere
   ("P & O CRUISES") get stripped by the person patterns; expected
@@ -59,17 +62,18 @@ import random
 from pii_eval import au
 from pii_eval.personas import TOWNS, Pool
 
-# Joint-name-shaped org names carrying a legal-form marker (PTY LTD):
-# org_policy strips them as private entities, and the JointNameRecognizer's
-# corporate-tail guard must still keep them from being mis-split into joint
-# PERSON names. Ground-truthed ORGANIZATION_PRIVATE (strip) since 2026-07-21.
+# Joint-name-shaped org names carrying a legal-form marker (PTY LTD): no keep
+# list names them so they strip, and the JointNameRecognizer's corporate-tail
+# guard must still keep them from being mis-split into joint PERSON names.
+# Ground-truthed ORGANIZATION_PRIVATE (strip) since 2026-07-21.
 AND_ORGS_PRIVATE = [
     "TAYLOR AND SCOTT LAWYERS PTY LTD",
     "ANGUS AND ROBERTSON PTY LTD",
 ]
-# Joint-name-shaped org whose corporate word (HOLDINGS) is NOT a legal-form
-# marker — no private-entity strip, so it stays the ORGANIZATION_AND keep
-# probe for the JointNameRecognizer surname-slot guard.
+# Joint-name-shaped org whose corporate word is HOLDINGS. Kept only because
+# the eval's own keep list names it (pii_eval/entity_keep.txt), which is what
+# lets it go on serving as the ORGANIZATION_AND keep probe for the
+# JointNameRecognizer surname-slot guard.
 AND_ORGS_GUARDED = [
     "HARVEY AND MILLER HOLDINGS",
 ]

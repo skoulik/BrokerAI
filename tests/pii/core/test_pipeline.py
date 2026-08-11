@@ -139,9 +139,9 @@ def test_bsb_account_combined_splits_into_two_spans(pipeline):
 def test_atf_tail_stripped_including_truncated_forms(pipeline):
     # Issue #9: '<company> ATF <trust>' — the doc truncates the field
     # mid-word ('ATF SK BU', '... SK BUSINESS TRU'), defeating NER
-    # confidence and marker matching; the layer-1 ATF-tail pattern covers
-    # the clause to end-of-line regardless, and org_policy strips it (atf
-    # marker). The next line must stay untouched.
+    # confidence; the layer-1 ATF-tail pattern covers the clause to
+    # end-of-line regardless, and no keep list names it so it strips. The
+    # next line must stay untouched.
     for tail in ("ATF SK BU", "ATF SK BUSINESS TRU",
                  "as trustees for THE KULIK FAMILY TRUST"):
         text = f"ACCOUNT NAME PTY LTD {tail}\nStatement starts 22 February"
@@ -205,28 +205,49 @@ def test_consistent_placeholders_across_calls(pipeline):
     assert "TFN_1" in out1 and "TFN_1" in out2
 
 
-def test_kept_org_does_not_shield_nested_address(pipeline, monkeypatch):
-    # The 2026-07-14 image-demo wart, pinned: detect() filters kept-type
-    # spans out BEFORE overlap merging (a kept span must never shadow PII),
-    # so an ADDRESS nested inside a kept ORGANIZATION still strips and the
-    # merchant name loses its suburb. The eval corpus measures the same
-    # wart on the over-strip axis (suburb-suffixed merchants). If the
-    # overlaps-merging task (pii/TODO.md) changes this policy, update the
-    # test and the corpus expectation together.
+def test_a_keep_match_exempts_only_itself_not_the_span_around_it(
+    pipeline, monkeypatch
+):
+    # A keep pattern covers the name on the list and nothing more (2026-08-11):
+    # 'WOOLWORTHS' survives, the suburb fused into the same detected span does
+    # not. Both halves matter — the merchant name is the analytical substance,
+    # and whatever a model fused around it may be identifying. The nested
+    # ADDRESS is redundant here, which is the point: the org span's own
+    # remainder already covers NEWTOWN, and the merged label follows the higher
+    # score (0.95). The eval corpus measures the same behaviour on the
+    # over-strip axis (suburb-suffixed merchants).
     text = "EFTPOS WOOLWORTHS NEWTOWN 4821 AU"
     results = [
-        _rr("ORGANIZATION", 7, 25, 0.95),  # WOOLWORTHS NEWTOWN (kept type)
+        _rr("ORGANIZATION", 7, 25, 0.95),  # WOOLWORTHS NEWTOWN
         _rr("ADDRESS", 18, 25, 0.6),       # NEWTOWN
     ]
     monkeypatch.setattr(pipeline.analyzer, "analyze", lambda *a, **kw: results)
     out, _, _ = pipeline.strip(text, PseudonymMap())
-    assert out == "EFTPOS WOOLWORTHS ADDRESS_1 4821 AU"
+    assert out == "EFTPOS WOOLWORTHS ORG_1 4821 AU"
+    assert "NEWTOWN" not in out
+
+
+def test_a_fused_span_cannot_ride_a_keep_listed_token(pipeline, monkeypatch):
+    """The leak this rule exists for, measured on a real statement.
+
+    Layer 0 reads a whole narrative field as ONE organization —
+    'SK BUSINESS TRUS ANZ HIGHETT LOAN' — and it contains ANZ, which is on the
+    keep list. Exempting the span wholesale kept the account holder's own trust
+    name, three times on one page (2026-08-11). ANZ survives; nothing else in
+    the span does."""
+    text = "FROM SK BUSINESS TRUS ANZ HIGHETT LOAN"
+    results = [_rr("ORGANIZATION", 5, len(text), 0.9)]
+    monkeypatch.setattr(pipeline.analyzer, "analyze", lambda *a, **kw: results)
+    out, _, _ = pipeline.strip(text, PseudonymMap())
+    assert "SK BUSINESS TRUS" not in out
+    assert "HIGHETT" not in out
+    assert "ANZ" in out
 
 
 def test_private_org_stripped_institution_and_merchant_kept(pipeline, monkeypatch):
-    # ORGANIZATION is kept by default, EXCEPT account-holder private entities
-    # (legal-form marker, not a known institution) — org_policy. The strip
-    # keeps the ORG_n placeholder (issue #2/#5).
+    # An organization strips unless the keep list names it: the holder's own
+    # trust goes, the bank and the merchant stay (pii.core.entity_keep). The
+    # strip keeps the ORG_n placeholder (issue #2/#5).
     text = "ACCOUNT OF SK BUSINESS TRUST at ANZ paid WOOLWORTHS"
     results = [
         _rr("ORGANIZATION", 11, 28, 0.78),  # SK BUSINESS TRUST -> strip
@@ -241,13 +262,12 @@ def test_private_org_stripped_institution_and_merchant_kept(pipeline, monkeypatc
 
 
 def test_strip_orgs_forces_all_including_institutions(make_pipeline, monkeypatch):
-    # --strip-orgs (ORGANIZATION in strip_entities) overrides the private-
-    # entity policy: every org, institutions included, is stripped.
-    from pii.core import DEFAULT_STRIP_ENTITIES
+    # --strip-orgs drops the ORGANIZATION section of the keep list, so every
+    # org — institutions included — is stripped. Expressed as data rather than
+    # as a flag the pipeline checks (2026-08-11).
+    from pii.core.entity_keep import load_keep
 
-    pipeline = make_pipeline(
-        strip_entities=set(DEFAULT_STRIP_ENTITIES) | {"ORGANIZATION"}
-    )
+    pipeline = make_pipeline(entity_keep=load_keep().without("ORGANIZATION"))
     text = "paid ANZ and WOOLWORTHS today"
     results = [
         _rr("ORGANIZATION", 5, 8, 0.97),    # ANZ

@@ -52,8 +52,8 @@ def test_statement_phrases_not_matched_as_joint(pipeline):
 def test_full_name_org_not_matched_as_joint(pipeline):
     # With the full-name pattern retired, 'X AND Y Z' org names are no longer
     # mis-split into joint persons by any layer-1 rule. A regression guard.
-    # (End to end, the PTY LTD ones are stripped as private ORGANIZATION
-    # entities by org_policy, issue #2 — a different path.)
+    # (End to end, the PTY LTD ones strip as unrecognized ORGANIZATIONs —
+    # no keep list names them, issue #2 — a different path.)
     for text in (
         "EFTPOS ANGUS AND ROBERTSON PTY LTD 4821 AU",
         "PAYMENT TO TAYLOR AND SCOTT LAWYERS PTY LTD",

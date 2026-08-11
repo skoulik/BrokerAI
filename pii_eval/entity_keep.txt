@@ -1,0 +1,49 @@
+# Keep list for the EVAL CORPUS ONLY — not the shipped policy.
+#
+# The scorers measure ORGANIZATION on the over-strip axis: a value the corpus
+# ground-truthed keep-expected must survive. Since 2026-08-11 an organization
+# survives only by being on a keep list (pii/core/entity_keep.py), so the
+# harness needs one naming exactly the merchants its own generator emits —
+# otherwise the keep axis would only measure "the shipped file happens to list
+# what the generator happens to invent", which is not a property of the tool.
+#
+# Source of truth for this list: `pii_eval/personas.py::MERCHANTS` plus the
+# hard-coded merchants in `pii_eval/txbank.py`. Kept in sync by
+# `tests/pii_eval/test_entity_keep_covers_corpus.py`, which fails if the
+# generator grows a merchant this file does not keep.
+#
+# Patterns match case-insensitively anywhere in the value (wrapped in
+# \b(?:...)\b), so a bare merchant token also covers the suffixed narrative
+# forms the generator builds: "WOOLWORTHS NEWTOWN", "EFTPOS COLES EXPRESS 1234".
+
+woolworths
+coles
+bunnings
+kmart
+amazon
+xero
+officeworks
+telstra
+agl
+shell
+mcdonalds
+chemist\s+warehouse
+uber
+netflix
+spotify
+jb\s*hi-?fi
+australia\s+post
+aldi
+budget\s+direct
+
+# ORGANIZATION_AND (txbank.AND_ORGS_GUARDED): joint-name-SHAPED org names,
+# keep-expected because the probe tests the JointNameRecognizer's surname-slot
+# guard — that 'HARVEY AND MILLER HOLDINGS' is not mis-split into two PERSONs.
+# Kept here so the probe keeps measuring the guard rather than the keep policy;
+# under the shipped list a name like this strips, which is correct (it could be
+# the account holder's own company).
+harvey\s+and\s+miller\s+holdings
+
+# ORGANIZATION_AND_BARE (txbank.AND_ORGS_BARE) is deliberately ABSENT: it is
+# the documented recall-first sacrifice, ground-truthed keep and expected to
+# over-strip. Listing it here would hide the sacrifice instead of measuring it.

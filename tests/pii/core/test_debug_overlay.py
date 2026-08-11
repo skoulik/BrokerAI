@@ -33,6 +33,7 @@ _LINE_COLOR = (30, 120, 220)
 _LAYER0_COLOR = (190, 40, 190)
 _LOCATE_COLOR = (235, 140, 0)
 _LAYER1_COLOR = (220, 30, 30)
+_SKIPPED_COLOR = (120, 130, 140)
 
 
 def _ocr():
@@ -124,6 +125,22 @@ def test_spec_paths_name_one_file_per_layer():
 
 
 # --- what each layer draws ------------------------------------------------
+
+
+def test_a_skipped_detection_is_drawn_on_layer_1():
+    """Found, then exempted by the keep list. It appeared on NO layer until
+    this was added — and it is exactly the state behind "why is this value
+    still readable" (2026-08-11: a truncated trust name sat here three times on
+    one page with nothing to show it)."""
+    ocr = _ocr()
+    start = ocr.text.index("SERGEI")
+    skipped = Detection(entity_type="ORGANIZATION", start=start,
+                        end=start + len("SERGEI KULIK"), score=1.0)
+    page = PageDebug(ocr=ocr, skipped=(skipped,))
+    painted = _colors(draw_layers(_blank(), page, ["layer-1"]))
+    assert _SKIPPED_COLOR in painted
+    # ...and it is not confused with a painted span.
+    assert _LAYER1_COLOR not in painted
 
 
 @pytest.mark.parametrize(

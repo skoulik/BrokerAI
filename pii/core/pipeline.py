@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pii.core.detection import Detection
 from pii.core.engine import Analyzer
 from pii.core.mapping import PseudonymMap
-from pii.core.org_policy import is_private_entity
+from pii.core.entity_keep import EntityKeep, load_keep
 from pii.core.recognizers import (
     INVALID_ENTITY_TYPES,
     INVALID_RULES,
@@ -48,13 +48,15 @@ from pii.core.recognizers import (
     build_rules,
 )
 
-# Entities replaced by default. Detected-but-kept by default: ORGANIZATION
-# (merchant/institution names carry analytical value in bank statements) —
-# EXCEPT account-holder private entities (PTY LTD / TRUST / ... not on the
-# institution keep-list), stripped per org_policy (see detect()). DATE_TIME
-# (transaction dates; DATE_OF_BIRTH is stripped separately) is kept.
+# Entities replaced by default. Every one of them is subject to the keep list
+# (pii.core.entity_keep), which exempts values that identify an institution
+# rather than a customer — that is where merchant and bank names survive, and
+# ORGANIZATION is an ordinary member here because of it (2026-08-11; it used to
+# be absent and carry its own inverted policy). DATE_TIME (transaction dates;
+# DATE_OF_BIRTH is stripped separately) is kept by not being listed at all.
 DEFAULT_STRIP_ENTITIES = {
     "PERSON",
+    "ORGANIZATION",
     "EMAIL_ADDRESS",
     "PHONE_NUMBER",
     "AU_TFN",
@@ -98,11 +100,21 @@ class PiiPipeline:
         strip_entities: set[str] | None = None,
         invalid_identifiers: str = "likely",
         mask_invalid: bool = False,
+        entity_keep=None,
     ):
         self.threshold = threshold
         self.strip_entities = (
             set(strip_entities) if strip_entities is not None
             else set(DEFAULT_STRIP_ENTITIES)
+        )
+        # What survives detection (pii.core.entity_keep): a path, an
+        # already-loaded EntityKeep, or None for the shipped default. Taken as
+        # a parameter rather than read from the environment here — pii.core is
+        # a library, so the front-end resolves where the list comes from and
+        # this only applies it.
+        self.entity_keep = (
+            entity_keep if isinstance(entity_keep, EntityKeep)
+            else load_keep(entity_keep)
         )
         if mask_invalid:
             # masking is nothing more than stripping the invalid classes
@@ -126,7 +138,7 @@ class PiiPipeline:
         """
         results = self.analyzer.analyze(text, self.threshold)
         plan = _merge_overlaps(
-            [r for r in results if self._in_strip_plan(r, text)]
+            [p for r in results for p in self.apply_keep(r, text)[0]]
         )
         return plan, _collect_invalid(results, text)
 
@@ -167,40 +179,77 @@ class PiiPipeline:
         the AFSL number 237502 as a phone) costs an over-strip, not a leak.
         """
         layer1, invalid = self.detect(text)
-        kept = [r for r in detected if self._in_strip_plan(r, text)]
-        return _merge_overlaps(kept + list(layer1)), invalid
+        stripped = [p for r in detected for p in self.apply_keep(r, text)[0]]
+        return _merge_overlaps(stripped + list(layer1)), invalid
 
     def strips_value(self, entity_type: str, value: str) -> bool:
-        """Whether a bare (type, value) pair would be stripped.
+        """Whether a bare (type, value) pair would be stripped AT ALL.
 
-        The offset-free form of `_in_strip_plan`, for detections that never
-        got a span — layer-0 findings painted from the model's own box
-        (locator tier 3). Without it the kept-ORGANIZATION policy would not
-        reach them and a boxed merchant logo would be painted over.
+        The offset-free form of `apply_keep`, for detections that never got a
+        span — layer-0 findings painted from the model's own box (locator tier
+        3). Without it the keep list would not reach them and a boxed merchant
+        logo would be painted over. Coarse by necessity: with no offsets there
+        is nothing to subtract a partial keep from, so a value with any
+        strippable remainder answers True and is painted whole.
         """
-        return self._in_strip_plan(
-            Detection(
-                entity_type=entity_type, start=0, end=len(value), score=1.0
-            ),
-            value,
+        return bool(
+            self.apply_keep(
+                Detection(
+                    entity_type=entity_type, start=0, end=len(value), score=1.0
+                ),
+                value,
+            )[0]
         )
 
-    def _in_strip_plan(self, r, text: str) -> bool:
-        """Whether a detected span is stripped.
+    def apply_keep(self, r, text: str):
+        """Split a detected span into (parts to strip, ranges exempted).
 
-        Straight strip_entities membership, except ORGANIZATION: kept by
-        default (merchant/institution analytical value), but the account
-        holder's own private entities — a legal-form marker and not a known
-        institution (org_policy.is_private_entity) — are identifying PII and
-        stripped (keeping the ORG_n placeholder). --strip-orgs (ORGANIZATION
-        added to strip_entities) still forces all orgs.
+        One rule for every class (2026-08-11): a span strips if its class is on
+        the strip list, MINUS whatever the keep list matches inside it.
+
+        Subtracting rather than exempting the whole span is what makes the keep
+        list safe (2026-08-11, second iteration). A detected span is routinely
+        wider than the name on the list — layer 0 reads a whole statement
+        narrative field as one organization — and a keep-listed token anywhere
+        inside it used to exempt everything fused around it. Measured, not
+        hypothetical: `SK BUSINESS TRUS ANZ HIGHETT LOAN` was kept in full,
+        three times on one page, because it contains ANZ. Now ANZ survives and
+        the trust name either side of it does not.
+
+        Returns Detections for the surviving parts (whitespace and punctuation
+        trimmed off the cut edges, empty parts dropped) and the absolute ranges
+        the keep list exempted, which is what a debug overlay draws as
+        `skipped`.
         """
-        if (
-            r.entity_type == "ORGANIZATION"
-            and "ORGANIZATION" not in self.strip_entities
-        ):
-            return is_private_entity(text[r.start : r.end])
-        return r.entity_type in self.strip_entities
+        if r.entity_type not in self.strip_entities:
+            return [], []
+        value = text[r.start : r.end]
+        exempt = _merge_ranges(
+            _expand_to_token(value, a, b)
+            for a, b in self.entity_keep.matches(r.entity_type, value)
+        )
+        if not exempt:
+            return [r], []
+        kept = [(r.start + a, r.start + b) for a, b in exempt]
+        parts = []
+        cursor = 0
+        for a, b in exempt + [(len(value), len(value))]:
+            if a > cursor:
+                parts.append(_trim(value, cursor, a))
+            cursor = max(cursor, b)
+        return (
+            [
+                Detection(
+                    entity_type=r.entity_type,
+                    start=r.start + a,
+                    end=r.start + b,
+                    score=r.score,
+                )
+                for a, b in parts
+                if _has_substance(value[a:b])
+            ],
+            kept,
+        )
 
     def plan(self, text: str) -> list:
         """The spans strip() would replace."""
@@ -237,6 +286,55 @@ def apply_plan(text: str, spans, pmap: PseudonymMap) -> str:
     ):
         out = out[: r.start] + placeholder + out[r.end :]
     return out
+
+
+# A leftover fragment shorter than this many alphanumeric characters is left
+# alone rather than replaced. Subtracting a keep match out of a span otherwise
+# shreds the text around it into meaningless placeholders — a real run turned
+# 'www.anz.com' into 'ORG_15.ANZ.ORG_16' and 'ANZ App' into 'ANZ ORG_11'
+# (2026-08-11). Three characters carry no identifying power on their own; the
+# values this rule exists to catch ('SK BUSINESS TRUS', 'HIGHETT LOAN') are far
+# above the floor.
+_KEEP_REMAINDER_MIN = 4
+
+
+def _expand_to_token(value: str, start: int, end: int) -> tuple[int, int]:
+    """Grow a keep match to the whitespace-delimited token containing it.
+
+    A listed name glued to other characters by punctuation is still that name:
+    'anz' inside 'www.anz.com' is the whole URL's reason to exist, and cutting
+    the match out leaves 'www' and 'com' to be replaced separately. Whitespace
+    is the boundary because it is the one separator a fused OCR span does not
+    invent."""
+    while start > 0 and not value[start - 1].isspace():
+        start -= 1
+    while end < len(value) and not value[end].isspace():
+        end += 1
+    return start, end
+
+
+def _merge_ranges(ranges) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _has_substance(part: str) -> bool:
+    return sum(ch.isalnum() for ch in part) >= _KEEP_REMAINDER_MIN
+
+
+def _trim(value: str, start: int, end: int) -> tuple[int, int]:
+    """Pull separators off the edges of a cut part, so the painted box covers
+    the words themselves and not the space left by the exempted name."""
+    while start < end and not value[start].isalnum():
+        start += 1
+    while end > start and not value[end - 1].isalnum():
+        end -= 1
+    return start, end
 
 
 def _resolve_overlaps(results):

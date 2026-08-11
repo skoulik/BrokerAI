@@ -61,8 +61,8 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
     doc.pad_to(46).raw(f"Statement Number :{rng.randrange(1, 60):>8}").nl(2)
 
     # the account holder's own business/trust entity — private-entity PII
-    # stripped by org_policy (a legal-form marker, not a known institution),
-    # so ground-truthed ORGANIZATION_PRIVATE on the recall axis (2026-07-21)
+    # stripped because no keep list names it (pii.core.entity_keep), so
+    # ground-truthed ORGANIZATION_PRIVATE on the recall axis (2026-07-21)
     account_of = biz.trust if biz.trust and rng.random() < 0.5 else biz.name
     doc.raw("ACCOUNT OF: ").private_org(account_of).nl()
     # The holder in CAPS, unconditionally — the addressee above is a draw, so
@@ -119,9 +119,10 @@ def _statement_continuation(
       statements do and what defeats both certain tiers of
       `locator.locate_borrowed` (the known value is a strict SUPERSTRING of
       what the page prints). Its own truth type, per the convention for
-      known-hard forms. Note the truncation also removes the legal-form marker
-      org_policy keys on, so layer 1 cannot rescue it either: this probe
-      isolates the fuzzy borrowed tier and nothing else.
+      known-hard forms. Truncation used to remove the legal-form
+      marker the org policy keyed on as well, which is what made this probe a
+      leak rather than a geometry question; since 2026-08-11 an unrecognized
+      name strips either way, so it now isolates the fuzzy borrowed tier alone.
     """
     doc.raw("ACCOUNT STATEMENT").pad_to(46).raw("Account Number   : ")
     doc.pii(acct.number, "AU_BANK_ACCOUNT").nl()
@@ -194,7 +195,7 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     doc.raw("  Entity:          ").private_org(biz.name).nl()
     # Always rendered: a TRUST-marker private org is a guaranteed corpus
     # feature (test_generate asserts its presence; found coincidence-
-    # dependent on pool draws 2026-07-22), stripped by org_policy — same
+    # dependent on pool draws 2026-07-22), stripped as an unrecognized org — same
     # stance as the PTY LTD name above. Derive a name when the pool
     # business carries no trust.
     trust = biz.trust or f"{biz.name.split()[0]} FAMILY TRUST"

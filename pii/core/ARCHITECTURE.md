@@ -43,6 +43,7 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `engine.py` | `Rule` / `PatternRule` / `Analyzer` — the regex loop, the validation hook, the char-level context boost, thresholding and deduplication |
 | `recognizers.py` | **Every** layer-1 rule: the checksummed identifiers (each emitting its valid class OR its `*_INVALID` shadow from one checksum call), BSB, account, PayID, licences, joint names, ATF tails, email, IBAN, phone |
 | `mapping.py` | `PseudonymMap` — placeholder allocation, JSON persistence, rehydration |
+| `entity_keep.py` | The keep list: what is detected but NOT stripped, per entity type, loaded from `data/entity_keep.txt` (or any path) |
 | `csv_mode.py` | Per-cell transaction-CSV processing |
 | `vlm.py` | **Layer 0, pixels** — a local vision LLM reads the page image and names the PII; transport, both prompts (detect / localize), parsing |
 | `text_llm.py` | **Layer 0, text** — the same model reading document text instead of a page; windowing, prompt, per-window deduplication |
@@ -410,12 +411,43 @@ pattern, so the reversed-caps residual keeps its own TODO item (diagnosis there:
 misses are CSV-blob effects — mention shadowing and blob-scale label competition — not
 coalescible fragments).
 
-### What is deliberately kept (2026-07-12)
+### What is deliberately kept — a configurable keep list (2026-08-11)
 
-`ORGANIZATION` (merchant names — the analytical substance of spending data) and `DATE_TIME`
-(transaction dates) are detected but not stripped by default; `DATE_OF_BIRTH` is stripped.
-Overrides: `--strip-orgs` now; full per-run entity-type selection is a planned feature
-(TODO.md).
+**A detected value is stripped unless the keep list matches it, and a match exempts only what it
+covers** (`entity_keep.py`, the file `data/entity_keep.txt`). Merchant and institution names —
+the analytical substance of spending data — survive by being *on* that list; `DATE_TIME`
+(transaction dates) survives by not being a strip entity at all; `DATE_OF_BIRTH` strips.
+
+**Subtracting, not exempting** (`PiiPipeline.apply_keep`), because a detected span is routinely
+wider than the listed name: layer 0 reads a whole narrative field as one organization, and
+`SK BUSINESS TRUS ANZ HIGHETT LOAN` was kept in full — three times on one page — for containing
+`ANZ`. The match now survives and the rest of the span strips around it. Two guards keep that
+from shredding text: the match grows to its whitespace-delimited token (`www.anz.com` stays
+whole instead of becoming `ORG.ANZ.ORG`), and a remainder under `_KEEP_REMAINDER_MIN`
+alphanumerics is left alone (`ANZ App`, `TO ANZ LN`). Both were added after a real run turned
+one page's URLs and connectives into eight placeholders. Sections scope patterns to a class
+(`[PHONE_NUMBER]` for an institution's 1300 line), unsectioned lines mean ORGANIZATION, and a
+class the file does not mention keeps nothing. `--strip-orgs` drops the ORGANIZATION section;
+per-run entity-type selection is still a planned feature (TODO.md).
+
+**This inverts the 2026-07-12 stance** (keep every organization, strip only names carrying an
+Australian legal-form marker — PTY / TRUST / ATF / SMSF — and not on an institution list). The
+old rule needed *evidence* to strip, and a real page destroys the evidence while keeping the
+identifying name: a statement's fixed-width narrative printed the holder's `SK BUSINESS TRUST`
+as `SK BUSINESS TRUS`, which matched no marker and was kept three times on one page — while the
+same value stripped in full elsewhere in the document. Its sibling failure was structural too: a
+span fused by OCR across a column gap (`SK ... TRUS ANZ HIGHETT`) rode the institution list to
+safety. Requiring evidence to KEEP instead cannot fail that way — a mangled fragment cannot fake
+presence on a list someone wrote down.
+
+The cost is deliberate and measured on the eval's over-strip axis: an unlisted merchant becomes
+`ORG_n`. That is the recoverable direction (an over-strip loses analytical value; an under-strip
+is a breach), and the file is the dial. The eval harness scores against its **own** list
+(`pii_eval/entity_keep.txt`) so the keep axis measures the tool rather than the overlap between
+two lists.
+
+One special case died with it: ORGANIZATION is now an ordinary member of `DEFAULT_STRIP_ENTITIES`
+and `_in_strip_plan` has one rule for every class — on the strip list, and not exempted by value.
 
 ### Checksum-invalid identifiers are surfaced, not silently dropped (2026-07-14)
 
@@ -787,10 +819,10 @@ all falling out of the existing `_merge_overlaps`:
 - **Union.** Whatever layer 1 finds and the model missed is added — a deterministic recall floor
   under a stochastic detector.
 
-Layer-0 spans go through the strip plan first, so the **kept-ORGANIZATION policy applies to them
-exactly as to layer-1 spans**. That is not a detail: the prompt deliberately carries no
-institutional carve-outs, so the model reports merchant and bank names by design, and this filter
-is where they are kept. Where the two layers disagree on a specific class the higher score wins,
+Layer-0 spans go through the strip plan first, so the **keep list applies to them exactly as to
+layer-1 spans**. That is not a detail: the prompt deliberately carries no institutional
+carve-outs, so the model reports merchant and bank names by design, and this filter is where they
+are kept. Where the two layers disagree on a specific class the higher score wins,
 which is layer 0 (it detects at 1.0) — deliberate, it is the better semantic detector, and the
 failure that guards against (layer 1 typing the AFSL number `237502` as a phone) costs an
 over-strip, not a leak.

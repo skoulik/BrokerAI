@@ -542,11 +542,40 @@ def test_kept_organization_from_the_model_is_not_stripped(pipeline):
     assert result.spans == []
 
 
-def test_strip_orgs_still_reaches_model_findings(make_pipeline):
-    # ...and the operator override still works through the same filter.
-    from pii.core.pipeline import DEFAULT_STRIP_ENTITIES
+def test_a_truncated_private_entity_is_stripped(pipeline):
+    """The 2026-08-11 leak, end to end.
 
-    p = make_pipeline(strip_entities=DEFAULT_STRIP_ENTITIES | {"ORGANIZATION"})
+    A statement's fixed-width narrative printed 'SK BUSINESS TRUST' as
+    'SK BUSINESS TRUS' three times on one page. The value was detected every
+    time — and then discarded, because the old policy stripped an organization
+    only on a legal-form marker and the page had truncated exactly that. Under
+    the keep list an unrecognized name has no way to be kept."""
+    result, _ = _strip(
+        [VlmFinding(text="SK BUSINESS TRUS", entity_type="ORGANIZATION")],
+        "FROM SK BUSINESS TRUS HIGHETT LOAN", pipeline,
+    )
+    assert [r.entity_type for r in result.spans] == ["ORGANIZATION"]
+    assert result.skipped == []
+
+
+def test_a_kept_merchant_is_reported_as_skipped(pipeline):
+    """The other side of the same decision: a keep-listed merchant is NOT
+    painted, and says so on the result so a debug overlay can draw it. Silence
+    here is what made the leak above invisible."""
+    result, _ = _strip(
+        [VlmFinding(text="WOOLWORTHS", entity_type="ORGANIZATION")],
+        "paid WOOLWORTHS today", pipeline,
+    )
+    assert result.spans == []
+    assert [d.entity_type for d in result.skipped] == ["ORGANIZATION"]
+
+
+def test_strip_orgs_still_reaches_model_findings(make_pipeline):
+    # ...and the operator override still works through the same filter:
+    # --strip-orgs drops the keep list's ORGANIZATION section.
+    from pii.core.entity_keep import load_keep
+
+    p = make_pipeline(entity_keep=load_keep().without("ORGANIZATION"))
     result, _ = _strip(
         [VlmFinding(text="WOOLWORTHS", entity_type="ORGANIZATION")],
         "paid WOOLWORTHS today", p,

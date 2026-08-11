@@ -1394,6 +1394,87 @@ the move; new completed tasks append to the matching section with their records.
       the strip_pdf per-layer companion tests; verified end-to-end on a synthetic eval page and a
       2-page PDF.
 
+- [x] **Invert the organization policy into a configurable keep list** *(2026-08-11, Sergei:
+      "keep the filter, but make it more generic: only do not redact organizations that match a
+      regular expression, the expression itself should be configurable, so live outside of the
+      code")*.
+
+      **The leak that prompted it, measured before touching anything.** On page 2 of a real
+      4-page statement, `SK BUSINESS TRUS` — the holder's own trust, printed into a fixed-width
+      narrative field that ate the final T — survived three times. The investigation split the
+      borrowed path in half and found the matcher innocent: `locate_borrowed` returned all three
+      spans (518-534, 677-693, 886-902) via the fuzzy tier shipped in f75b0c0. They died one
+      step later, in `_in_strip_plan`: ORGANIZATION was kept by default and `is_private_entity`
+      needed a legal-form marker to strip, so `is_private_entity('SK BUSINESS TRUS')` was False
+      where `'SK BUSINESS TRUST'` was True. The document already knew better — the full form was
+      `ORG_1` in the map from another page. The control on the same page: `OLGA KULIK`, borrowed
+      by the identical mechanism, WAS painted, because PERSON has no keep policy.
+
+      The old rule required evidence to STRIP, and a real page destroys evidence while keeping
+      the identifying name. Its sibling failure was structural too and had been documented as a
+      known limit: an OCR-fused span (`SK ... TRUS ANZ HIGHETT`) rode the institution keep-list
+      to safety. Requiring evidence to KEEP cannot fail that way — a mangled fragment cannot
+      fake presence on a list someone wrote down.
+
+      Shipped: `pii/core/entity_keep.py` + `data/entity_keep.txt` (institutions and common AU
+      merchants, Sergei's call over an institutions-only default), `--entity-keep FILE` /
+      `$PII_ENTITY_KEEP`, `PiiPipeline(entity_keep=…)`. The legal-form marker table is retired
+      entirely.
+
+      **Generalized to any entity type in the same change** *(Sergei: "In future we might need
+      extend org_keep to entity_keep", then "think 1300 tel numbers")*. A bank's `1300` support
+      line is detected as PHONE_NUMBER and pseudonymized exactly like a customer's mobile.
+      Done now rather than later because the keep file is a hand-maintained user-facing artifact
+      and its format should not migrate under him: `[ENTITY_TYPE]` sections, unsectioned lines
+      meaning ORGANIZATION. The shipped `[PHONE_NUMBER]` section is present but **commented
+      out** — on a business account the holder's own 1300 line is as identifying as their
+      company name, so enabling the range is a per-document-set decision.
+
+      Two consequences worth recording. ORGANIZATION stopped being a special case: it joined
+      `DEFAULT_STRIP_ENTITIES` and `_in_strip_plan` now has ONE rule for every class (on the
+      strip list, and not exempted by value), with `--strip-orgs` expressed as data
+      (`EntityKeep.without("ORGANIZATION")`) rather than a second code path. And the audit that
+      followed found two rationales this change had made stale — `grouping.CLASS_PRIORITY` put
+      ORGANIZATION last "because it is the one class layer 0 emits that is KEPT by default"
+      (now cosmetic: the tie-break decides a placeholder label, not whether anything is
+      redacted), and `AtfTailRule` claimed the org policy would strip its span "as a private
+      entity — 'atf'/'trustee' are marker words" (the rule survives for the other half of its
+      job: CREATING a span over a fragment layer 0 may not report).
+
+      The cost is deliberate: an unlisted merchant now becomes `ORG_n`. It lands on the eval's
+      over-strip axis, which is reported but not gated (the acceptance gate is recall-only), and
+      the harness scores against its OWN keep list (`pii_eval/entity_keep.txt`, kept in sync
+      with the generator's merchant pool by `tests/pii_eval/test_entity_keep_covers_corpus.py`)
+      so the axis measures the tool rather than the overlap between two lists.
+
+      Debug follow-up in the same change: `ImageStripResult.skipped` carries the ranges the keep
+      list exempted, and the `layer-1` overlay draws them in slate chipped `skipped`. That state
+      appeared on NO layer before — which is precisely why three printings of a truncated trust
+      name were invisible on the overlay that was supposed to explain them.
+
+      **Second iteration, and the reason it was needed: the inversion alone did not fix the
+      leak.** The first version exempted a whole span whenever the keep list matched anywhere
+      inside it, and a verification run on the real statement showed `SK BUSINESS TRUS` still
+      readable — the `skipped` overlay above is what found it. Layer 0 does not report the trust
+      as a value at all; it reports the whole narrative field as one organization,
+      `SK BUSINESS TRUS ANZ HIGHETT LOAN`, which contains `ANZ`. (Not a regression: the old
+      policy kept that string too, via its keep-list-wins-ties clause, and `org_policy.py`'s
+      docstring had named this exact case as a limit it could not fix. The inversion closed the
+      truncated-marker half and never reached the fused-span half.)
+
+      Fix (Sergei's call over a coverage-ratio threshold and a needle-aware exception): a keep
+      match exempts **only what it covers**, and the rest of the span strips around it —
+      `apply_keep` returns parts rather than a boolean. Verified end to end on the source
+      document: all three printings now read `FROM ORG_n ANZ ORG_m`.
+
+      That shredded text elsewhere, which a run of the same document made obvious: `www.anz.com`
+      became `ORG_15.ANZ.ORG_16`, `ANZ App` became `ANZ ORG_11`, and the ORG placeholder count
+      went 6 -> 24. Two guards followed (both Sergei's call): the match grows to its
+      whitespace-delimited token, and a remainder under `_KEEP_REMAINDER_MIN` (4) alphanumerics
+      is left alone. 24 -> 17, with the debris gone and the leak still fixed. The remaining 17
+      are layer-0's own findings (it types phrases like 'issued by' as organizations), not split
+      residue.
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

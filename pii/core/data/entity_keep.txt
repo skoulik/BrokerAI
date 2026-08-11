@@ -1,0 +1,232 @@
+# Values to KEEP unredacted — one regular expression per line.
+#
+# Everything NOT matched here is stripped as PII (pii/core/entity_keep.py).
+# That is deliberate: an unknown name may be the account holder's own company
+# or trust, and an over-strip costs analytical value while an under-strip is a
+# breach. Keeping is therefore opt-in, and this file is the opt-in.
+#
+# What belongs here: banks, insurers, card networks, lenders/aggregators,
+# utilities, telcos and the merchants whose names carry the analytical meaning
+# of spending data. What does NOT: anything that could be a customer's own
+# entity.
+#
+# Syntax: each line is a regex matched case-insensitively and anywhere in the
+# value, automatically wrapped in \b(?:...)\b — so `anz` matches "ANZ HIGHETT"
+# but not "ANZAC". Use regex where a value has spelling variants
+# (`st\.?\s*george`). Blank lines and `#` comments are ignored.
+#
+# [ENTITY_TYPE] starts a section; lines before the first section are
+# ORGANIZATION, which is what this file was before it grew sections. A class
+# with no section keeps nothing — silence means strip.
+#
+# Point a run at a different file with --entity-keep FILE or $PII_ENTITY_KEEP.
+# `--strip-orgs` ignores the ORGANIZATION section and strips every one of them.
+
+# --- Banks and lenders ---
+anz
+australia\s+and\s+new\s+zealand\s+banking
+new\s+zealand\s+banking\s+group
+nab
+national\s+australia\s+bank
+cba
+commonwealth\s+bank
+commbank
+westpac
+st\.?\s*george
+bankwest
+bendigo
+adelaide\s+bank
+suncorp
+macquarie
+bank\s+of\s+queensland
+boq
+ing
+amp
+me\s+bank
+ubank
+heritage\s+bank
+newcastle\s+permanent
+great\s+southern\s+bank
+beyond\s+bank
+teachers\s+mutual
+police\s+bank
+qudos
+judo\s+bank
+pepper\s+money
+la\s+trobe\s+financial
+liberty\s+financial
+resimac
+firstmac
+
+# --- Aggregators / mortgage industry ---
+afg
+advantedge
+connective
+plan\s+australia
+choice\s+aggregation
+loan\s+market
+aussie\s+home\s+loans
+mortgage\s+choice
+
+# --- Insurers ---
+qbe
+cgu
+iag
+allianz
+aami
+gio
+apia
+budget\s+direct
+youi
+racv
+racq
+raa
+nrma
+medibank
+bupa
+hcf
+nib
+tal
+zurich
+insurance\s+australia
+
+# --- Card networks and payment platforms ---
+visa
+mastercard
+american\s+express
+amex
+eftpos
+paypal
+afterpay
+zip\s*(?:pay|money)?
+klarna
+square
+stripe
+apple\s+pay
+google\s+pay
+
+# --- Government and regulators ---
+australian\s+taxation\s+office
+ato
+services\s+australia
+centrelink
+medicare
+asic
+austrac
+australia\s+post
+
+# --- Supermarkets, retail, fuel ---
+woolworths
+woolies
+coles
+coles\s+express
+aldi
+iga
+foodworks
+costco
+bunnings
+kmart
+target
+big\s*w
+myer
+david\s+jones
+officeworks
+jb\s+hi-?fi
+harvey\s+norman
+the\s+good\s+guys
+rebel\s+sport
+chemist\s+warehouse
+priceline
+dan\s+murphy'?s
+bws
+liquorland
+7-?eleven
+bp
+shell
+caltex
+ampol
+united\s+petroleum
+mobil
+
+# --- Food, transport, travel ---
+mcdonalds?
+kfc
+hungry\s+jacks?
+subway
+domino'?s
+guzman\s+y\s+gomez
+starbucks
+uber(?:\s*eats)?
+didi
+ola
+menulog
+deliveroo
+doordash
+qantas
+jetstar
+virgin\s+australia
+rex\s+airlines
+myki
+opal
+go\s*card
+translink
+metro\s+trains
+
+# --- Utilities and telcos ---
+agl
+origin\s+energy
+energy\s*australia
+alinta
+red\s+energy
+simply\s+energy
+telstra
+optus
+vodafone
+tpg
+iinet
+aussie\s+broadband
+belong
+amaysim
+
+# --- Software and subscriptions ---
+xero
+myob
+quickbooks
+intuit
+microsoft
+adobe
+google
+apple
+amazon(?:\s+au)?
+aws
+netflix(?:\.com)?
+spotify
+disney\+?
+stan
+binge
+kayo
+foxtel
+canva
+atlassian
+
+
+[PHONE_NUMBER]
+# Service-number ranges — an institution's published support line, detected
+# as PHONE_NUMBER and pseudonymized exactly like a customer's mobile.
+#
+# SHIPPED DISABLED ON PURPOSE. On a BUSINESS account the holder's own 1300 or
+# 1800 line is as identifying as their company name, and this corpus is full
+# of business and trust accounts. Enabling the ranges below is a decision to
+# make per document set, knowing that. The safer alternative is to list the
+# specific institution numbers your documents actually carry, e.g.
+#   13\s*13\s*14          # ANZ
+#   13\s*22\s*65          # NAB
+#
+#1300[\s-]*\d{3}[\s-]*\d{3}
+#1800[\s-]*\d{3}[\s-]*\d{3}
+#13[\s-]*\d{2}[\s-]*\d{2}
+
+
+[ADDRESS]
+# A branch or head-office address you want left readable. Empty by default:
+# an address on a statement is overwhelmingly the customer's own.

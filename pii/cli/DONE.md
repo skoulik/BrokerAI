@@ -86,3 +86,17 @@ Completed CLI work. The engineering records for the underlying engine features l
       `pii.core.ocr_debug`. It could only show perception, never a detection, and it showed its
       own re-run rather than the run that produced the output. Engine record and the three
       design decisions in [../core/DONE.md](../core/DONE.md).
+
+## The keep list becomes configurable *(2026-08-11)*
+
+- [x] `--entity-keep FILE` / `$PII_ENTITY_KEEP` — the file of patterns whose matches are NOT
+      replaced, in optional `[ENTITY_TYPE]` sections (default: the shipped
+      `pii/core/data/entity_keep.txt`). Resolved and LOADED in the CLI before the pipeline is
+      built, because `pii.core` reads no environment and a bad path or a bad pattern must fail
+      the run before a document is processed against a list that is not what the operator
+      thinks it is.
+- [x] `--strip-orgs` re-expressed as data: it drops the keep list's `ORGANIZATION` section
+      (`EntityKeep.without`) instead of adding `ORGANIZATION` to `strip_entities`, which no
+      longer means anything now that every class strips by default. Same observable behaviour,
+      no second code path in the engine. Engine record and the leak that caused the inversion in
+      [../core/DONE.md](../core/DONE.md).

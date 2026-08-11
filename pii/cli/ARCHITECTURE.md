@@ -17,7 +17,7 @@ Three subcommands (`pii/cli/__init__.py`, `main()`) — the `debug` namespace wa
 | `rehydrate` | Restore original values in a cloud answer from the map (`--map` required). |
 
 `strip`/`analyze` accept `-` for stdin; `strip` writes stdout or `-o FILE`. Flags cover
-threshold, `--strip-orgs`, `--report`, CSV column selection, `--dpi` (PDF render
+threshold, `--entity-keep`/`--strip-orgs`, `--report`, CSV column selection, `--dpi` (PDF render
 resolution), `--detector`/`--geometry`/`--vlm-url`, `--ocr-backend`, `--debug`/`--debug-out`
 (diagnostic overlays), and the three checksum-invalid identifier controls
 (`--invalid-identifiers`, `--log-invalid-identifiers`, `--mask-invalid-identifiers`). Full
@@ -28,8 +28,11 @@ usage is in [../README.md](../README.md).
 The CLI is thin glue over the core public API:
 
 - Builds a `PiiPipeline` from parsed args (`threshold`, `strip_entities`, invalid-identifier
-  policy). `--strip-orgs` just adds `ORGANIZATION` to `DEFAULT_STRIP_ENTITIES` — the pipeline
-  already takes a `strip_entities` set; the CLI only assembles it.
+  policy, keep list). The keep list is resolved here because `pii.core` reads no environment:
+  `--entity-keep` else `$PII_ENTITY_KEEP` else the shipped file, loaded eagerly so a bad path or
+  a bad pattern fails the run before a document is touched. `--strip-orgs` is expressed as data
+  — `EntityKeep.without("ORGANIZATION")` — so "ignore the keep list for organizations" needs no
+  second code path in the engine.
 - Dispatches by mode to the core entry points: `pipeline.strip` / `pipeline.analyze` for text,
   `pii.core.csv_mode.strip_csv` for `--csv`, `pii.core.image_mode.strip_image` for `--image`,
   `pii.core.pdf_mode.strip_pdf` for `--pdf` (imported lazily so the image/PDF stack —

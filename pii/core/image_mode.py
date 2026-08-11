@@ -92,6 +92,14 @@ class ImageStripResult:
     # report does not call a painted value an outright leak. Whether the two
     # are the same printing cannot be decided from here.
     unlocated_painted_elsewhere: list = field(default_factory=list)
+    # Detections that were found and then NOT stripped, because the keep list
+    # exempted the value (pii.core.entity_keep) — a merchant name, a bank's
+    # service line. Carried so a debug overlay can draw them: "found, then
+    # skipped" is invisible otherwise, appearing on no layer at all, and it is
+    # exactly the state an operator asks about when a value they expected to be
+    # redacted is still readable (2026-08-11 — a truncated trust name sat in
+    # this set for three printings on one page and nothing showed it).
+    skipped: list = field(default_factory=list)
     # Spans this page owes to what the DOCUMENT knew rather than to what the
     # model said about this page — occurrences no layer-0 finding here claimed
     # (`locator.locate_borrowed`). On a multi-page run these are the values
@@ -338,6 +346,27 @@ def strip_from_vlm(
             stacklevel=2,
         )
     spans, invalid = pipeline.merge_detections(detected + borrowed, ocr.text)
+    # What was detected and then exempted by the keep list. Computed here from
+    # the same predicate the plan uses, rather than inferred from what is
+    # missing out of it — a span can also vanish into a wider one by merging,
+    # and calling that "skipped" would send an operator hunting a leak that is
+    # painted.
+    # The ranges the keep list exempted — what actually survived, not the
+    # detections it survived inside. A keep match covers only the name on the
+    # list, so a fused narrative field contributes just the token (`ANZ`) while
+    # the rest of the span strips around it, and the overlay then outlines
+    # exactly the pixels that stayed readable. Deduplicated by range: one value
+    # is routinely BOTH a layer-0 placement and a borrowed needle at the same
+    # offsets.
+    skipped = list(
+        {
+            (start, end, d.entity_type): Detection(
+                entity_type=d.entity_type, start=start, end=end, score=1.0
+            )
+            for d in detected + borrowed
+            for start, end in pipeline.apply_keep(d, ocr.text)[1]
+        }.values()
+    )
     # Placeholders for tier 3 are allocated after the plan's, so document
     # order still numbers everything that has offsets; a box-only finding has
     # none to sort by. Consistency is by value, not by order, so a value
@@ -358,6 +387,7 @@ def strip_from_vlm(
         borrowed=borrowed_only,
         groups=grouping.groups,
         placements=placed.placements,
+        skipped=skipped,
     )
 
 
@@ -400,6 +430,7 @@ def _paint_vlm_boxes(image, findings, pmap, pad, grouping) -> ImageStripResult:
 def _paint_plan(
     image, ocr, spans, invalid, pmap, extra=(), box_geometry=(), unlocated=(),
     unlocated_painted_elsewhere=(), borrowed=(), groups=(), placements=(),
+    skipped=(),
 ) -> ImageStripResult:
     """Allocate a placeholder per span and paint it over the span's pixels.
     Spans arrive in document order, which is the numbering order. `extra`
@@ -418,5 +449,5 @@ def _paint_plan(
         box_geometry=list(box_geometry), unlocated=list(unlocated),
         unlocated_painted_elsewhere=list(unlocated_painted_elsewhere),
         borrowed=list(borrowed), groups=tuple(groups),
-        placements=list(placements),
+        placements=list(placements), skipped=list(skipped),
     )
