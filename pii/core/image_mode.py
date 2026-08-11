@@ -268,7 +268,7 @@ def strip_from_vlm(
     borrowed = [
         Detection(entity_type=entity_type, start=start, end=end, score=1.0)
         for start, end, entity_type in locate_borrowed(
-            grouping.needles(), ocr.text
+            grouping.needles(), ocr
         )
     ]
     # Reported apart: the coverage that exists ONLY because other pages were

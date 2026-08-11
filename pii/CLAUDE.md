@@ -112,9 +112,21 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   every member's own in both directions (deliberate — a 10-to-1 majority for a company is a
   company). `EntityGroup.votes` must keep reaching the CLI report; a silent election is the
   failure mode.
-- **A borrowed needle is bounded and never fuzzy.** No box constrains a value borrowed from
-  another page, so matching stays exact-or-squash and both ends must fall on a word edge —
-  exact matching has no length floor, so an unguarded `Wu` paints inside `Would`.
+- **A borrowed needle is bounded, and its fuzzy tier is guarded by a LENGTH FLOOR.** Both ends
+  must fall on a word edge (exact matching has no length floor, so an unguarded `Wu` paints
+  inside `Would`), and edit distance is admissible only from 8 squashed characters up — below
+  that any budget of 1 matches a large fraction of a page. Fuzzy is allowed here, unlike in
+  `locate_findings`, because borrowed placements do not COMPETE: nothing is consumed, so a
+  spurious match is additive over-strip rather than a leak plus an over-strip. Do not carry
+  that licence back to `locate_findings`.
+- **Fuzzy borrowed matching is ADDITIVE, never a fallback tier.** A page carrying a value's
+  full form exactly *and* a truncated form would otherwise find the exact one, skip fuzzy and
+  leak the truncation — a real specimen, not a hypothesis (`SK BUSINESS TRUS`, 2026-08-11).
+- **An identifier's budget must stay below 2.0.** `fuzzy.identifier_substitution_cost` prices
+  a digit read as another digit at infinity, but edit distance routes around that with a
+  delete plus an insert for exactly 2.0 — so the prohibition only bites if no budget can pay
+  the detour. Raise `_BORROWED_FUZZY_IDENTIFIER_CAP` and one account number starts matching
+  another that differs by a single digit.
 - **A detected value that cannot be located is a leak.** Unlocatable findings must keep
   warning loudly AND stay counted on `ImageStripResult.unlocated` / `PdfPageResult.unlocated`
   / `TextStripResult.unlocated` — a warning alone is deduplicated by Python's default filter

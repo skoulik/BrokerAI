@@ -523,29 +523,79 @@ def _squash_occurrences(
 _ALNUM_BEFORE = r"(?<![0-9A-Za-z])"
 _ALNUM_AFTER = r"(?![0-9A-Za-z])"
 
+# Fuzzy borrowed matching (2026-08-11). A page differs from a known value for
+# two reasons that look the same to a matcher: the DOCUMENT truncated it to fit
+# a fixed-width field ('SK BUSINESS TRUST' printed as 'SK BUSINESS TRUS' — what
+# statements do constantly), or OCR damaged it. Weighted edit distance covers
+# both, and truncation is simply deletions at the end.
+#
+# This does not weaken the rule above it. "Fuzzy is permitted exactly where a
+# box constrains the candidate set" was argued for `locate_findings`, where
+# placements COMPETE: a needle landing in the wrong place over-paints there and
+# leaves the real occurrence unclaimed — a leak plus an over-strip. Borrowed
+# needles do not compete: every occurrence is marked independently and nothing
+# is consumed, so a spurious match is purely additive over-strip. The needle is
+# corroborated too — a value the model already detected and we already located
+# elsewhere in this document — rather than a fresh transcription.
+#
+# THE FLOOR IS THE GUARD, not the budget: at four characters any budget of 1
+# matches a large fraction of a page, so short values never reach this tier
+# ('sk' would otherwise paint everywhere). The budget is tighter than
+# `fuzzy.budget_for` (the box-constrained path) for the same reason.
+_BORROWED_FUZZY_MIN_CHARS = 8
+_BORROWED_FUZZY_RATIO = 0.2
+_BORROWED_FUZZY_CAP = 4.0
+
+# Identifier-shaped needles are capped BELOW 2.0, and the number is derived
+# rather than tuned: `fuzzy.identifier_substitution_cost` prices a digit read
+# as another digit at infinity, but edit distance simply routes around it with
+# a delete plus an insert for 2.0. So a cap of 2.0 or more would still let one
+# account number match another that differs by a single digit — the
+# prohibition only bites if no budget can pay the detour. What it costs is
+# truncations of two characters or more on identifiers specifically; a
+# one-character truncation still matches, as do any number of cross-class
+# confusions (0.25 each), which are the cases that actually occur on
+# identifiers. Names keep the general cap, where truncation is the common case
+# and there are no digits to confuse.
+_BORROWED_FUZZY_IDENTIFIER_CAP = 1.5
+
+
+def borrowed_budget(need_sq: str) -> float:
+    """Edit cost a borrowed needle of this length may absorb."""
+    budget = min(
+        _BORROWED_FUZZY_CAP, max(1.0, _BORROWED_FUZZY_RATIO * len(need_sq))
+    )
+    if fuzzy.identifier_shaped(need_sq):
+        return min(budget, _BORROWED_FUZZY_IDENTIFIER_CAP)
+    return budget
+
 
 def locate_borrowed(
-    needles: Sequence[tuple[str, str]], text: str
+    needles: Sequence[tuple[str, str]], ocr: RecognizerInput
 ) -> list[tuple[int, int, str]]:
-    """Every occurrence in `text` of a value the DOCUMENT knows about.
+    """Every occurrence on this page of a value the DOCUMENT knows about.
 
     This is what makes a value the model named on page 1 and missed on page 4
     strip on both. It runs beside `locate_findings`, not instead of it: the
-    page's own findings still go through the box-guided tiers (which is the
-    only route to fuzzy matching and to tier-3 geometry), and this pass adds
-    every occurrence of every known value on top. Overlaps between the two are
-    unioned by `PiiPipeline._merge_overlaps` like any other pair of spans.
+    page's own findings still go through the box-guided tiers (the only route
+    to tier-3 geometry), and this pass adds every occurrence of every known
+    value on top. Overlaps between the two are unioned by
+    `PiiPipeline._merge_overlaps` like any other pair of spans.
 
-    **Exact-or-squash only.** The standing rule is that fuzzy matching is
-    admissible exactly where a box constrains the candidate set; a borrowed
-    value has no box here, so edit distance would be the page-wide search the
-    design rules out — it always finds something, somewhere, wrong. Same tier
-    order as `locate_in_text`: exact first, squash only if exact found nothing.
+    Three tiers, in two passes over the needles. Exact and squash run first for
+    ALL needles, then fuzzy — so textual certainty always outranks edit
+    distance no matter which needle gets there first.
+
+    Fuzzy is **additive, not a fallback**: a page carrying a value's full form
+    exactly AND a truncated form would otherwise find the exact one, skip the
+    fuzzy tier, and leak the truncation. That is a real specimen, not a
+    hypothetical (2026-08-11, `SK BUSINESS TRUS`).
 
     `needles` is `(value, entity_type)` LONGEST FIRST — two needles can land on
     one span ('John' inside 'John Smith') and the wider one must claim it.
     Returns `(start, end, entity_type)` triples in document order.
     """
+    text = ocr.text
     squashed: tuple[str, list[int]] | None = None
     claimed: dict[tuple[int, int], str] = {}
     for value, entity_type in needles:
@@ -556,10 +606,85 @@ def locate_borrowed(
             spans = _bounded_squash_occurrences(squashed, text, value)
         for span in spans:
             claimed.setdefault(span, entity_type)
+
+    fuzzy_needles = [
+        (value, entity_type, squash_map(value)[0])
+        for value, entity_type in needles
+    ]
+    fuzzy_needles = [
+        n for n in fuzzy_needles if len(n[2]) >= _BORROWED_FUZZY_MIN_CHARS
+    ]
+    if fuzzy_needles:
+        runs = _word_runs(
+            ocr,
+            max(len(sq) + borrowed_budget(sq) for _, _, sq in fuzzy_needles),
+        )
+        # Regions the certain tiers already own. A fuzzy match overlapping one
+        # is a worse-evidenced view of text that is already claimed — most
+        # often a sub-run of it ('9999 1234' inside '(02) 9999 1234') — and
+        # keeping it would only inflate the count of what this pass found.
+        taken = list(claimed)
+        for _, entity_type, need_sq in fuzzy_needles:
+            budget = borrowed_budget(need_sq)
+            # A digit read as a letter is damage; a digit read as another digit
+            # is a different account, and must not be discounted.
+            costs = (
+                fuzzy.IDENTIFIER_COSTS
+                if fuzzy.identifier_shaped(need_sq)
+                else fuzzy.CONFUSION_COSTS
+            )
+            hits = []
+            for length in range(
+                max(int(len(need_sq) - budget), 1),
+                int(len(need_sq) + budget) + 1,
+            ):
+                for start, end, run_sq in runs.get(length, ()):
+                    distance = fuzzy.distance(
+                        run_sq, need_sq, ceiling=budget, costs=costs
+                    )
+                    if distance <= budget:
+                        hits.append((distance, -(end - start), start, end))
+            # CLOSEST FIRST, longest to break a tie. Runs are bucketed by
+            # length, so scanning them in bucket order would let a worse view
+            # of a region claim it before the best one is even tested —
+            # 'BUSINESS TRUS' (3 edits) beating 'SK BUSINESS TRUS' (1) purely
+            # because it is shorter.
+            for _, _, start, end in sorted(hits):
+                if any(
+                    start < t_end and t_start < end
+                    for t_start, t_end in taken
+                ):
+                    continue
+                claimed[(start, end)] = entity_type
+                taken.append((start, end))
+
     return [
         (start, end, entity_type)
         for (start, end), entity_type in sorted(claimed.items())
     ]
+
+
+def _word_runs(
+    ocr: RecognizerInput, max_chars: float
+) -> dict[int, list[tuple[int, int, str]]]:
+    """Contiguous word runs of the page, bucketed by squashed length.
+
+    Runs rather than character windows so a match always covers whole words —
+    which is the word-edge guard the exact and squash tiers apply, obtained
+    here by construction. Bucketing by length is what keeps the scan cheap: a
+    needle only ever tests runs within its own budget of its length, so a
+    10-character account number never reaches a 6-character amount at all.
+    """
+    buckets: dict[int, list[tuple[int, int, str]]] = {}
+    words = ocr.words
+    for a in range(len(words)):
+        for b in range(a, len(words)):
+            start, end = words[a].char_start, words[b].char_end
+            run_sq, _ = squash_map(ocr.text[start:end])
+            if len(run_sq) > max_chars:
+                break  # runs only grow from here
+            buckets.setdefault(len(run_sq), []).append((start, end, run_sq))
+    return buckets
 
 
 def _bounded_occurrences(text: str, needle: str) -> list[tuple[int, int]]:

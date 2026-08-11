@@ -152,9 +152,14 @@ CSV tables are cut by row count with their column header repeated,
 because a form feed would break the parse. Statements reprint the account
 number on every page and the holder in **caps on page 1, title case on
 continuation pages**: the same entity under two surface forms, which is
-what the document-wide grouping has to recognize. `render` writes one PNG
-per page *and* assembles them into a PDF per document, so both modalities
-run over identical pixels.
+what the document-wide grouping has to recognize. The continuation header
+also reprints the account name **truncated** to a fixed-width field
+(`ORGANIZATION_TRUNCATED`) — the shape that defeats exact and squash
+matching outright, and which layer 1 cannot rescue either because the
+truncation removes the legal-form marker `org_policy` keys on, so the
+probe isolates the fuzzy borrowed tier and nothing else. `render` writes
+one PNG per page *and* assembles them into a PDF per document, so both
+modalities run over identical pixels.
 
 `score --modality image` runs each page through the real image pipeline
 (OCR → detect → paint), **re-OCRs the painted output**, and scores every

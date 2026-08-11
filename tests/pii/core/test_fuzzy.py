@@ -91,3 +91,65 @@ def test_empty_strings():
     assert fuzzy.distance("", "abc") == 3.0
     assert fuzzy.distance("abc", "") == 3.0
     assert fuzzy.distance("", "") == 0.0
+
+
+def test_distance_matches_a_naive_reference_on_random_strings():
+    """The inner loop is written for speed (per-row cost table, neighbours
+    carried in locals), so it is pinned against the textbook recurrence rather
+    than trusted. A wrong edit distance here silently changes what gets
+    redacted."""
+    import random
+
+    from pii.core import fuzzy
+
+    def reference(a: str, b: str, costs) -> float:
+        rows = [[0.0] * (len(b) + 1) for _ in range(len(a) + 1)]
+        for i in range(len(a) + 1):
+            rows[i][0] = float(i)
+        for j in range(len(b) + 1):
+            rows[0][j] = float(j)
+        for i in range(1, len(a) + 1):
+            for j in range(1, len(b) + 1):
+                sub = (
+                    0.0 if a[i - 1] == b[j - 1]
+                    else costs.get(a[i - 1], {}).get(b[j - 1], 1.0)
+                )
+                rows[i][j] = min(
+                    rows[i - 1][j] + 1.0,
+                    rows[i][j - 1] + 1.0,
+                    rows[i - 1][j - 1] + sub,
+                )
+        return rows[-1][-1]
+
+    rng = random.Random(42)
+    alphabet = "abcdefgilos0125689"  # dense in confusable characters
+    for _ in range(400):
+        a = "".join(rng.choice(alphabet) for _ in range(rng.randrange(1, 12)))
+        b = "".join(rng.choice(alphabet) for _ in range(rng.randrange(1, 12)))
+        for costs in (fuzzy.CONFUSION_COSTS, fuzzy.IDENTIFIER_COSTS):
+            expected = reference(a, b, costs)
+            assert fuzzy.distance(a, b, costs=costs) == expected, (a, b)
+            # ...and the ceiling must only ever report "not within budget",
+            # never a wrong value below it.
+            for ceiling in (0.5, 1.0, 2.0, 3.0):
+                got = fuzzy.distance(a, b, ceiling=ceiling, costs=costs)
+                if expected <= ceiling:
+                    assert got == expected, (a, b, ceiling)
+                else:
+                    assert got > ceiling, (a, b, ceiling)
+
+
+def test_the_cost_tables_agree_with_the_documented_cost_functions():
+    """The tables are what the DP runs; the functions are what the docstrings
+    explain. They must not drift."""
+    from pii.core import fuzzy
+
+    alphabet = "abcdefghijklmnopqrstuvwxyz0123456789@- "
+    for a in alphabet:
+        for b in alphabet:
+            assert fuzzy.CONFUSION_COSTS.get(a, {}).get(b, 1.0) == (
+                fuzzy.substitution_cost(a, b) if a != b else 1.0
+            ) or a == b
+            assert fuzzy.IDENTIFIER_COSTS.get(a, {}).get(b, 1.0) == (
+                fuzzy.identifier_substitution_cost(a, b) if a != b else 1.0
+            ) or a == b

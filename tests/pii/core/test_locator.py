@@ -334,7 +334,7 @@ def test_denormalize_maps_model_space_onto_pixels(box, expected):
 def _borrowed(ocr, *needles):
     return [
         (ocr.text[start:end], entity_type)
-        for start, end, entity_type in locate_borrowed(needles, ocr.text)
+        for start, end, entity_type in locate_borrowed(needles, ocr)
     ]
 
 
@@ -445,3 +445,95 @@ def test_an_unplaced_value_painted_nowhere_is_not_flagged():
     )
     (unplaced,) = result.unlocated
     assert unplaced.value_painted_elsewhere is False
+
+
+# ------------------------------------------- borrowed: fuzzy, and its guards
+
+
+def test_a_truncated_field_is_matched_from_the_full_value():
+    # The observed leak (2026-08-11): pii_map.json carried
+    # 'sk business trust' -> PERSON_5 while 'SK BUSINESS TRUS' leaked. The
+    # needle is a strict SUPERSTRING of what the page prints, so both certain
+    # tiers miss it — statements truncate names to fit fixed-width fields.
+    ocr = _page("ATF SK BUSINESS TRUS")
+    assert _borrowed(ocr, ("SK BUSINESS TRUST", "PERSON")) == [
+        ("SK BUSINESS TRUS", "PERSON")
+    ]
+
+
+def test_a_heavier_truncation_is_still_matched():
+    ocr = _page("ATF SK BUSINESS TRU")
+    assert _borrowed(ocr, ("SK BUSINESS TRUST", "PERSON")) == [
+        ("SK BUSINESS TRU", "PERSON")
+    ]
+
+
+def test_ocr_damage_mid_value_is_matched():
+    # 'b' read as '6' — not in the confusion table, so it costs a full 1.0 and
+    # the budget absorbs it rather than the discount.
+    ocr = _page("ATF SK 6USINESS TRUST")
+    assert _borrowed(ocr, ("SK BUSINESS TRUST", "PERSON")) == [
+        ("SK 6USINESS TRUST", "PERSON")
+    ]
+
+
+def test_a_short_needle_never_reaches_the_fuzzy_tier():
+    # The floor is the guard, not the budget: 'sk' at any budget >= 1 would
+    # paint over half the page.
+    ocr = _page("sk so ok sky ask", "task desk")
+    assert _borrowed(ocr, ("sk", "PERSON")) == [("sk", "PERSON")]
+
+
+def test_fuzzy_runs_even_when_the_value_also_appears_exactly():
+    # Additive, not a fallback. Were it an "else" tier, the exact hit on this
+    # page would suppress it and the truncation would leak — which is exactly
+    # how the observed specimen could survive.
+    ocr = _page("SK BUSINESS TRUST holds", "ATF SK BUSINESS TRUS")
+    assert _borrowed(ocr, ("SK BUSINESS TRUST", "PERSON")) == [
+        ("SK BUSINESS TRUST", "PERSON"),
+        ("SK BUSINESS TRUS", "PERSON"),
+    ]
+
+
+def test_a_different_account_number_is_not_matched():
+    # An identifier's identity is its digits. The strict table prices a digit
+    # read as another digit at infinity, and the identifier budget cap sits
+    # below 2.0 so edit distance cannot route around it with a delete plus an
+    # insert either — which it otherwise does, at exactly 2.0.
+    ocr = _page("account 4936117499 closed")
+    assert _borrowed(ocr, ("8936117499", "AU_BANK_ACCOUNT")) == []
+
+
+def test_an_identifier_still_matches_through_a_glyph_confusion():
+    # Cross-class damage is what the strict table is FOR: 'l' read for '1'
+    # costs 0.25, so several of them fit under the cap.
+    ocr = _page("account l23456789O closed")
+    assert _borrowed(ocr, ("1234567890", "AU_BANK_ACCOUNT")) == [
+        ("l23456789O", "AU_BANK_ACCOUNT")
+    ]
+
+
+def test_an_identifier_still_matches_through_a_one_character_truncation():
+    ocr = _page("account 123456789 closed")
+    assert _borrowed(ocr, ("1234567890", "AU_BANK_ACCOUNT")) == [
+        ("123456789", "AU_BANK_ACCOUNT")
+    ]
+
+
+def test_a_digit_run_cannot_reach_an_amount_of_another_length():
+    # The length filter does this one: a 10-char needle never tests a 6-char
+    # run, which is the collision class the box constraint was introduced for.
+    ocr = _page("total 3,074.33 paid")
+    assert _borrowed(ocr, ("307433257", "AU_BANK_ACCOUNT")) == []
+
+
+def test_a_fuzzy_match_never_takes_a_region_the_certain_tiers_own():
+    ocr = _page("call (02) 9999 1234 now")
+    assert _borrowed(ocr, ("(02) 9999 1234", "PHONE_NUMBER")) == [
+        ("(02) 9999 1234", "PHONE_NUMBER")
+    ]
+
+
+def test_an_unrelated_value_of_the_same_length_is_not_matched():
+    ocr = _page("paid to Brendan Whitfield today")
+    assert _borrowed(ocr, ("SK BUSINESS TRUST", "PERSON")) == []

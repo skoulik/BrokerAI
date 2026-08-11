@@ -1998,3 +1998,87 @@ the move; new completed tasks append to the matching section with their records.
 
       **Baseline reset, knowingly**: the text-tier corpus changed shape, so tier-1 numbers from
       before this date are not comparable. Seeds must be regenerated (`generate` + `render`).
+
+- [x] **Fuzzy matching for borrowed values — truncation and OCR damage**
+      *(2026-08-11, reported and fixed the same day. Design argued with Sergei before any code;
+      the distilled rule is in [ARCHITECTURE.md](ARCHITECTURE.md) "A page is not the unit of
+      truth", the invariants in [../CLAUDE.md](../CLAUDE.md).)*
+
+      **The specimen.** A real run's `pii_map.json` carried `"sk business trust": "PERSON_5"`
+      while `SK BUSINESS TRUS` **leaked** on the same document. Both certain tiers of
+      `locate_borrowed` fail structurally: the needle is a strict SUPERSTRING of what the page
+      prints, so `find` misses in exact space and in squashed space alike. It was filed as a
+      watch item that morning and hit within hours, which retired the "measure before designing"
+      position it had been filed under.
+
+      **Two mechanisms, one fix.** A page differs from a known value either because the DOCUMENT
+      truncated it to a fixed-width field, or because OCR damaged it. An anchored prefix rule
+      (the first proposal) covers only the former; weighted edit distance covers both, since
+      truncation is deletions at the end. Sergei pushed for the general form — *"we can cover
+      more cases with fuzzy matching... we don't want to match 'sk' everywhere, but we don't want
+      to miss 'sk business tru' and 'sk 6usiness trust' either"* — and it is the simpler design:
+      one mechanism instead of two.
+
+      **Why edit distance is admissible here at all**, against the invariant that forbids it:
+      the objection ("page-wide edit distance always finds something, somewhere, wrong") was
+      argued for `locate_findings`, where placements COMPETE — a needle landing wrong
+      over-paints there AND leaves the real occurrence unclaimed, a leak plus an over-strip.
+      Borrowed needles do not compete: every occurrence is marked independently, nothing is
+      consumed, so a spurious match is purely additive over-strip. The needle is corroborated
+      too — already detected and already located elsewhere in this document. The rule stands
+      unchanged for `locate_findings`; the invariant in `pii/CLAUDE.md` was rewritten rather
+      than dropped.
+
+      **Two bugs the tests caught, both in the first run:**
+
+      - *Bucket order let a worse match win.* Runs are bucketed by squashed length and were
+        scanned in ascending order, so `BUSINESS TRUS` (3 edits) claimed the region before
+        `SK BUSINESS TRUS` (1 edit) was even tested — purely for being shorter. Candidates are
+        now collected and claimed CLOSEST FIRST.
+      - *The strict table did not actually forbid a digit swap.* `identifier_substitution_cost`
+        prices digit-against-digit at infinity, but edit distance simply routes around it with a
+        delete plus an insert for exactly 2.0 — and a 10-character needle's budget was 2.0, so
+        `8936117499` still matched `4936117499`. Fixed by capping identifier budgets at 1.5,
+        **derived rather than tuned**: below the cost of the detour, so no budget can pay for it.
+        What that costs is truncations of 2+ characters on identifiers specifically; one-character
+        truncations and any number of cross-class confusions (0.25 each) still match, which are
+        the cases that occur on identifiers.
+
+      **The corpus had no probe for this, and the one that looked like it was not.**
+      `ORGANIZATION_ATF` prints `ATF DECKER FAMILY TRU`, but the full form in the same document
+      is `DECKER INVESTMENT TRUST` — a *different* derived name, not a truncation of anything the
+      model would have named, and correctly not matched. Verified rather than assumed. A real
+      probe was added instead: the statement continuation header reprints the account name
+      truncated by two characters (`ORGANIZATION_TRUNCATED`, its own truth type per the
+      known-hard-form convention). It isolates this mechanism and nothing else — the truncation
+      also removes the legal-form marker `org_policy` keys on, so layer 1 cannot rescue it.
+
+      **Verified end to end on real pixels**: with the model naming only the full
+      `KOCH MANAGEMENT PTY LTD` on page 1, page 2's `KOCH MANAGEMENT PTY L` is matched through
+      real PaddleOCR output.
+
+      **Cost measured, then reduced 2.7x** (Sergei: *"~6 ms per needle kinda sucks. is it
+      levenshtein implementation that slows things down or something else?"* — it was). Profiling
+      put the whole cost in `fuzzy.distance`: 25k calls at 55 us each, ~0.3 us per DP cell of
+      which 0.14 us was the `lru_cache`d `substitution_cost` FUNCTION CALL. The run index is
+      built once per page (3.2 ms) and is not a factor. Two fixes, both inside the DP:
+
+      - the substitution table is read as a per-row dict instead of a call per cell
+        (`CONFUSION_COSTS` / `IDENTIFIER_COSTS`, built once at import; digit-against-digit is
+        materialized as 90 explicit infinities so the lookup stays a single `.get`) — 55 -> 37 us;
+      - the DP computes only the **diagonal band** of width `ceiling`, since reaching a cell
+        `|i-j|` off the diagonal costs that many indels — 37 -> 20.6 us, and it scales with
+        length where the table fix does not.
+
+      Net: 6.9 -> 2.6 ms per needle. The rewritten loop is pinned against the textbook recurrence
+      over 400 random pairs x both tables x four ceilings, because a wrong edit distance here
+      changes what gets redacted silently; `substitution_cost` survives as the readable statement
+      of the semantics with a test asserting the tables agree with it.
+
+      **A prefilter was measured and rejected, and the reason is worth keeping**: the obvious
+      character-presence bound ("characters of the needle absent from the run > budget") is
+      **unsound** — a confusion substitution costs 0.25, so a missing character can be paid for at
+      quarter price, and the filter would reject real matches. The sound version counts only
+      characters with NO confusion partner (adfkmnpqrxy — every digit has one), which do cost a
+      full 1.0 to lose; it rejects 15% on realistic needles and does not earn its complexity.
+      Revisit if the text-only regime lands and a page drops to seconds.

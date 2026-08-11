@@ -71,11 +71,9 @@ CLASS_PRIORITY = (
 # does not. See the module docstring.
 GROUP_BUDGET = 0.9
 
-# What counts as identifier-shaped, measured on the squashed form. The real
-# digit floor is what stops a word built out of confusable letters ('boss',
-# 'log' — every character is a digit homoglyph) from claiming the strict table.
-IDENTIFIER_DIGIT_RATIO = 0.6
-IDENTIFIER_MIN_DIGITS = 2
+# What counts as identifier-shaped lives in `fuzzy` beside the tables it
+# selects between (`fuzzy.identifier_shaped`), because the locator asks the
+# same question when it matches a borrowed value and the two must not disagree.
 
 
 @dataclass(frozen=True)
@@ -173,7 +171,7 @@ def group_findings(
     # the order the model happened to report values in.
     texts = sorted(types)
     squashed = {t: squash_map(t)[0] for t in texts}
-    shaped = {t: _identifier_shaped(squashed[t]) for t in texts}
+    shaped = {t: fuzzy.identifier_shaped(squashed[t]) for t in texts}
 
     groups = []
     for cluster in _cluster(texts, squashed, shaped):
@@ -230,26 +228,6 @@ def _elect(votes: Counter) -> str:
     return max(sorted(votes.items()), key=lambda kv: (kv[1], -_rank(kv[0])))[0]
 
 
-def _identifier_shaped(squashed: str) -> bool:
-    """Whether a value's identity lives in its digits.
-
-    Measured AFTER allowing digit homoglyphs, so a misread glyph cannot flip a
-    value out of identifier shape and quietly hand it the permissive confusion
-    table. The real-digit floor keeps letter-only words out: 'boss' and 'log'
-    are made entirely of digit confusables and would otherwise qualify.
-    """
-    if not squashed:
-        return False
-    if sum(1 for ch in squashed if ch.isdigit()) < IDENTIFIER_MIN_DIGITS:
-        return False
-    like = sum(
-        1
-        for ch in squashed
-        if ch.isdigit() or ch in fuzzy.DIGIT_CONFUSABLES
-    )
-    return like >= IDENTIFIER_DIGIT_RATIO * len(squashed)
-
-
 def _cluster(
     texts: Sequence[str],
     squashed: dict[str, str],
@@ -297,11 +275,11 @@ def _related(
         return sq_a == sq_b
     if sq_a == sq_b:
         return True
-    cost = (
-        fuzzy.identifier_substitution_cost
+    costs = (
+        fuzzy.IDENTIFIER_COSTS
         if shaped[a] or shaped[b]
-        else fuzzy.substitution_cost
+        else fuzzy.CONFUSION_COSTS
     )
-    return fuzzy.distance(sq_a, sq_b, ceiling=GROUP_BUDGET, cost=cost) <= (
+    return fuzzy.distance(sq_a, sq_b, ceiling=GROUP_BUDGET, costs=costs) <= (
         GROUP_BUDGET
     )

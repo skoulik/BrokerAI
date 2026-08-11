@@ -842,13 +842,70 @@ So this is **the first mechanism in the tool that can un-redact something a per-
 have redacted**, which is why `EntityGroup.votes` is carried out to the CLI and printed under
 `--report`: the group listing is the audit surface for that decision, not decoration.
 
-**A borrowed value is matched exact-or-squash, never fuzzily.** The standing rule is that
-fuzzy matching is admissible exactly where a box constrains the candidate set; a value
-borrowed onto another page has no box there, so edit distance would be the page-wide search
-the design rules out. Borrowed needles additionally carry an **alphanumeric word-edge guard**:
-exact matching deliberately has no length floor (real 2-char surnames and 3-char organizations
-exist), which is safe when a box pins the match and unbounded when a value is hunted
-document-wide — `Wu` would otherwise paint inside `Would`.
+**Borrowed matching has three tiers, and the fuzzy one is guarded by a length floor rather
+than by a box** (2026-08-11). Exact and squash run first for every needle, then fuzzy — so
+textual certainty always outranks edit distance whichever needle reaches a region first. All
+three carry an **alphanumeric word-edge guard**: exact matching deliberately has no length
+floor (real 2-char surnames and 3-char organizations exist), which is safe when a box pins the
+match and unbounded when a value is hunted document-wide — `Wu` would otherwise paint inside
+`Would`.
+
+The fuzzy tier exists because a page differs from a known value for two reasons that look
+identical to a matcher: the **document** truncated it to fit a fixed-width field (what
+statements do constantly), or **OCR** damaged it. Weighted edit distance covers both, and
+truncation is simply deletions at the end. The motivating specimen: `pii_map.json` carrying
+`sk business trust → PERSON_5` while `SK BUSINESS TRUS` leaked on the same document — the
+needle is a strict *superstring* of what the page prints, so both certain tiers miss.
+
+**This does not weaken the box rule, because the risk is structurally different here.** "Fuzzy
+is permitted exactly where a box constrains the candidate set" was argued for
+`locate_findings`, where placements COMPETE: a needle landing in the wrong place over-paints
+there *and* leaves the real occurrence unclaimed — a leak plus an over-strip. Borrowed needles
+do not compete; every occurrence is marked independently and nothing is consumed, so a
+spurious match is purely additive over-strip. The needle is corroborated as well: a value the
+model already detected and we already located elsewhere in this document, not a fresh
+transcription. Non-competing placement plus a corroborated needle is a materially weaker
+objection than the one the rule was written against — and the rule stands unchanged for
+`locate_findings`.
+
+Three guards replace the box, and the first is the one doing the work:
+
+1. **A floor of 8 squashed characters.** At four characters any budget of 1 matches a large
+   fraction of a page, so short values never reach the tier at all.
+2. **Budget `max(1.0, 0.2 × len)`, capped at 4** — tighter than `fuzzy.budget_for`, which is
+   calibrated for the box-constrained path.
+3. **Identifier-shaped needles use the strict cross-class table and a budget capped at 1.5.**
+   The cap is *derived, not tuned*: the table prices a digit read as another digit at infinity,
+   but edit distance routes around that with a delete plus an insert for exactly 2.0, so a cap
+   of 2.0 or more would still let one account number match another differing by a single digit.
+   What it costs is truncations of two or more characters on identifiers; one-character
+   truncations and any number of cross-class confusions (0.25 each) still match, which are the
+   cases that occur.
+
+Two mechanics follow from the specimen. Fuzzy is **additive, not a fallback**: a page carrying
+the full form exactly *and* a truncated form would otherwise find the exact one, skip the tier
+and leak the truncation. And candidates are claimed **closest first** — runs are bucketed by
+length, so scanning them in bucket order would let a worse view of a region claim it before
+the best one is tested (`BUSINESS TRUS` at 3 edits beating `SK BUSINESS TRUS` at 1, purely for
+being shorter).
+
+Cost is roughly needles × page word-runs of compatible length, and it is entirely the edit
+distance — the run index is built once per page (~3 ms) and the DP is everything else.
+Measured and then reduced 2.7× (2026-08-11): **20.6 µs per comparison, ~2.6 ms per needle** on
+a 77-word page. Two things bought that, both in `fuzzy.distance`: the substitution table is
+read as a per-row dict rather than through a cached function call (a call per DP cell was half
+the inner loop), and the DP computes only the **diagonal band** of width `ceiling`, since
+reaching a cell `|i-j|` off the diagonal costs that many indels — at ceiling 4 a 24-character
+comparison drops from 24 cells a row to 9. The rewritten loop is pinned against the textbook
+recurrence on random strings, because a wrong edit distance here silently changes what gets
+redacted.
+
+What is left is inherent to comparing every needle against every candidate run in Python. A
+character-presence prefilter was measured and rejected: the obvious form is **unsound** (a
+confusion substitution costs 0.25, so a character missing from the run can be paid for at
+quarter price), and the sound form — counting only characters with no confusion partner at
+all, which do cost a full 1.0 to lose — rejects just 15% on realistic needles. Revisit only if
+the text-only regime in TODO.md lands and a page drops to seconds.
 
 **Rendered pages are cached to disk between the sweeps, never rendered twice.** The model's
 `bbox_2d` lives in the coordinate space of the pixels it saw; a second render only *assumes*

@@ -75,7 +75,7 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
     for page in range(1, pages + 1):
         if page > 1:
             doc.page_break()
-            _statement_continuation(doc, p, acct, page, pages)
+            _statement_continuation(doc, p, acct, account_of, page, pages)
         doc.raw("Date    Particulars").pad_to(55)
         doc.raw("Debit     Credit       Balance").nl()
         if page == 1:
@@ -99,18 +99,36 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
     return doc
 
 
-def _statement_continuation(doc: Doc, p, acct, page: int, pages: int) -> None:
+# How much of the account name a continuation header's fixed-width field
+# keeps. Two characters is enough to defeat exact and squash matching while
+# staying an obvious truncation to a reader.
+_TRUNCATE_BY = 2
+
+
+def _statement_continuation(
+    doc: Doc, p, acct, account_of: str, page: int, pages: int
+) -> None:
     """The header a real statement reprints on every continuation page.
 
-    Deliberately reprints the holder's name in TITLE case where page 1 has it
-    in caps: the same entity under two surface forms is what the document-wide
-    grouping has to recognize, and a corpus that only ever prints one form
-    would pass whether or not the case folding works.
+    Two probes live here, and both exist because a corpus printing one surface
+    form per entity would pass whether or not the matching works:
+
+    - the holder's name in TITLE case, where page 1 has it in caps — the
+      case-folded comparison in `pii.core.grouping`;
+    - the account name TRUNCATED to a fixed-width field, which is what
+      statements do and what defeats both certain tiers of
+      `locator.locate_borrowed` (the known value is a strict SUPERSTRING of
+      what the page prints). Its own truth type, per the convention for
+      known-hard forms. Note the truncation also removes the legal-form marker
+      org_policy keys on, so layer 1 cannot rescue it either: this probe
+      isolates the fuzzy borrowed tier and nothing else.
     """
     doc.raw("ACCOUNT STATEMENT").pad_to(46).raw("Account Number   : ")
     doc.pii(acct.number, "AU_BANK_ACCOUNT").nl()
     doc.raw(" " * 8).pii(p.full, "PERSON")
-    doc.pad_to(46).raw(f"Page {page} of {pages}").nl(2)
+    doc.pad_to(46).raw(f"Page {page} of {pages}").nl()
+    doc.raw(" " * 8).raw("A/C NAME: ")
+    doc.pii(account_of[:-_TRUNCATE_BY], "ORGANIZATION_TRUNCATED").nl(2)
 
 
 def loan_application(pool: Pool, invalid: bool = False) -> Doc:

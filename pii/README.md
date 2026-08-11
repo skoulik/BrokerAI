@@ -78,6 +78,15 @@ overlooks on page 4 is redacted on both, and a value printed three times on a
 page is painted three times even if the model mentioned it once. The count of
 values a page owed to the rest of the document is printed on stderr.
 
+That search tolerates a page not printing the value quite the same way:
+differences of case, spacing and punctuation, a name **truncated** to fit a
+fixed-width field (`SK BUSINESS TRUST` printed as `SK BUSINESS TRUS`), or a
+glyph OCR misread. Short values are matched exactly only — under eight
+characters there is not enough of a value to recognize it through damage
+without matching half the page. Numbers are stricter again: a digit read as a
+letter is treated as damage, but a digit read as a *different* digit is a
+different account and never matches.
+
 Each group's class is decided by a majority vote over the individual
 detections, and that class applies on every page — including a page that read
 the value differently. The vote can therefore go either way: a merchant name

@@ -193,3 +193,26 @@ def test_the_name_forms_doc_stays_one_page(tmp_path):
     names = next(d["file"] for d in truth["docs"]
                  if d["file"].startswith("names"))
     assert "\f" not in (corpus / names).read_text("utf-8")
+
+
+def test_the_account_name_is_reprinted_truncated(tmp_path):
+    """The specimen that motivated fuzzy borrowed matching (2026-08-11): a
+    value printed in full on one page and TRUNCATED to a fixed-width field on
+    another. Both certain matching tiers miss it — the known value is a strict
+    superstring of what the page prints — and the truncation removes the
+    legal-form marker org_policy keys on, so layer 1 cannot rescue it either.
+    """
+    corpus = generate(str(tmp_path / "c"), seed=42, docs=3)
+    truth = json.loads((corpus / "truth.json").read_text("utf-8"))
+    statement = next(d for d in truth["docs"] if d["file"].startswith("legacy"))
+    entities = statement["entities"]
+
+    truncated = [e for e in entities if e["type"] == "ORGANIZATION_TRUNCATED"]
+    assert truncated, "no truncated account-name probe"
+    full = {e["value"] for e in entities if e["type"] == "ORGANIZATION_PRIVATE"}
+    for probe in truncated:
+        assert probe["strip_expected"] is True
+        # A genuine truncation of a full form printed elsewhere in the doc,
+        # not a different name that merely looks similar.
+        assert any(name.startswith(probe["value"]) for name in full), probe
+        assert probe["value"] not in full

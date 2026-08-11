@@ -65,33 +65,12 @@ quantization item below is what stands between this and a usable product.
       of a value can genuinely sit in two places. The finding therefore stays counted on
       `unlocated`. Record in [DONE.md](DONE.md).
 
-- [ ] **A borrowed value cannot be matched through OCR damage** (Sergei, 2026-08-11, on
-      reviewing the document-wide grouping: *"Limit 1 is what bothers me. But let's see how it
-      goes with current implementation first."* — so this is a **watch item, deliberately not
-      built**). `locator.locate_borrowed` matches exact-or-squash only, because no box
-      constrains a value borrowed onto another page and page-wide edit distance always finds
-      something, somewhere, wrong (ARCHITECTURE, "A page is not the unit of truth").
-      Consequence: a value the model named on page 1 will not be recovered on page 4 if OCR
-      damaged it *there*.
-
-      **The gap is narrower than it sounds**, which is why it is worth measuring before
-      designing for it: it needs BOTH failures at once on the same page — OCR damage AND the
-      VLM not reporting the value on that page. Where the model does report it, its own box
-      licenses the fuzzy tier and the damage is already absorbed.
-
-      **What would tell us it is real:** in a `--modality pdf` run, a leaked truth value whose
-      value belongs to an entity group. That means the document knew it and the page still let
-      it through — either this, or the page had no OCR text for it at all. The cheap
-      instrumentation is one column in the scorer: for each leaked entity, whether its value is
-      in a group. Until that number exists this item is a suspicion, not a finding.
-
-      Candidate fixes if it does bite, in increasing order of risk: require a fuzzy borrowed
-      match to be UNIQUE on the page (a needle that matches two places is rejected outright);
-      restrict fuzzy windows to lines that already contain another confirmed group member (a
-      statement header block); or accept page-wide fuzzy for identifier-shaped values only,
-      where the confusion table is the strict cross-class one and a false match is far less
-      likely than for prose. Whichever is chosen, it must not weaken the box-constrained rule
-      that governs `locate_findings`.
+- [x] ~~**Fuzzy matching for borrowed values**~~ — **DONE 2026-08-11**, the same day the
+      leak was reported. Three tiers in `locate_borrowed` (exact, squash, then fuzzy for
+      needles of 8+ squashed characters), additive rather than fallback, closest-match-first,
+      with identifier-shaped needles on the strict cross-class table and a budget capped
+      below the cost of routing around it. Design in [ARCHITECTURE.md](ARCHITECTURE.md)
+      "A page is not the unit of truth", record in [DONE.md](DONE.md).
 
 - [ ] **Run the TEXT layer-0 pass over the OCR'd page text as well** (Sergei, 2026-08-11,
       raised while reviewing the borrowed-matching limit above — *"an independent text-only
