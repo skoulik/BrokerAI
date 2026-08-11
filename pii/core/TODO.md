@@ -55,19 +55,15 @@ quantization item below is what stands between this and a usable product.
       because the box turned out to be worth more as a *disambiguator* than as a fallback.
       Record in [DONE.md](DONE.md), design in [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0".
 
-- [ ] **A tier-3 paint does not suppress a later identical finding, so the "NOT redacted"
-      line can cry wolf** (found in the first hybrid run, 2026-08-09). `locate_findings`
-      recognizes a redundant finding by containment in an already-claimed *char span*; a
-      box-only placement has no span, so a second finding of the same value with no box of its
-      own falls through to `unlocated` and is reported as unredacted even though the pixels
-      were painted. Observed on the insurance page: the same address appeared in both the
-      tier-3 list and the unlocated list, and re-OCR of the output confirmed **nothing
-      leaked**. The error is in the safe direction, but it is in the one line an operator has
-      to be able to trust, so it should not stand. The fix needs a semantics decision first:
-      should a painted box suppress a later identical value anywhere on the page (wrong if the
-      two occurrences are genuinely in different places), or should the report merely
-      distinguish "unplaced, but an identical value was painted elsewhere" from "unplaced,
-      nothing painted"? The second is honest and cheap; prefer it unless the first is argued.
+- [x] ~~**A tier-3 paint does not suppress a later identical finding, so the "NOT redacted"
+      line can cry wolf**~~ — **DONE 2026-08-11**, as the reporting fix this item already
+      preferred (Sergei: "why exactly cannot we change the message?"). `Placement` gained
+      `value_painted_elsewhere`, set by `locator._mark_painted_elsewhere` for an unplaced
+      finding whose value was painted anywhere on the page, and the CLI prints that group on
+      its own line. Deliberately NOT a suppression: containment in a char span is positional
+      evidence and may suppress, value identity is not and may only annotate — two occurrences
+      of a value can genuinely sit in two places. The finding therefore stays counted on
+      `unlocated`. Record in [DONE.md](DONE.md).
 
 - [ ] **A value wrapped across lines/columns falls to tier 3 instead of matching** (same run).
       The model returned an address and a vehicle description as single long strings; both

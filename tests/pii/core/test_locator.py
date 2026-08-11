@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from pii.core.linearization import linearize
-from pii.core.locator import denormalize, locate_findings
+from pii.core.locator import denormalize, locate_borrowed, locate_findings
 from pii.core.ocr import Box
 from pii.core.ocr_page import OcrFrame, build_page
 from pii.core.vlm import VlmFinding
@@ -325,3 +325,123 @@ def test_the_three_outcomes_are_reported_separately():
 )
 def test_denormalize_maps_model_space_onto_pixels(box, expected):
     assert denormalize(box, _PAGE_W, _PAGE_H) == expected
+
+
+# ------------------------------------------------- borrowed: what the document
+#                                                    knows, applied to one page
+
+
+def _borrowed(ocr, *needles):
+    return [
+        (ocr.text[start:end], entity_type)
+        for start, end, entity_type in locate_borrowed(needles, ocr.text)
+    ]
+
+
+def test_a_borrowed_value_is_marked_at_every_occurrence():
+    # The page's own findings claim one occurrence each; a document-wide value
+    # has no such budget — every printing of it is PII.
+    ocr = _page("Sergei Kulik paid", "Sergei Kulik again")
+    assert _borrowed(ocr, ("Sergei Kulik", "PERSON")) == [
+        ("Sergei Kulik", "PERSON"),
+        ("Sergei Kulik", "PERSON"),
+    ]
+
+
+def test_a_borrowed_value_matches_case_insensitively():
+    ocr = _page("SERGEI KULIK paid")
+    assert _borrowed(ocr, ("Sergei Kulik", "PERSON")) == [
+        ("SERGEI KULIK", "PERSON")
+    ]
+
+
+def test_a_short_borrowed_needle_does_not_match_inside_a_word():
+    # Exact matching carries no length floor by design (Wu, Ng, NAB, ANZ are
+    # real), which is safe when a box pins the match and unbounded when a
+    # value is hunted document-wide.
+    ocr = _page("Would Wu wonder")
+    assert _borrowed(ocr, ("Wu", "PERSON")) == [("Wu", "PERSON")]
+
+
+def test_the_word_edge_guard_does_not_apply_to_a_non_alphanumeric_edge():
+    ocr = _page("call (02) 9999 1234 now")
+    assert _borrowed(ocr, ("(02) 9999 1234", "PHONE_NUMBER")) == [
+        ("(02) 9999 1234", "PHONE_NUMBER")
+    ]
+
+
+def test_a_borrowed_value_falls_back_to_squash_when_respaced():
+    ocr = _page("account 014936 111873883 closed")
+    assert _borrowed(ocr, ("014-936 111873883", "IDENTIFIER_GENERIC")) == [
+        ("014936 111873883", "IDENTIFIER_GENERIC")
+    ]
+
+
+def test_squash_matching_keeps_its_length_floor_when_borrowed():
+    # Squash collapses separators, so a short needle would match across word
+    # boundaries — page-wide, with no box, that is unbounded.
+    ocr = _page("ab cd ef")
+    assert _borrowed(ocr, ("a-b", "PERSON")) == []
+
+
+def test_two_needles_resolving_to_one_span_go_to_the_first():
+    # needles arrive longest-first (Grouping.needles), so where two spellings
+    # of a value land on exactly the same characters the wider one labels them.
+    ocr = _page("account 014936 closed")
+    assert _borrowed(
+        ocr, ("014-936", "IDENTIFIER_GENERIC"), ("014936", "PERSON")
+    ) == [("014936", "IDENTIFIER_GENERIC")]
+
+
+def test_a_nested_borrowed_value_keeps_its_own_span():
+    # Nothing needs suppressing here, unlike the box-guided path where each
+    # finding must claim its own geometry: the two spans simply overlap and
+    # PiiPipeline._merge_overlaps unions them into one replacement.
+    ocr = _page("John Smith paid")
+    assert _borrowed(ocr, ("John Smith", "PERSON"), ("John", "PERSON")) == [
+        ("John", "PERSON"),
+        ("John Smith", "PERSON"),
+    ]
+
+
+def test_a_borrowed_value_absent_from_the_page_yields_nothing():
+    ocr = _page("nothing to see here")
+    assert _borrowed(ocr, ("Sergei Kulik", "PERSON")) == []
+
+
+# --------------------------------- the tier-3 residue and the "NOT redacted"
+#                                    line it used to cry wolf on
+
+
+def test_an_unplaced_twin_of_a_box_painted_value_is_flagged_not_silenced():
+    """The insurance-page case (2026-08-09): the model boxes a value OCR
+    cannot read, so it paints from tier 3 — which leaves no char span. The
+    model reports the same value a second time with no box of its own, so
+    nothing marks that one redundant and it lands unplaced, although the
+    pixels were painted.
+
+    It stays counted as unplaced (the tool cannot tell whether the two are
+    the same printing), but it is distinguishable, so the report can stop
+    calling a painted value an outright leak."""
+    ocr = _page("nothing readable here")
+    result = locate_findings(
+        [
+            VlmFinding("Budget Direct", "ORGANIZATION",
+                       box=(100, 100, 300, 200)),
+            VlmFinding("Budget Direct", "ORGANIZATION"),
+        ],
+        ocr,
+        (_PAGE_W, _PAGE_H),
+    )
+    assert [p.finding.text for p in result.box_only] == ["Budget Direct"]
+    (unplaced,) = result.unlocated
+    assert unplaced.value_painted_elsewhere is True
+
+
+def test_an_unplaced_value_painted_nowhere_is_not_flagged():
+    ocr = _page("nothing readable here")
+    result = locate_findings(
+        [VlmFinding("Sergei Kulik", "PERSON")], ocr, (_PAGE_W, _PAGE_H)
+    )
+    (unplaced,) = result.unlocated
+    assert unplaced.value_painted_elsewhere is False

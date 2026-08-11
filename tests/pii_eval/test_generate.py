@@ -144,3 +144,52 @@ def test_invalid_annotations_cover_types_and_evidence_tiers(tmp_path):
     assert {e["evidence"] for e in inv} == {"in-span", "context", "none"}
     # never expected strips, never critical-gate members
     assert all(not e["strip_expected"] and not e["critical"] for e in inv)
+
+
+def test_documents_span_pages_and_repeat_their_holder(tmp_path):
+    """A one-page corpus cannot see the failure the two-sweep pipeline exists
+    for. Statements must therefore span pages AND reprint the holder and the
+    account number on each — a document that merely grows longer would test
+    pagination, not cross-page detection."""
+    corpus = generate(str(tmp_path / "c"), seed=42, docs=3)
+    truth = json.loads((corpus / "truth.json").read_text("utf-8"))
+    by_file = {d["file"]: d for d in truth["docs"]}
+
+    statement = next(f for f in by_file if f.startswith("legacy"))
+    pages = (corpus / statement).read_text("utf-8").split("\f")
+    assert len(pages) > 1, "the statement must span pages"
+
+    # Page boundaries in offset space, so an annotation can be placed.
+    bounds, at = [], 0
+    for page in pages:
+        bounds.append((at, at + len(page)))
+        at += len(page) + 1
+
+    def page_of(ann):
+        return next(i for i, (a, b) in enumerate(bounds, 1)
+                    if a <= ann["start"] < b)
+
+    entities = by_file[statement]["entities"]
+    accounts = [e for e in entities if e["type"] == "AU_BANK_ACCOUNT"]
+    assert {page_of(e) for e in accounts} == set(range(1, len(pages) + 1)), \
+        "the account number must be reprinted on every page"
+
+    # The holder in caps on page 1 and title case on the continuation pages:
+    # the same entity under two surface forms, which is what the document-wide
+    # grouping has to recognize.
+    people = [e for e in entities if e["type"] == "PERSON"]
+    caps = {e["value"] for e in people if page_of(e) == 1 and e["value"].isupper()}
+    later = {e["value"] for e in people if page_of(e) > 1}
+    assert caps, "no caps-form holder on page 1"
+    assert any(v.upper() in caps for v in later), \
+        "no title-case reprint of a page-1 name on a later page"
+
+
+def test_the_name_forms_doc_stays_one_page(tmp_path):
+    # Every row is a different person by construction, so it has nothing to
+    # carry across a break — pagination would only spend model time.
+    corpus = generate(str(tmp_path / "c"), seed=42, docs=3)
+    truth = json.loads((corpus / "truth.json").read_text("utf-8"))
+    names = next(d["file"] for d in truth["docs"]
+                 if d["file"].startswith("names"))
+    assert "\f" not in (corpus / names).read_text("utf-8")

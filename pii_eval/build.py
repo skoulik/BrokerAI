@@ -81,6 +81,21 @@ class Doc:
         # so it scores on the recall/leak axis, not the over-strip axis.
         return self.pii(value, "ORGANIZATION_PRIVATE", strip_expected=True)
 
+    def page_break(self) -> "Doc":
+        """Start a new page.
+
+        A page break is a CHARACTER in the source text (form feed), not
+        render-time furniture, so every tier honours the same pagination from
+        one description: the text tier sees one more whitespace character,
+        `pii_eval.render` splits pages on it, and annotation offsets are
+        unaffected. The alternative — repeating a header at render time —
+        would put PII on the image that is not in the text and break the
+        paired-corpus property the image tier exists for.
+        """
+        self.raw("\f")
+        self._line_start = self._len  # column 0 of the new page's first line
+        return self
+
     def pad_to(self, col: int) -> "Doc":
         """Pad with spaces to the given column of the current line —
         fixed-column layouts (the legacy statement) without having to know

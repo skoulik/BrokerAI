@@ -47,7 +47,8 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `vlm.py` | **Layer 0, pixels** — a local vision LLM reads the page image and names the PII; transport, both prompts (detect / localize), parsing |
 | `text_llm.py` | **Layer 0, text** — the same model reading document text instead of a page; windowing, prompt, per-window deduplication |
 | `text_mode.py` | Text front-end: layer-0 detect → locate → splice placeholders. The text counterpart of `image_mode` |
-| `locator.py` | Layer-0 findings → spans. Both placement paths: box-guided in the OCR text (`locate_findings`, three geometry tiers) and plain occurrence search in document text (`locate_in_text`) |
+| `grouping.py` | The fold between the two sweeps: every page's findings → document-wide entity groups, class elected by majority vote |
+| `locator.py` | Layer-0 findings → spans. Three placement paths: box-guided in the OCR text (`locate_findings`, three geometry tiers), document-wide values against one page (`locate_borrowed`), and plain occurrence search in document text (`locate_in_text`) |
 | `fuzzy.py` | Confusion-weighted Levenshtein — the fuzzy tier of location, admissible only inside a box |
 | `ocr.py` | OCR-engine seam (`get_ocr_page`) + the shared pixel toolkit (`Box`, `_rows` banding, word-box normalization) |
 | `ocr_page.py` | Perception: `OcrPage` → `OcrLine` → `OcrWord` + `OcrFrame`. Geometry only, no character offsets |
@@ -80,6 +81,8 @@ flowchart TB
     CSVM --> AE
     OCRPY -- "page string" --> AE
     VLM -- "values + boxes" --> LOC["locator.py<br>box constrains the search;<br>exact / squash / fuzzy → span,<br>else the padded model box"]
+    VLM -- "every page's values" --> GRP["grouping.py<br>cluster by confusion-weighted distance;<br>class = majority vote over detections"]
+    GRP -- "document-wide values<br>(locate_borrowed:<br>every occurrence, exact / squash)" --> LOC
     OCRPY -- "word boxes" --> LOC
     LOC -- "spans in the page string" --> MRG
 
@@ -136,9 +139,10 @@ byte-identical. See the CSV decision below.
 
 Front-end: OCR the page into an `OcrPage` and `linearize` it into the flat page string plus a
 source map recording `(char_start, char_end, bbox)` per word *as it is written*. Detection is
-layer 0 by default — two model passes name the values and box them, and `locator.py` turns
-each into a span of that string using the box to constrain the search — or, with
-`locator.py` turns each into a span of that string, using the box to constrain the search.
+layer 0 — two model passes name the values and box them, and `locator.locate_findings` turns
+each into a span of that string using the box to constrain the search. Beside it,
+`locator.locate_borrowed` marks every occurrence of every value the **document** knows about,
+including ones layer 0 said nothing about on this page (see the grouping decision below).
 Layer 1 then supplies the precise classes, the checksum shadows and a recall floor. Back-end
 (`image_mode.py`): mapping merged spans to boxes is pure interval intersection over the
 recorded intervals; each span's placeholder is painted over its boxes on the **original**
@@ -146,16 +150,18 @@ image (background-filled box with the placeholder text drawn in — pseudonymiza
 blackout), emitting the same rehydratable `map.json`. Layer-0 findings that match no OCR text
 are painted from the model's own padded box and counted apart (see "Layer 0" below).
 
-### PDF — the image pipeline per page, reassembled from scratch
+### PDF — two sweeps over the image pipeline, reassembled from scratch
 
-`strip_pdf` (`pdf_mode.py`, 2026-07-18) streams pages through the image pipeline — render at
-300 DPI (default) → OCR → text pipeline → paint — and embeds each painted page into a
-**fresh** pymupdf document at the source page's physical size in points. Nothing is copied
-from the source document object, so text layers, annotations, attachments and metadata are
-absent by construction (the metadata dict is explicitly emptied on top); the hidden-text-leak
-class cannot survive. One pipeline instance, one OCR engine and one shared `PseudonymMap`
-serve all pages: memory stays flat (a 300 DPI A4 page is ~26 MB of pixels) and placeholders
-are consistent across the document. Processing is lossless end-to-end; only the final embed
+`strip_pdf` (`pdf_mode.py`, 2026-07-18; two sweeps 2026-08-11) **reads** every page — render
+at 300 DPI (default) → detect → localize → OCR — then groups the findings across the whole
+document, then **redacts** every page against that shared view (locate → layer 1 → paint) and
+embeds each painted page into a **fresh** pymupdf document at the source page's physical size
+in points. Nothing is copied from the source document object, so text layers, annotations,
+attachments and metadata are absent by construction (the metadata dict is explicitly emptied
+on top); the hidden-text-leak class cannot survive. One pipeline instance, one OCR engine and
+one shared `PseudonymMap` serve all pages, so placeholders are consistent across the
+document. Rendered pages are cached to disk between the sweeps rather than rendered twice —
+rationale in the grouping decision below. Processing is lossless end-to-end; only the final embed
 is lossy — JPEG q90 (decision 2026-07-18; the eval scorer re-OCRs output pixels, so encoding
 damage is measured, not hidden; configurability is a recorded TODO). Rationale for
 pixels-first is in the "PDFs as rendered images" decision below.
@@ -776,6 +782,85 @@ applies it silently, per page, unauditably. That belongs in a deterministic, log
 the testbench never needs a model server. Determinism requires single-slot serving (`-np 1`);
 llama.cpp's parallel batching makes greedy decode non-reproducible, and a gate that can be
 passed by re-rolling is not a gate.
+
+### A page is not the unit of truth — document-wide entity grouping (2026-08-11)
+
+Layer 0 reads one page at a time, so its findings are per-page opinions. A value it named on
+page 1 and missed on page 4 was redacted on page 1 and **leaked on page 4**, and a streaming
+per-page pipeline had nothing that could notice: page 1's findings no longer existed by the
+time page 4 was painted. The same defect operated *within* a page — `locate_findings` places
+one span per finding, so a value printed three times and named once was painted once.
+
+The fix is three stages, and it makes the page path behave the way the text path always did
+(`locate_in_text` marks every occurrence in the whole document):
+
+1. **Read all pages** — detect + localize + OCR, painting nothing (`image_mode.read_page`).
+2. **Group** (`grouping.py`) — every finding from every page folded into document-wide
+   entity groups, each keeping the *original* text of each constituent.
+3. **Redact all pages** — each page's own findings still go through the box-guided tiers, and
+   `locator.locate_borrowed` additionally marks every occurrence of every group constituent
+   in that page's OCR text, including values layer 0 never reported there.
+
+**Grouping decides the class and the report; it does not produce recall.** Every constituent
+is searched independently, so the flat set of variant strings is what yields spans. That
+bounds the blast radius of the clustering rule: a mis-grouping cannot cause a miss or a
+mis-paint, only a mislabel — and a mislabel is visible in the group table.
+
+**Comparison normalizes; storage and search never do.** Distance runs on the case-folded,
+separator-collapsed form; a group stores each constituent verbatim and the borrowed pass
+searches with those originals. Case is the dominant variant pair in these documents — the
+same name in caps in a header and title case in the body — and raw edit distance is blind to
+it (8 edits for `SMITH JOHN` vs `Smith John`).
+
+**One distance rule, two admissible tables.** The budget (`GROUP_BUDGET = 0.9`) reads: *any
+number of known glyph confusions, but not a single genuine character difference* — a listed
+confusion costs 0.25 so several fit, an ordinary substitution or an indel costs 1.0 and
+splits the group. Which pairs are listed depends on shape: an identifier-shaped value admits
+only the **cross-class** pairs (`0↔o`, `1↔l`, `5↔s`, `j↔3`, …), because a digit read as a
+letter is damage while a digit read as another digit is a different account. The digit↔digit
+pairs `1↔2` and `4↔8` are in the *measured* confusion table and must not be discounted here;
+`fuzzy.IDENTIFIER_CONFUSION_PAIRS` derives the admissible subset rather than duplicating it,
+so the pending confusion-matrix refresh cannot leave a stale copy behind. Shape is classified
+*after* allowing homoglyphs, and a real-digit floor keeps letter-only words ('boss', 'log' —
+all four characters are digit confusables) out of the strict table.
+
+This is close to the fold-and-compare that `fuzzy.py` argues against, and the difference is
+the job, not the technique: there a failed match leaves a value unpainted, which is a leak;
+here a failed comparison splits one group into two, each still searched document-wide. No
+recall is lost, and the cost is one extra row in the report.
+
+**The vote is two-way, and that is the notable consequence.** The class is elected by majority
+over *individual detections* (a value read the same way on eight pages outweighs one read
+differently once), ties broken by class priority — `PERSON > IDENTIFIER_GENERIC > ADDRESS >
+DATE_OF_BIRTH > ORGANIZATION`, whose only load-bearing positions are PERSON first and
+ORGANIZATION last, it being the one class layer 0 emits that is *kept* by default. The
+elected class then replaces every member's own, in both directions. A monotonic variant was
+considered and rejected (Sergei, 2026-08-11): if `PII_COMPANY` wins 10-to-1 the odds are it is
+a company, and refusing to relabel would also fork one value into two placeholders.
+
+So this is **the first mechanism in the tool that can un-redact something a per-page run would
+have redacted**, which is why `EntityGroup.votes` is carried out to the CLI and printed under
+`--report`: the group listing is the audit surface for that decision, not decoration.
+
+**A borrowed value is matched exact-or-squash, never fuzzily.** The standing rule is that
+fuzzy matching is admissible exactly where a box constrains the candidate set; a value
+borrowed onto another page has no box there, so edit distance would be the page-wide search
+the design rules out. Borrowed needles additionally carry an **alphanumeric word-edge guard**:
+exact matching deliberately has no length floor (real 2-char surnames and 3-char organizations
+exist), which is safe when a box pins the match and unbounded when a value is hunted
+document-wide — `Wu` would otherwise paint inside `Would`.
+
+**Rendered pages are cached to disk between the sweeps, never rendered twice.** The model's
+`bbox_2d` lives in the coordinate space of the pixels it saw; a second render only *assumes*
+it reproduces the first (dpi rounding, a library bump, page rotation), while a cache makes it
+identical by construction. PNG, because processing stays lossless until the final embed. The
+cache holds full unredacted pages — near-PII of the strongest kind, like `map.json` — so it
+lives in a temporary directory, each page's file is unlinked the moment that page is embedded,
+and the directory goes on the way out including on an exception.
+
+Text and CSV are untouched: they already search the whole document for every named value, so
+the only thing grouping would add there is cross-window class consistency, which is worth its
+own measured change rather than a free ride on this one.
 
 ### Surya 2 evaluated and retired the same day (2026-07-17)
 

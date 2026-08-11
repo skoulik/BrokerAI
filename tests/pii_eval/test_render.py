@@ -49,10 +49,50 @@ def test_render_writes_pages_and_manifest(tmp_path):
         "legacy_00.txt", "loan_01.txt", "tx_02.csv",
     ]
     for doc in manifest["docs"]:
-        page = Image.open(out / doc["file"])
-        assert page.width > 100 and page.height > 100
+        for name in doc["pages"]:
+            page = Image.open(out / name)
+            assert page.width > 100 and page.height > 100
+        # ...and the same pages, assembled, so --modality pdf runs the
+        # two-sweep pipeline over identical pixels.
+        assert (out / doc["pdf"]).exists()
     # The manifest's source pointer resolves back to the text corpus.
     assert (out / manifest["source"]).resolve() == corpus.resolve()
+
+
+def test_form_feeds_in_the_source_become_pages(tmp_path):
+    # Pagination is described ONCE, in the document text, so the text tier and
+    # the image tier cannot disagree about where a page ends.
+    corpus = _mini_corpus(tmp_path)
+    (corpus / "legacy_00.txt").write_text(
+        "PAGE ONE\nrows here\fPAGE TWO\nmore rows\fPAGE THREE",
+        encoding="utf-8",
+    )
+    out = render(str(corpus), str(tmp_path / "image" / "s5"))
+    manifest = json.loads((out / "manifest.json").read_text("utf-8"))
+    by_source = {d["source"]: d for d in manifest["docs"]}
+    assert by_source["legacy_00.txt"]["pages"] == [
+        "legacy_00.p1.png", "legacy_00.p2.png", "legacy_00.p3.png",
+    ]
+    # Pages of one document share a raster size, so the analysis DPI cannot
+    # differ from page to page.
+    sizes = {
+        Image.open(out / name).size
+        for name in by_source["legacy_00.txt"]["pages"]
+    }
+    assert len(sizes) == 1
+
+
+def test_a_csv_is_paginated_by_rows_with_its_header_repeated(tmp_path):
+    # A form feed inside a CSV would break the parse, so these are cut here —
+    # and the repeated line carries column names, not PII.
+    from pii_eval.render import _CSV_ROWS_PER_PAGE, paginate
+
+    header = "Date,Description,Amount"
+    rows = [f"01/01/2024,ROW {i},{i}.00" for i in range(_CSV_ROWS_PER_PAGE + 5)]
+    pages = paginate("\n".join([header, *rows]), is_csv=True)
+    assert len(pages) == 2
+    assert all(page.splitlines()[0] == header for page in pages)
+    assert pages[1].splitlines()[1:] == rows[_CSV_ROWS_PER_PAGE:]
 
 
 def test_fixed_column_docs_render_monospace(tmp_path):
@@ -71,8 +111,8 @@ def test_render_is_deterministic_per_seed(tmp_path):
     m1 = json.loads((out1 / "manifest.json").read_text("utf-8"))
     m2 = json.loads((out2 / "manifest.json").read_text("utf-8"))
     assert [
-        (d["file"], d["font"], d["size"]) for d in m1["docs"]
-    ] == [(d["file"], d["font"], d["size"]) for d in m2["docs"]]
+        (d["pages"], d["font"], d["size"]) for d in m1["docs"]
+    ] == [(d["pages"], d["font"], d["size"]) for d in m2["docs"]]
 
 
 def test_format_csv_table_aligns_columns():

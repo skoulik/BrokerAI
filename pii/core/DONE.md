@@ -1837,3 +1837,164 @@ the move; new completed tasks append to the matching section with their records.
       WinError 127 crash), the modelscope torch stub, and the lazy package inits. The worker is
       one revert away in git history, the same disposition as Tesseract, Surya and the layout
       backends.)*
+
+- [x] **Document-wide entity grouping — a page stops being the unit of truth**
+      *(2026-08-11. Reported by Sergei from CLI use: "on multipage documents some entities are
+      detected on one page and missed on another". Design agreed over three rounds before any
+      code; the distilled result is in [ARCHITECTURE.md](ARCHITECTURE.md) "A page is not the
+      unit of truth", the invariants in [../CLAUDE.md](../CLAUDE.md).)*
+
+      **The defect had two faces, and only one of them was reported.** Across pages: layer 0
+      reads one page at a time, `strip_pdf` streamed, so page 1's findings no longer existed
+      when page 4 was painted and nothing could notice the disagreement. *Within* a page:
+      `locate_findings` places one span per finding, so a value printed three times and named
+      once was painted once — found while writing the tests, and it means single-page `--image`
+      gained from this change too. The existing `test_hybrid_geometry_runs_a_second_pass_and_uses_it`
+      had encoded the second face as expected behaviour (two identical values on the page, one
+      span asserted); it now asserts both are painted and that the box still decides which one
+      the model's own finding claims.
+
+      Shipped as three stages — read all pages (`image_mode.read_page`), group
+      (`grouping.py`), redact all pages (`locator.locate_borrowed` beside the unchanged
+      box-guided `locate_findings`). No extra model calls: the cost is one OCR pass and one
+      disk round-trip per page against ~300 s of model time.
+
+      **Design points that took argument rather than code:**
+
+      - *Grouping decides the class and the report, not recall.* Every constituent is searched
+        independently, so the flat variant set produces the spans. This is what bounds the
+        clustering rule's blast radius to a mislabel, and it is why the Levenshtein threshold
+        turned out to be a low-stakes knob.
+      - *Cache the raster, don't re-render* (Sergei: "re-rendering is a design smell"). The
+        stronger reason than memory: the model's `bbox_2d` is in the coordinate space of the
+        pixels it saw, so a second render only *assumes* it reproduces the first.
+      - *Two confusion tables.* `fuzzy.CONFUSION_PAIRS` mixes cross-class pairs with
+        digit↔digit ones (`1↔2`, `4↔8` — both from the MEASURED set, not folklore). Discounting
+        those is right for the locator, where a box pins the region, and wrong for identity,
+        where nothing does: `…4936` and `…8936` would merge. `IDENTIFIER_CONFUSION_PAIRS`
+        derives the cross-class subset so a refresh of the measured table cannot leave a stale
+        copy. Sergei asked the question that produced this ("but then what about the
+        confusions? O<->0, etc?") after accepting stricter matching for digits.
+      - *Pure majority vote, both directions* (Sergei's call, over a proposed monotonic variant
+        that could only add redactions). If `PII_COMPANY` wins 10-to-1 the odds are it is a
+        company, and refusing to relabel forks one value into two placeholders. Accepted
+        consequence: this is the first mechanism in the tool that can un-redact something a
+        per-page run would have redacted — hence the vote tally in the `--report` group table,
+        which is an audit surface rather than decoration. Ties go to class priority, ordered so
+        ORGANIZATION (the one kept class layer 0 emits) can never take one.
+      - *Borrowed matching stays exact-or-squash*, per the standing rule that fuzzy is
+        admissible only under a box, plus an alphanumeric word-edge guard — exact matching has
+        no length floor by design (Wu, Ng, NAB, ANZ), which is safe under a box and unbounded
+        document-wide (`Wu` inside `Would`).
+
+      **One bug caught by its own test**: `fuzzy.distance` gained a `cost` parameter for the
+      second table, but the DP body still called `substitution_cost` directly, so the strict
+      table was silently ignored —
+      `test_measured_digit_confusions_do_not_discount_identifiers` failed on the first run and
+      named the cause exactly.
+
+      **Not fixed, and not claimed**: the tier-3 cry-wolf item in [TODO.md](TODO.md) ("a
+      box-only paint does not suppress a later identical finding"). It was expected to fall out
+      of this and does not — that case has no OCR text on the page at all, so the borrowed pass
+      cannot see it either.
+
+      **Text and CSV untouched**: they already locate every occurrence document-wide, so
+      grouping would only add cross-window class consistency there. Worth its own measured
+      change. `locate_in_text` also still carries the unbounded-needle hazard the new
+      `locate_borrowed` guards against; logged rather than fixed here, to keep the text-tier
+      numbers out of this change.
+
+      Testbench: `tests/pii/core/test_grouping.py` (clustering, the two tables, the vote and
+      its tie-break), borrowed-matching cases in `test_locator.py`, cross-page and
+      cache-lifetime cases in `test_pdf_mode.py`, the two-way vote and multi-occurrence painting
+      in `test_image_mode.py`. 388 green, model-free. **Corpus half of the dual-coverage rule
+      still owed** — `--modality pdf` needs a real corpus, so a synthetic multi-page probe has
+      no home today; the real-corpus run is the measurement that matters and had not been made
+      at the time of writing.
+
+- [x] **The "NOT redacted" line stops crying wolf on the tier-3 residue**
+      *(2026-08-11, immediately after the grouping work, which was expected to fix this and
+      did not — the borrowed pass searches OCR text and this case has none.)*
+
+      The case, from the first hybrid run (2026-08-09): the model boxes a value OCR cannot
+      read, so it paints at tier 3 — which leaves no char span. The prompt asks for every
+      occurrence, so the model reports the same value again with no box of its own; nothing
+      marks that one redundant (containment in a char span is the only test there is), and it
+      lands on `unlocated`, printed as an outright leak although the pixels were painted.
+      Observed on the insurance page with an address; re-OCR of the output confirmed nothing
+      leaked.
+
+      The original item asked for a semantics decision first and then answered it ("the second
+      is honest and cheap") — Sergei cut through the framing: *why exactly cannot we change the
+      message?* Nothing could; it was a settled preference recorded as an open question.
+
+      `Placement.value_painted_elsewhere` is set by `locator._mark_painted_elsewhere` for any
+      unplaced finding whose squashed value was painted anywhere on that page, and
+      `_report_geometry` gives that group its own line. Three properties held deliberately:
+
+      - **Not a suppression.** Containment in a char span is *positional* evidence and may
+        suppress a later finding; value identity is not, because two occurrences of a value can
+        genuinely sit in two places. So the second line does not say "safe" — it says an
+        identical value was painted elsewhere and the operator must check whether this is the
+        same printing or a second, still legible one. The tool cannot decide it.
+      - **Still counted.** The finding stays on `unlocated`, per the standing invariant that an
+        unplaceable detection must keep reaching the caller as a count. The new list is a
+        subset, not a diversion.
+      - **Both warnings survive** as separate `RuntimeWarning`s, so the deduplication argument
+        for counting rather than only warning is unaffected.
+
+      Regression tests in `test_locator.py` reproduce the insurance-page shape (a boxed value
+      over unreadable pixels plus an unboxed twin) and its negative (an unplaced value painted
+      nowhere).
+
+- [x] **Multi-page synthetic corpus — the cross-page path becomes measurable**
+      *(2026-08-11, Sergei: "the next step would be to improve the corpus to have multiple
+      pages (1-3 is enough)". Both scoping questions agreed: templates change for real
+      (baseline reset accepted), and the total stays near 20 pages.)*
+
+      Documents now span 1-3 pages. The design pivot is **where the page break lives**: it is
+      a form feed emitted by the templates (`build.Doc.page_break`), i.e. a character in the
+      SOURCE TEXT, so pagination is described once and the text tier, the image tier and the
+      PDF tier cannot disagree about it — and annotation offsets are untouched, so truth needed
+      no new concept at all. The alternative considered and rejected was repeating a header as
+      render-time furniture: that would put PII on the image that is not in the text and break
+      the paired-corpus attribution the image tier exists for. CSVs are the one exception —
+      a form feed inside a CSV breaks the parse — so their tables are cut by row count with the
+      COLUMN header repeated, which is furniture carrying no PII.
+
+      **Pagination alone would not have measured anything.** The symptom is a value detected on
+      one page and missed on another, so the corpus has to REPEAT entities across pages:
+      `legacy_statement` grew a continuation header reprinting the account number on every page
+      and the holder in title case, against a caps form on page 1. That pair is deliberate — it
+      is the case-folded comparison in `grouping.py` under test, and a corpus printing one form
+      only would pass whether or not the folding worked. The page-1 caps occurrence is
+      unconditional (`HELD BY:`) because the pre-existing addressee line is an rng draw, which
+      would have made the probe a two-in-three lottery. `loan_application` splits 1+1 with its
+      own continuation header. The name-forms statistics doc stays one page: every row is a
+      different person by construction, so pages there buy nothing and cost minutes each.
+
+      `render` writes one PNG per page and assembles them into a PDF per document, so
+      `--modality image` (page at a time, no cross-page knowledge — the control) and
+      `--modality pdf` (the two sweeps) run over **identical pixels** with grouping as the only
+      variable. `score_pdf` grew a loader for the second corpus shape, discriminated on who owns
+      the truth: a real corpus carries its own hand-authored `truth.json`, a rendered one's truth
+      belongs to the text corpus it came from.
+
+      Seed 42: 12 docs / **26 pages** (statements 3, loans 2, transaction CSVs 1-2, names 1) —
+      above the ~20 target; the lever if a run is too slow is `--docs`, not the page shapes.
+
+      **A reporting bug fell out of building this.** The first end-to-end run (real OCR, stubbed
+      detector naming values on page 1 only) reported 2 borrowed spans per continuation page,
+      but one of them was the account number — which layer 1 catches by its own label anyway and
+      was never going to leak. `borrowed` now counts against what the page would have redacted
+      ALONE (`merge_detections` over its own layer-0 placements, layer 1 included), so the number
+      means "coverage that exists only because other pages were read". It dropped to 1 per page:
+      the holder's name, which layer 1 has no detector for. Re-OCR of the output confirms the
+      account number survives nowhere.
+
+      Testbench: pagination, header repetition and the caps/title-case pair asserted in
+      `test_generate.py`; form-feed splitting, uniform page rasters, CSV row splitting and the
+      PDF assembly in `test_render.py`.
+
+      **Baseline reset, knowingly**: the text-tier corpus changed shape, so tier-1 numbers from
+      before this date are not comparable. Seeds must be regenerated (`generate` + `render`).

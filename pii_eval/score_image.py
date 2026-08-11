@@ -229,22 +229,29 @@ def score_image(corpus: str, threshold: float = 0.4,
     noise = []
     for doc in manifest["docs"]:
         entities = truth_by_file[doc["source"]]["entities"]
-        image = Image.open(corpus_path / doc["file"])
+        # One map per DOCUMENT, spanning its pages — the CLI's per-document
+        # default. Each page is still stripped on its own, which is what makes
+        # this modality the per-page control against --modality pdf.
         pmap = PseudonymMap()
-        result = strip_image(image, pipeline, pmap,
-                             ocr_backend=ocr_backend, detector=vlm,
-                             geometry=geometry)
-        reread = ocr(result.image).text
+        rereads = []
+        invalid = []
+        for name in doc["pages"]:
+            result = strip_image(Image.open(corpus_path / name), pipeline,
+                                 pmap, ocr_backend=ocr_backend, detector=vlm,
+                                 geometry=geometry)
+            rereads.append(ocr(result.image).text)
+            invalid.extend(result.invalid)
+        reread = "\n".join(rereads)
         inv_ents = [e for e in entities if e["type"] in INVALID_ENTITY_TYPES]
         reg_ents = [e for e in entities if e["type"] not in INVALID_ENTITY_TYPES]
         _score_survival(reg_ents, reread)
-        _score_invalid(inv_ents, result.invalid, reread)
+        _score_invalid(inv_ents, invalid, reread)
         for e in entities:
-            e["file"] = doc["file"]
+            e["file"] = doc["source"]
         all_entities.extend(reg_ents)
         all_invalid.extend(inv_ents)
-        noise.extend((doc["file"], f) for f in _noise(result.invalid, inv_ents))
-        print(f"  scored {doc['file']} [{doc['font']} {doc['size']}px]",
-              file=sys.stderr)
+        noise.extend((doc["source"], f) for f in _noise(invalid, inv_ents))
+        print(f"  scored {doc['source']} ({len(doc['pages'])} pages) "
+              f"[{doc['font']} {doc['size']}px]", file=sys.stderr)
 
     return summarize(all_entities, all_invalid, noise, invalid_identifiers)

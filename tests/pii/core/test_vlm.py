@@ -373,9 +373,16 @@ def test_hybrid_geometry_runs_a_second_pass_and_uses_it(pipeline):
         geometry="hybrid",
     )
     assert calls == ["detect", "localize"]
-    (span,) = result.spans
-    assert result.ocr.text[span.start : span.end] == "SERGEI KULIK"
-    assert span.start == 0  # the occurrence the box pointed at
+    # BOTH occurrences strip. The box still decides which one the model's own
+    # finding claims — that is what this test is about — but since 2026-08-11
+    # the document-wide pass covers the repeat the model never mentioned,
+    # which used to be painted on neither page nor position.
+    assert [
+        result.ocr.text[s.start : s.end] for s in result.spans
+    ] == ["SERGEI KULIK", "SERGEI KULIK"]
+    assert result.spans[0].start == 0  # the occurrence the box pointed at
+    (repeat,) = result.borrowed
+    assert repeat.start == result.spans[1].start
 
 
 def test_ocr_geometry_skips_the_second_pass(pipeline):

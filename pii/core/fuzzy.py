@@ -61,6 +61,32 @@ CONFUSION_PAIRS: frozenset[frozenset[str]] = frozenset(
     frozenset(pair) for pair in _MEASURED + _GLYPH_SHAPE
 )
 
+# The CROSS-CLASS subset: pairs where exactly one side is a digit. A letter
+# standing where a digit belongs in an identifier is a transcription error;
+# a digit standing where a DIFFERENT digit belongs is a different value.
+#
+# The distinction has no meaning for the locator (a box already guarantees the
+# region, so discounting 1<->2 only helps recognize a value known to be there),
+# but it is decisive for `grouping.py`, which uses the same distance to decide
+# whether two strings are the same entity and has no positional anchor. There,
+# discounting the digit<->digit pairs — `1<->2` and `4<->8`, both from the
+# MEASURED set — would merge two different account numbers.
+#
+# DERIVED rather than hand-listed, so a refresh of the table above cannot leave
+# a stale copy behind: a new pair lands in the right bucket by construction.
+IDENTIFIER_CONFUSION_PAIRS: frozenset[frozenset[str]] = frozenset(
+    pair for pair in CONFUSION_PAIRS
+    if sum(1 for ch in pair if ch.isdigit()) == 1
+)
+
+# The non-digit halves of those pairs: the characters that can stand in for a
+# digit. `grouping.py` counts them when deciding whether a value is
+# identifier-shaped, so that a misread glyph cannot flip a value out of that
+# shape and quietly hand it the permissive table.
+DIGIT_CONFUSABLES: frozenset[str] = frozenset(
+    ch for pair in IDENTIFIER_CONFUSION_PAIRS for ch in pair if not ch.isdigit()
+)
+
 # A match is allowed this fraction of the needle's length in edit cost, with
 # a floor so short identifiers get any tolerance at all. 0.25 lets a 12-char
 # account number absorb three edits; the box constraint carries the burden of
@@ -78,19 +104,42 @@ def substitution_cost(a: str, b: str) -> float:
     return CONFUSION_COST if frozenset((a, b)) in CONFUSION_PAIRS else 1.0
 
 
+@lru_cache(maxsize=4096)
+def identifier_substitution_cost(a: str, b: str) -> float:
+    """`substitution_cost` restricted to the CROSS-CLASS pairs.
+
+    For a digit-shaped value, a digit read as a letter is damage and a digit
+    read as another digit is a different value — see
+    IDENTIFIER_CONFUSION_PAIRS. Used by `grouping.py`, never by the locator."""
+    if a == b:
+        return 0.0
+    return (
+        CONFUSION_COST
+        if frozenset((a, b)) in IDENTIFIER_CONFUSION_PAIRS
+        else 1.0
+    )
+
+
 def budget_for(needle: str) -> float:
     """The edit cost a needle of this length may absorb and still match."""
     return max(MIN_BUDGET, MAX_RATIO * len(needle))
 
 
-def distance(a: str, b: str, ceiling: float | None = None) -> float:
+def distance(
+    a: str,
+    b: str,
+    ceiling: float | None = None,
+    cost=substitution_cost,
+) -> float:
     """Weighted Levenshtein distance between `a` and `b`.
 
-    Insertions and deletions cost 1.0; substitutions cost per
-    `substitution_cost`. `ceiling` bails out early once every cell of a row
-    exceeds it, returning a value strictly greater than the ceiling — the
-    caller only ever needs to know "not within budget", and the locator
-    calls this across every word window in a box.
+    Insertions and deletions cost 1.0; substitutions cost per `cost`, which
+    selects the admissible confusion table (`substitution_cost` for location,
+    `identifier_substitution_cost` for identity — see that function).
+    `ceiling` bails out early once every cell of a row exceeds it, returning a
+    value strictly greater than the ceiling — the caller only ever needs to
+    know "not within budget", and the locator calls this across every word
+    window in a box.
     """
     if a == b:
         return 0.0
@@ -108,9 +157,9 @@ def distance(a: str, b: str, ceiling: float | None = None) -> float:
         for j, ch_b in enumerate(b, 1):
             current.append(
                 min(
-                    previous[j] + 1.0,                                # delete
-                    current[j - 1] + 1.0,                             # insert
-                    previous[j - 1] + substitution_cost(ch_a, ch_b),  # substitute
+                    previous[j] + 1.0,                     # delete
+                    current[j - 1] + 1.0,                  # insert
+                    previous[j - 1] + cost(ch_a, ch_b),    # substitute
                 )
             )
         if ceiling is not None and min(current) > ceiling:

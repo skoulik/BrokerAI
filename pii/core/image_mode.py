@@ -17,6 +17,14 @@ running layer 1 alone over OCR text is the patterns-only regime retired
 2026-07-15 as unsafe, and the layered path was deleted with GLiNER2 on
 2026-08-09.
 
+Reading and painting are separate entry points (`read_page`, then
+`strip_from_vlm`) because layer 0's findings are per-page OPINIONS: a
+multi-page document reads every page, groups the findings across all of them
+(`pii.core.grouping`), and only then redacts each page against that shared
+view — otherwise a value named on page 1 and missed on page 4 leaks on page 4.
+`strip_rendered_page` composes the two for the single-page case, where the page
+is the whole document.
+
 Painting geometry comes from OCR word boxes (the VLM's own
 boxes are measured unsafe — see `pii.core.vlm`), so detection never decides
 pixels and painting never sees raw analyzer results. The one exception is
@@ -30,13 +38,14 @@ artifact.
 """
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from PIL import Image
 from pii.core.detection import Detection
 
+from pii.core.grouping import Grouping, group_findings
 from pii.core.linearization import RecognizerInput, linearize
-from pii.core.locator import locate_findings
+from pii.core.locator import locate_borrowed, locate_findings
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box, get_ocr_page
 from pii.core.paint import Segment, paint_segments
@@ -74,7 +83,37 @@ class ImageStripResult:
     box_geometry: list = field(default_factory=list)
     # Layer-0 findings with neither text nor usable geometry. These are
     # UNREDACTED detections; a count that reaches the caller is the point.
+    # ALL of them, including the subset below.
     unlocated: list = field(default_factory=list)
+    # The subset of `unlocated` whose value was painted somewhere else on the
+    # page — the tier-3 residue, where a first finding was painted from the
+    # model's box (no char span, so nothing marks a later twin redundant).
+    # Still unplaced, and still counted above; carried apart only so the
+    # report does not call a painted value an outright leak. Whether the two
+    # are the same printing cannot be decided from here.
+    unlocated_painted_elsewhere: list = field(default_factory=list)
+    # Spans this page owes to what the DOCUMENT knew rather than to what the
+    # model said about this page — occurrences no layer-0 finding here claimed
+    # (`locator.locate_borrowed`). On a multi-page run these are the values
+    # that used to leak; on a single page they are the repeat occurrences of a
+    # value the model named only once.
+    borrowed: list = field(default_factory=list)
+    # The document-wide groups this page was stripped against. Carried so the
+    # front-end can print the vote each class was elected from — the election
+    # can KEEP a value some page reported as PII, so it has to be auditable.
+    groups: tuple = ()
+
+
+@dataclass
+class PageRead:
+    """Sweep 1's record of one page: what layer 0 said, and the OCR text.
+
+    Separating this from painting is what lets a document group its findings
+    before any page is redacted — see `pii.core.grouping`. `ocr` is None only
+    on the `geometry="vlm"` path, where OCR never runs."""
+
+    findings: list
+    ocr: RecognizerInput | None = None
 
 
 def strip_image(
@@ -107,6 +146,34 @@ def strip_image(
     )
 
 
+def read_page(
+    image: Image.Image,
+    ocr_engine=None,
+    *,
+    detector,
+    geometry: str = DEFAULT_GEOMETRY,
+) -> PageRead:
+    """Sweep 1: read one already-rendered page. Detects and OCRs, paints
+    nothing.
+
+    Split out of `strip_rendered_page` so a multi-page document can read every
+    page before it redacts any of them — a value the model names on page 1 and
+    misses on page 4 can only be recovered by a pass that has seen both. The
+    geometry dispatch lives here, in one place, so `strip_pdf` resolves the OCR
+    engine once per document and both entry points share exactly one decision
+    about what runs."""
+    if geometry not in GEOMETRIES:
+        raise ValueError(f"unknown geometry: {geometry!r}")
+    findings = detector.detect(image)
+    if geometry == "hybrid":
+        # Pass 2: the boxes are a search constraint for the locator, not
+        # paint geometry. Kept a separate call from detect() so pass 1
+        # stays byte-identical to the measured recall baseline.
+        findings = detector.localize(image, findings)
+    ocr = None if geometry == "vlm" else linearize(ocr_engine(image))
+    return PageRead(findings=findings, ocr=ocr)
+
+
 def strip_rendered_page(
     image: Image.Image,
     pipeline: PiiPipeline,
@@ -117,23 +184,18 @@ def strip_rendered_page(
     geometry: str = DEFAULT_GEOMETRY,
     pad: int = DEFAULT_PAD,
 ) -> ImageStripResult:
-    """Strip one already-rendered page against an ALREADY-RESOLVED OCR engine
-    (`image -> OcrPage`, or None only when `geometry="vlm"` and OCR never
-    runs).
+    """Read and strip one page, its own findings being the whole document.
 
-    The geometry dispatch lives here, in one place, so `strip_pdf` can resolve
-    the engine once per document instead of once per page — and so both entry
-    points share exactly one decision about what runs."""
-    if geometry not in GEOMETRIES:
-        raise ValueError(f"unknown geometry: {geometry!r}")
-    findings = detector.detect(image)
-    if geometry == "hybrid":
-        # Pass 2: the boxes are a search constraint for the locator, not
-        # paint geometry. Kept a separate call from detect() so pass 1
-        # stays byte-identical to the measured recall baseline.
-        findings = detector.localize(image, findings)
-    ocr = None if geometry == "vlm" else linearize(ocr_engine(image))
-    return strip_from_vlm(image, findings, pipeline, pmap, ocr=ocr, pad=pad)
+    The single-page entry point (`strip_image`, and the testbench). A document
+    of one page still groups: the vote makes a value the model typed two ways
+    on the same page consistent, and the borrowed pass paints every occurrence
+    of a value it named only once. `strip_pdf` does not call this — it reads
+    all pages first, then groups across them."""
+    read = read_page(image, ocr_engine, detector=detector, geometry=geometry)
+    return strip_from_vlm(
+        image, read.findings, pipeline, pmap, ocr=read.ocr, pad=pad,
+        grouping=group_findings([read.findings]),
+    )
 
 
 def strip_from_vlm(
@@ -143,8 +205,17 @@ def strip_from_vlm(
     pmap: PseudonymMap,
     ocr: RecognizerInput | None = None,
     pad: int = DEFAULT_PAD,
+    grouping: Grouping | None = None,
 ) -> ImageStripResult:
     """Strip against layer-0 findings — the VLM detector seam.
+
+    `grouping` is what the whole document knows (`pii.core.grouping`); with
+    none given this page is treated as the whole document. It does two things
+    here: every finding takes its group's elected class, so a value typed
+    PII_NAME on this page and PII_COMPANY on four others is treated the same
+    way everywhere, and every constituent of every group is searched against
+    this page's OCR text — including values layer 0 never reported here, which
+    is what stops a value detected on page 1 from leaking on page 4.
 
     Geometry comes from one of two places, decided by whether `ocr` was
     supplied:
@@ -167,8 +238,18 @@ def strip_from_vlm(
 
     Returns spans only on the OCR path — the VLM-geometry path has no text to
     take offsets into, so `ImageStripResult.ocr` is None there."""
+    if grouping is None:
+        grouping = group_findings([findings])
+    # The elected class replaces the page's own, both directions. Deliberate
+    # (Sergei, 2026-08-11): a 10-to-1 majority for PII_COMPANY means it is a
+    # company, and one page's slip should not fork the value into two
+    # placeholders. The vote is reported so the operator can audit it.
+    findings = [
+        replace(f, entity_type=grouping.type_for(f.text) or f.entity_type)
+        for f in findings
+    ]
     if ocr is None:
-        return _paint_vlm_boxes(image, findings, pmap, pad)
+        return _paint_vlm_boxes(image, findings, pmap, pad, grouping)
 
     placed = locate_findings(findings, ocr, image.size)
     detected = [
@@ -179,6 +260,31 @@ def strip_from_vlm(
             score=1.0,
         )
         for p in placed.located
+    ]
+    # What the document knows, applied to this page: every occurrence of every
+    # known value, including ones layer 0 said nothing about here. Runs BESIDE
+    # the box-guided placement above, never instead of it — that is the only
+    # path to the fuzzy tier and to tier-3 geometry.
+    borrowed = [
+        Detection(entity_type=entity_type, start=start, end=end, score=1.0)
+        for start, end, entity_type in locate_borrowed(
+            grouping.needles(), ocr.text
+        )
+    ]
+    # Reported apart: the coverage that exists ONLY because other pages were
+    # read. Counted against what this page would have redacted ALONE — its own
+    # layer-0 placements merged with layer 1 — because a value layer 1 catches
+    # by pattern was never going to leak here, and counting it would overstate
+    # what the document-wide pass bought. Also put through the strip policy, or
+    # a kept merchant name matched from another page would inflate the count
+    # without being painted. The extra merge is a regex sweep over a page string
+    # against minutes of model time per page.
+    alone, _ = pipeline.merge_detections(detected, ocr.text)
+    borrowed_only = [
+        d
+        for d in borrowed
+        if not any(d.start < a.end and a.start < d.end for a in alone)
+        and pipeline.strips_value(d.entity_type, ocr.text[d.start : d.end])
     ]
     # Tier 3 is subject to the same strip policy as everything else — the
     # prompt carries no institutional carve-outs by design, so the model
@@ -198,15 +304,34 @@ def strip_from_vlm(
             RuntimeWarning,
             stacklevel=2,
         )
-    if placed.unlocated:
+    # Split by whether an identical value was painted somewhere on the page.
+    # Both are unplaced detections and both stay counted; the distinction is
+    # what stops the second group being reported as an outright leak when the
+    # pixels were in fact painted (see locator._mark_painted_elsewhere).
+    nothing_painted = [
+        p for p in placed.unlocated if not p.value_painted_elsewhere
+    ]
+    painted_elsewhere = [
+        p for p in placed.unlocated if p.value_painted_elsewhere
+    ]
+    if nothing_painted:
         warnings.warn(
-            f"{len(placed.unlocated)} VLM finding(s) could not be located in "
+            f"{len(nothing_painted)} VLM finding(s) could not be located in "
             f"the OCR text and had no usable box — these are unredacted "
-            f"detections: {[p.finding.text for p in placed.unlocated]!r}",
+            f"detections: {[p.finding.text for p in nothing_painted]!r}",
             RuntimeWarning,
             stacklevel=2,
         )
-    spans, invalid = pipeline.merge_detections(detected, ocr.text)
+    if painted_elsewhere:
+        warnings.warn(
+            f"{len(painted_elsewhere)} VLM finding(s) could not be placed, but "
+            f"an identical value WAS painted elsewhere on the page — whether "
+            f"this is the same printing or a second one cannot be decided "
+            f"here: {[p.finding.text for p in painted_elsewhere]!r}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    spans, invalid = pipeline.merge_detections(detected + borrowed, ocr.text)
     # Placeholders for tier 3 are allocated after the plan's, so document
     # order still numbers everything that has offsets; a box-only finding has
     # none to sort by. Consistency is by value, not by order, so a value
@@ -223,11 +348,15 @@ def strip_from_vlm(
         extra=extra,
         box_geometry=[p.finding for p in box_only],
         unlocated=[p.finding for p in placed.unlocated],
+        unlocated_painted_elsewhere=[p.finding for p in painted_elsewhere],
+        borrowed=borrowed_only,
+        groups=grouping.groups,
     )
 
 
-def _paint_vlm_boxes(image, findings, pmap, pad) -> ImageStripResult:
-    """Paint the model's own boxes. No OCR, so no text and no offsets."""
+def _paint_vlm_boxes(image, findings, pmap, pad, grouping) -> ImageStripResult:
+    """Paint the model's own boxes. No OCR, so no text and no offsets — and
+    no borrowing either: there is no page text to search."""
     width, height = image.size
     segments = []
     for finding in findings:
@@ -248,12 +377,13 @@ def _paint_vlm_boxes(image, findings, pmap, pad) -> ImageStripResult:
         )
     return ImageStripResult(
         image=paint_segments(image, segments), ocr=None, spans=[], invalid=[],
-        segments=segments,
+        segments=segments, groups=grouping.groups,
     )
 
 
 def _paint_plan(
-    image, ocr, spans, invalid, pmap, extra=(), box_geometry=(), unlocated=()
+    image, ocr, spans, invalid, pmap, extra=(), box_geometry=(), unlocated=(),
+    unlocated_painted_elsewhere=(), borrowed=(), groups=(),
 ) -> ImageStripResult:
     """Allocate a placeholder per span and paint it over the span's pixels.
     Spans arrive in document order, which is the numbering order. `extra`
@@ -270,4 +400,6 @@ def _paint_plan(
     return ImageStripResult(
         image=out, ocr=ocr, spans=spans, invalid=invalid, segments=segments,
         box_geometry=list(box_geometry), unlocated=list(unlocated),
+        unlocated_painted_elsewhere=list(unlocated_painted_elsewhere),
+        borrowed=list(borrowed), groups=tuple(groups),
     )

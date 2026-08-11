@@ -137,9 +137,12 @@ def test_strip_pdf_reassembles_clean_pdf(tmp_path, pipeline, monkeypatch,
     seen = []
     result = strip_pdf(src, pipeline, pmap, out, dpi=72,
                        detector=no_findings,
-                       progress=lambda n, c: seen.append((n, c)))
+                       progress=lambda n, c, phase: seen.append((n, c, phase)))
 
-    assert seen == [(1, 2), (2, 2)]
+    # Two sweeps: every page is read before any page is redacted, which is
+    # what lets the document group its findings in between.
+    assert seen == [(1, 2, "read"), (2, 2, "read"),
+                    (1, 2, "redact"), (2, 2, "redact")]
     assert len(result.pages) == 2
     for page_result in result.pages:
         assert [r.entity_type for r in page_result.spans] == ["EMAIL_ADDRESS"]
@@ -271,3 +274,92 @@ def test_strip_pdf_vlm_geometry_never_runs_ocr(tmp_path, pipeline, monkeypatch):
 
 def _unreachable(*args, **kwargs):
     raise AssertionError("OCR must not run on this path")
+
+
+# --- two sweeps: what one page learns, every page uses -------------------
+
+
+class _FirstPageOnlyDetector:
+    """Names a value on page 1 and says nothing on any later page — the
+    symptom the two-sweep pipeline exists for. The value is printed just as
+    plainly on page 2, and a per-page pipeline had nothing that could notice."""
+
+    def __init__(self, findings):
+        self.findings = findings
+        self.calls = 0
+
+    def detect(self, image):
+        self.calls += 1
+        return list(self.findings) if self.calls == 1 else []
+
+    def localize(self, image, findings):
+        return list(findings)
+
+
+def _name_ocr(image, lang="eng"):
+    """One row, the same on every page: 'Client SERGEI KULIK'."""
+    return build_page(
+        [
+            [
+                ("Client", Box(20, 20, 60, 20), 90.0),
+                ("SERGEI", Box(90, 20, 60, 20), 90.0),
+                ("KULIK", Box(160, 20, 50, 20), 90.0),
+            ]
+        ],
+        OcrFrame(width=image.width, height=image.height, page=1),
+    )
+
+
+def test_a_value_detected_on_one_page_is_redacted_on_all_of_them(
+    tmp_path, pipeline, monkeypatch
+):
+    from pii.core.vlm import VlmFinding
+
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _name_ocr)
+    src = tmp_path / "doc.pdf"
+    _make_pdf(src, pages=2)
+    detector = _FirstPageOnlyDetector(
+        [VlmFinding(text="SERGEI KULIK", entity_type="PERSON")]
+    )
+    pmap = PseudonymMap()
+    result = strip_pdf(src, pipeline, pmap, tmp_path / "out.pdf", dpi=72,
+                       detector=detector)
+
+    first, second = result.pages
+    for page_result in (first, second):
+        span = page_result.spans[0]
+        assert page_result.ocr.text[span.start : span.end] == "SERGEI KULIK"
+        assert span.entity_type == "PERSON"
+    # Page 1 found it itself; page 2 owes it entirely to the document.
+    assert first.borrowed == []
+    assert len(second.borrowed) == 1
+    # One value, one group, one placeholder across the document.
+    (group,) = result.groups
+    assert group.entity_type == "PERSON"
+    assert group.pages == (1,)
+    assert len(pmap) == 1
+
+
+def test_the_page_cache_does_not_outlive_the_run(tmp_path, pipeline,
+                                                 monkeypatch, no_findings):
+    # The cache holds full UNREDACTED pages — near-PII of the strongest kind.
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr)
+    real_cache_path = pdf_mode._cache_path
+    cached = []
+
+    def spy(cache, number):
+        path = real_cache_path(cache, number)
+        cached.append(path)
+        return path
+
+    monkeypatch.setattr(pdf_mode, "_cache_path", spy)
+    src = tmp_path / "doc.pdf"
+    _make_marked_pdf(src, pages=2)
+    strip_pdf(src, pipeline, PseudonymMap(), tmp_path / "out.pdf", dpi=72,
+              detector=no_findings)
+
+    assert cached  # the cache was used at all
+    # Unlinked as each page is embedded, and the directory removed on the way
+    # out — nothing survives the run.
+    assert not any(path.exists() for path in cached)
+    assert not any(path.parent.exists() for path in cached)

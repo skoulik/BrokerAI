@@ -23,7 +23,16 @@ def _date(rng: random.Random, year: int) -> str:
     return f"{rng.randrange(1, 29):02d}{rng.choice(months)}{year % 100:02d}"
 
 
-def legacy_statement(pool: Pool) -> Doc:
+# Statements are the realistic multi-page class, and the continuation header
+# is what makes them a cross-page test rather than merely a long document:
+# the holder and the account number are reprinted on every page, so a
+# detector that reads page 1 and overlooks page 3 leaks a value it has
+# already seen. Fixed rather than drawn, so page counts stay comparable
+# across seeds.
+STATEMENT_PAGES = 3
+
+
+def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
     rng = pool.rng
     biz = pool.business()
     p = pool.person()
@@ -55,24 +64,53 @@ def legacy_statement(pool: Pool) -> Doc:
     # stripped by org_policy (a legal-form marker, not a known institution),
     # so ground-truthed ORGANIZATION_PRIVATE on the recall axis (2026-07-21)
     account_of = biz.trust if biz.trust and rng.random() < 0.5 else biz.name
-    doc.raw("ACCOUNT OF: ").private_org(account_of).nl(2)
-    doc.raw("Date    Particulars").pad_to(55).raw("Debit     Credit       Balance").nl()
+    doc.raw("ACCOUNT OF: ").private_org(account_of).nl()
+    # The holder in CAPS, unconditionally — the addressee above is a draw, so
+    # without this the caps form appears on page 1 only two seeds in three and
+    # the caps-vs-title-case grouping probe would be luck. The continuation
+    # header prints the same person in title case.
+    doc.raw("HELD BY:    ").pii(p.caps, "PERSON").nl(2)
 
     balance = round(rng.uniform(100, 90000), 2)
-    doc.raw(f"{_date(rng, year)} OPENING BALANCE").pad_to(66).raw(f"{balance:>14,.2f}").nl()
-    for _ in range(rng.randrange(8, 16)):
-        doc.raw(f"{_date(rng, year)} ")
-        for part in txbank.description(pool):
-            if isinstance(part, str):
-                doc.raw(part.upper())
-            else:
-                value, etype, *keep = part
-                doc.pii(value.upper(), etype, *keep)
-        debit, credit, balance = txbank.amounts(rng, balance)
-        doc.pad_to(52).raw(f"{debit:>10}{credit:>11}{balance:>14,.2f}").nl()
+    for page in range(1, pages + 1):
+        if page > 1:
+            doc.page_break()
+            _statement_continuation(doc, p, acct, page, pages)
+        doc.raw("Date    Particulars").pad_to(55)
+        doc.raw("Debit     Credit       Balance").nl()
+        if page == 1:
+            doc.raw(f"{_date(rng, year)} OPENING BALANCE").pad_to(66)
+            doc.raw(f"{balance:>14,.2f}").nl()
+        for _ in range(rng.randrange(6, 11)):
+            doc.raw(f"{_date(rng, year)} ")
+            for part in txbank.description(pool):
+                if isinstance(part, str):
+                    doc.raw(part.upper())
+                else:
+                    value, etype, *keep = part
+                    doc.pii(value.upper(), etype, *keep)
+            debit, credit, balance = txbank.amounts(rng, balance)
+            doc.pad_to(52).raw(f"{debit:>10}{credit:>11}{balance:>14,.2f}").nl()
+        if page < pages:
+            doc.pad_to(60).raw("CONTINUED OVERLEAF").nl()
+
     doc.raw(f"{_date(rng, year)} CLOSING BALANCE").pad_to(66).raw(f"{balance:>14,.2f}").nl(2)
     doc.raw(" " * 8 + "TOTAL DEBITS").pad_to(38).raw("TOTAL CREDITS").nl()
     return doc
+
+
+def _statement_continuation(doc: Doc, p, acct, page: int, pages: int) -> None:
+    """The header a real statement reprints on every continuation page.
+
+    Deliberately reprints the holder's name in TITLE case where page 1 has it
+    in caps: the same entity under two surface forms is what the document-wide
+    grouping has to recognize, and a corpus that only ever prints one form
+    would pass whether or not the case folding works.
+    """
+    doc.raw("ACCOUNT STATEMENT").pad_to(46).raw("Account Number   : ")
+    doc.pii(acct.number, "AU_BANK_ACCOUNT").nl()
+    doc.raw(" " * 8).pii(p.full, "PERSON")
+    doc.pad_to(46).raw(f"Page {page} of {pages}").nl(2)
 
 
 def loan_application(pool: Pool, invalid: bool = False) -> Doc:
@@ -88,8 +126,9 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     acct = pool.account()
     doc = Doc()
 
+    broker_ref = f"BRK-{rng.randrange(10**5, 10**6)}"
     doc.raw("HOME LOAN APPLICATION - APPLICANT SUMMARY").nl()
-    doc.raw(f"Broker ref: BRK-{rng.randrange(10**5, 10**6)}").nl(2)
+    doc.raw(f"Broker ref: {broker_ref}").pad_to(60).raw("Page 1 of 2").nl(2)
 
     for i, person in enumerate((a, b), 1):
         doc.raw(f"Applicant {i}\n")
@@ -125,6 +164,13 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
                       f"{person.suburb} {person.state} {person.postcode}")
             doc.raw("  Postal address:  ").pii(po_box, "ADDRESS").nl()
         doc.nl()
+
+    # Page 2. The continuation header reprints applicant 1 and the broker
+    # ref, so the cross-page grouping has both a PERSON and an identifier to
+    # carry over — and the name is in CAPS here against title case on page 1.
+    doc.page_break()
+    doc.raw("HOME LOAN APPLICATION (CONTINUED) - ").pii(a.caps, "PERSON").nl()
+    doc.raw(f"Broker ref: {broker_ref}").pad_to(60).raw("Page 2 of 2").nl(2)
 
     doc.raw("Self-employment\n")
     doc.raw("  Entity:          ").private_org(biz.name).nl()

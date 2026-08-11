@@ -89,12 +89,20 @@ def _report(spans, text: str, file=None, prefix: str = "  ") -> None:
         print(f"{prefix}{r.entity_type:<20} {r.score:.2f}  {value!r}", file=file)
 
 
-def _report_geometry(box_geometry, unlocated, file=None, prefix: str = "") -> None:
-    """Report the two lower-confidence outcomes of value location.
+def _report_geometry(box_geometry, unlocated, file=None, prefix: str = "",
+                     painted_elsewhere=()) -> None:
+    """Report the lower-confidence outcomes of value location.
 
-    Always printed when non-empty, independently of --report: one is a
-    weaker redaction and the other is no redaction at all, so neither may
-    depend on the operator having asked for a detection listing."""
+    Always printed when non-empty, independently of --report: these are a
+    weaker redaction and no redaction at all, so neither may depend on the
+    operator having asked for a detection listing.
+
+    `painted_elsewhere` is the subset of `unlocated` whose value was painted
+    somewhere on its page, and it gets its own line because the flat "NOT
+    redacted" wording was wrong for it — the pixels were painted, by a
+    first finding that had only the model's box and so left no char span to
+    mark this one redundant. It is NOT reported as safe: two occurrences of a
+    value can genuinely sit in two places, and only the operator can tell."""
     file = file if file is not None else sys.stderr
     if box_geometry:
         print(
@@ -103,12 +111,63 @@ def _report_geometry(box_geometry, unlocated, file=None, prefix: str = "") -> No
             f"is approximate and layer 1 never saw them",
             file=file,
         )
-    if unlocated:
+    unplaced = len(unlocated) - len(painted_elsewhere)
+    if unplaced > 0:
         print(
-            f"{prefix}WARNING: {len(unlocated)} detected value(s) could not be "
+            f"{prefix}WARNING: {unplaced} detected value(s) could not be "
             f"placed on the page and were NOT redacted",
             file=file,
         )
+    if painted_elsewhere:
+        print(
+            f"{prefix}WARNING: {len(painted_elsewhere)} detected value(s) "
+            f"could not be placed, but an identical value WAS painted "
+            f"elsewhere on the page — check whether these are the same "
+            f"printing or a second, still legible one",
+            file=file,
+        )
+
+
+def _report_groups(groups, file=None, prefix: str = "  ") -> None:
+    """Print the document-wide entity groups and every constituent detection.
+
+    Not decoration: the group's class is elected by majority vote across the
+    document and replaces every member's own class, so the election can KEEP a
+    value that some page reported as PII. This listing — the tally, then each
+    surface form with the pages it was seen on — is what lets an operator see
+    that decision and disagree with it. Near-PII like every other listing
+    here, so stderr only."""
+    file = file if file is not None else sys.stderr
+    print(
+        f"{len(groups)} entity group(s), class elected by majority vote "
+        f"across the document:",
+        file=file,
+    )
+    for group in groups:
+        votes = " / ".join(f"{etype} {n}" for etype, n in group.votes)
+        print(f"{prefix}{group.entity_type:<20} [{votes}]", file=file)
+        for variant in group.variants:
+            pages = " ".join(f"p{p}" for p in variant.pages)
+            print(
+                f"{prefix}  {variant.text!r:<44} x{variant.count}  {pages}",
+                file=file,
+            )
+
+
+def _report_borrowed(count: int, file=None) -> None:
+    """Spans a page owed to detections made elsewhere in the document.
+
+    Always printed when non-zero, independently of --report: on a multi-page
+    document these are the values that would have leaked before, which is the
+    same class of fact as the two lines in _report_geometry."""
+    if not count:
+        return
+    file = file if file is not None else sys.stderr
+    print(
+        f"{count} value(s) redacted from detections made elsewhere in the "
+        f"document",
+        file=file,
+    )
 
 
 def _report_invalid(findings, file=None) -> None:
@@ -239,7 +298,12 @@ def _strip_media(args, pipeline, detector):
                       file=sys.stderr)
                 for seg in result.segments:
                     print(f"  {seg.label}", file=sys.stderr)
-        _report_geometry(result.box_geometry, result.unlocated)
+            _report_groups(result.groups)
+        _report_geometry(
+            result.box_geometry, result.unlocated,
+            painted_elsewhere=result.unlocated_painted_elsewhere,
+        )
+        _report_borrowed(len(result.borrowed))
         if args.log_invalid_identifiers == "yes" and result.invalid:
             _report_invalid(result.invalid)
         return 0
@@ -247,8 +311,13 @@ def _strip_media(args, pipeline, detector):
     if getattr(args, "pdf", False):
         from pii.core.pdf_mode import DEFAULT_DPI, strip_pdf
 
-        def progress(number: int, count: int) -> None:
-            print(f"page {number}/{count} ...", file=sys.stderr)
+        # Two sweeps over the document (see strip_pdf): the operator of a
+        # minutes-per-page run needs to know which one is running.
+        phases = {"read": "reading", "redact": "redacting"}
+
+        def progress(number: int, count: int, phase: str) -> None:
+            print(f"page {number}/{count} {phases.get(phase, phase)} ...",
+                  file=sys.stderr)
 
         pmap = PseudonymMap(args.map)
         result = strip_pdf(args.input, pipeline, pmap, args.output,
@@ -267,10 +336,16 @@ def _strip_media(args, pipeline, detector):
                 else:
                     for seg in p.segments:
                         print(f"  p{p.number:<3} {seg.label}", file=sys.stderr)
+            _report_groups(result.groups)
         _report_geometry(
             [f for p in result.pages for f in p.box_geometry],
             [f for p in result.pages for f in p.unlocated],
+            painted_elsewhere=[
+                f for p in result.pages
+                for f in p.unlocated_painted_elsewhere
+            ],
         )
+        _report_borrowed(sum(len(p.borrowed) for p in result.pages))
         invalid = [f for p in result.pages for f in p.invalid]
         if args.log_invalid_identifiers == "yes" and invalid:
             _report_invalid(invalid)

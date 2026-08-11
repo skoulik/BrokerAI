@@ -225,3 +225,70 @@ def test_strip_layer1_paints_only_the_detected_pixels(pipeline):
     result = _strip(img, page, pipeline, PseudonymMap())
     assert RED not in _colors(result.image, email_box)
     assert _colors(result.image, Box(10, 10, 60, 20)) == {(255, 255, 255)}
+
+
+# --- the group vote reaches the strip plan --------------------------------
+
+
+def test_the_group_vote_relabels_the_pages_that_disagreed(pipeline):
+    """The elected class replaces every member's own, in BOTH directions.
+
+    Deliberate (Sergei, 2026-08-11): a majority for a kept class keeps the
+    value even on the reading that called it PII. That makes this the one
+    mechanism in the tool that can un-redact, which is why the tally is
+    carried on the result and printed by the CLI."""
+    from pii.core.vlm import VlmFinding
+
+    page = _page(
+        [
+            [
+                ("Paid", Box(10, 20, 40, 14), 90.0),
+                ("Budget", Box(60, 20, 60, 14), 90.0),
+                ("Direct", Box(130, 20, 60, 14), 90.0),
+            ]
+        ],
+        width=300, height=60,
+    )
+    image = Image.new("RGB", (300, 60), "white")
+
+    def strip(*types):
+        return strip_from_vlm(
+            image,
+            [VlmFinding(text="Budget Direct", entity_type=t) for t in types],
+            pipeline, PseudonymMap(), ocr=linearize(page),
+        )
+
+    # Two-to-one for the kept class: the merchant name survives everywhere.
+    assert strip("ORGANIZATION", "ORGANIZATION", "PERSON").spans == []
+    # Two-to-one the other way: it strips everywhere.
+    assert [
+        s.entity_type for s in strip("PERSON", "PERSON", "ORGANIZATION").spans
+    ] == ["PERSON"]
+
+
+def test_a_value_named_once_is_painted_at_every_occurrence(pipeline):
+    """Layer 0 places one span per finding, so a value printed twice and named
+    once used to leave the second printing legible."""
+    from pii.core.vlm import VlmFinding
+
+    page = _page(
+        [
+            [
+                ("SERGEI", Box(10, 20, 60, 14), 90.0),
+                ("KULIK", Box(80, 20, 50, 14), 90.0),
+                ("and", Box(140, 20, 30, 14), 90.0),
+                ("SERGEI", Box(180, 20, 60, 14), 90.0),
+                ("KULIK", Box(250, 20, 50, 14), 90.0),
+            ]
+        ],
+        width=400, height=60,
+    )
+    result = strip_from_vlm(
+        Image.new("RGB", (400, 60), "white"),
+        [VlmFinding(text="SERGEI KULIK", entity_type="PERSON")],
+        pipeline, PseudonymMap(), ocr=linearize(page),
+    )
+    assert [
+        result.ocr.text[s.start : s.end] for s in result.spans
+    ] == ["SERGEI KULIK", "SERGEI KULIK"]
+    assert len(result.borrowed) == 1

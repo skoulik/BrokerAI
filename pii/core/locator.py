@@ -56,7 +56,8 @@ change cannot regress any value that located correctly before.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import Sequence
 
 from pii.core import fuzzy
 from pii.core.linearization import RecognizerInput
@@ -94,7 +95,12 @@ class Placement:
     """Where one finding landed. `kind` records which tier resolved it:
     exact/squash/fuzzy carry a char span, "box" carries pixel geometry only,
     "redundant" means an already-placed finding covers it, and None means
-    nothing did — an unredacted detection."""
+    nothing did — an unredacted detection.
+
+    `value_painted_elsewhere` qualifies that last case only: an identical
+    value WAS painted somewhere on this page. It does not make the placement
+    redacted — the two may be separate printings — it exists so the report can
+    say which of the two situations this is."""
 
     finding: VlmFinding
     kind: str | None
@@ -103,6 +109,7 @@ class Placement:
     box: Box | None = None
     overlap: float = 0.0
     distance: float = 0.0
+    value_painted_elsewhere: bool = False
 
 
 @dataclass
@@ -121,7 +128,12 @@ class LocateResult:
 
     @property
     def unlocated(self) -> list[Placement]:
-        """Neither text nor usable geometry — detections we cannot redact."""
+        """Neither text nor usable geometry — detections we cannot redact.
+
+        ALL of them, including the ones whose value was painted elsewhere:
+        being unable to place a detection is the fact that has to stay
+        counted. `Placement.value_painted_elsewhere` distinguishes the two
+        situations for the report."""
         return [p for p in self.placements if p.kind is None]
 
 
@@ -160,7 +172,36 @@ def locate_findings(
         if placement.start is not None:
             taken.append((placement.start, placement.end))
         placements[i] = placement
-    return LocateResult(placements=[p for p in placements if p is not None])
+    return LocateResult(
+        placements=_mark_painted_elsewhere([p for p in placements if p is not None])
+    )
+
+
+def _mark_painted_elsewhere(placements: list[Placement]) -> list[Placement]:
+    """Flag each unplaced finding whose value was painted somewhere on the page.
+
+    The tier-3 residue makes this necessary. A finding painted from the model's
+    own box has no char span, and containment in a char span is the only thing
+    that marks a later finding "redundant" — so a second finding of the same
+    value with no box of its own resolves to nothing and would be reported as
+    unredacted although the pixels were painted.
+
+    Deliberately a REPORT distinction, not a suppression: two occurrences of a
+    value can genuinely sit in two places, and painting one says nothing about
+    the other. Containment in a span is positional evidence and may suppress;
+    value identity is not, and may only annotate.
+    """
+    painted = {
+        squash_map(p.finding.text)[0]
+        for p in placements
+        if p.kind is not None
+    }
+    return [
+        replace(p, value_painted_elsewhere=True)
+        if p.kind is None and squash_map(p.finding.text)[0] in painted
+        else p
+        for p in placements
+    ]
 
 
 def _usable_box(finding: VlmFinding, width: int, height: int) -> Box | None:
@@ -465,3 +506,90 @@ def _squash_occurrences(
         out.append((index[at], index[at + len(need_sq) - 1] + 1))
         at = hay_sq.find(need_sq, at + 1)
     return out
+
+
+# --------------------------------------------------------------------------
+# Borrowed values: what the document knows, applied to one page.
+# --------------------------------------------------------------------------
+
+# A borrowed needle is unanchored — it comes from a page other than this one,
+# so there is no box to say where on THIS page it should be. Exact matching
+# deliberately carries no length floor (real 2-char surnames and 3-char
+# organizations exist), which is safe when a box pins the match and unbounded
+# when a value is hunted document-wide: 'Wu' would paint inside 'Would'. These
+# guards make a match respect word edges in alphanumeric space, applied only
+# where the needle's own edge character is alphanumeric (a value that starts
+# with '(' or '+' needs no guard there).
+_ALNUM_BEFORE = r"(?<![0-9A-Za-z])"
+_ALNUM_AFTER = r"(?![0-9A-Za-z])"
+
+
+def locate_borrowed(
+    needles: Sequence[tuple[str, str]], text: str
+) -> list[tuple[int, int, str]]:
+    """Every occurrence in `text` of a value the DOCUMENT knows about.
+
+    This is what makes a value the model named on page 1 and missed on page 4
+    strip on both. It runs beside `locate_findings`, not instead of it: the
+    page's own findings still go through the box-guided tiers (which is the
+    only route to fuzzy matching and to tier-3 geometry), and this pass adds
+    every occurrence of every known value on top. Overlaps between the two are
+    unioned by `PiiPipeline._merge_overlaps` like any other pair of spans.
+
+    **Exact-or-squash only.** The standing rule is that fuzzy matching is
+    admissible exactly where a box constrains the candidate set; a borrowed
+    value has no box here, so edit distance would be the page-wide search the
+    design rules out — it always finds something, somewhere, wrong. Same tier
+    order as `locate_in_text`: exact first, squash only if exact found nothing.
+
+    `needles` is `(value, entity_type)` LONGEST FIRST — two needles can land on
+    one span ('John' inside 'John Smith') and the wider one must claim it.
+    Returns `(start, end, entity_type)` triples in document order.
+    """
+    squashed: tuple[str, list[int]] | None = None
+    claimed: dict[tuple[int, int], str] = {}
+    for value, entity_type in needles:
+        spans = _bounded_occurrences(text, value)
+        if not spans:
+            if squashed is None:
+                squashed = squash_map(text)
+            spans = _bounded_squash_occurrences(squashed, text, value)
+        for span in spans:
+            claimed.setdefault(span, entity_type)
+    return [
+        (start, end, entity_type)
+        for (start, end), entity_type in sorted(claimed.items())
+    ]
+
+
+def _bounded_occurrences(text: str, needle: str) -> list[tuple[int, int]]:
+    """`_text_occurrences` with the word-edge guard."""
+    if not needle:
+        return []
+    pattern = re.escape(needle)
+    if needle[0].isalnum():
+        pattern = _ALNUM_BEFORE + pattern
+    if needle[-1].isalnum():
+        pattern = pattern + _ALNUM_AFTER
+    return [m.span() for m in re.finditer(pattern, text, re.IGNORECASE)]
+
+
+def _bounded_squash_occurrences(
+    squashed: tuple[str, list[int]], text: str, needle: str
+) -> list[tuple[int, int]]:
+    """`_squash_occurrences` with the word-edge guard.
+
+    The guard is checked on the ORIGINAL text at the mapped-back offsets: a
+    squashed match always begins and ends on an alphanumeric character, so an
+    alphanumeric neighbour there means the match cut into a longer word."""
+    return [
+        (start, end)
+        for start, end in _squash_occurrences(squashed, needle)
+        if not _touches_alnum(text, start, end)
+    ]
+
+
+def _touches_alnum(text: str, start: int, end: int) -> bool:
+    before = text[start - 1] if start > 0 else ""
+    after = text[end] if end < len(text) else ""
+    return before.isalnum() or after.isalnum()

@@ -70,6 +70,21 @@ On text and CSV a detected value is located by finding it in the text, and
 value the model returns that is not in the text cannot be redacted; those are
 counted and always reported on stderr, independently of `--report`.
 
+On `--image`/`--pdf` the same is now true across the whole document. Values
+found anywhere are grouped — spellings that differ only by case, spacing or a
+misread glyph are treated as one entity — and every page is then searched for
+every value any page produced. So a name the model reads on page 1 and
+overlooks on page 4 is redacted on both, and a value printed three times on a
+page is painted three times even if the model mentioned it once. The count of
+values a page owed to the rest of the document is printed on stderr.
+
+Each group's class is decided by a majority vote over the individual
+detections, and that class applies on every page — including a page that read
+the value differently. The vote can therefore go either way: a merchant name
+read as a person on one page out of eleven stays kept. `--report` prints every
+group with its tally and each spelling it covers, so you can see and check
+those decisions.
+
 `--geometry` chooses how detected values are placed on the *page*, so it
 applies to `--image`/`--pdf` only.
 
@@ -112,8 +127,17 @@ the hidden-text-layer leak class (financial PDFs have been observed
 hiding account numbers under white rectangles) by construction rather
 than by scrubbing. Placeholders are consistent across the document's
 pages; processing is lossless end-to-end with a JPEG embed only at the
-final step (~0.2 MB/page at 300 DPI). Progress is reported per page on
-stderr; `--report` prefixes detections with their page number.
+final step (~0.2 MB/page at 300 DPI).
+
+The run makes **two passes** over the document — every page is read
+before any page is redacted, which is what lets a value found on one
+page be redacted on all of them. Progress on stderr names the pass
+(`page 2/9 reading …`, then `page 2/9 redacting …`); the model only runs
+in the first, so the second is quick. Rendered pages are held in a
+temporary directory in between (a few MB per page, deleted as the second
+pass consumes them) rather than being rendered again, so what gets
+painted is exactly what the model looked at. `--report` prefixes
+detections with their page number and prints the entity groups.
 
 ## OCR inspection (debug)
 

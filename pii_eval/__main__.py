@@ -94,11 +94,11 @@ def main() -> int:
                     help="which seed's corpus to score when -c is not given")
     sc.add_argument("--modality", choices=["text", "image", "pdf"],
                     default="text",
-                    help="text: span/cell scoring; image: render pipeline + "
-                         "re-OCR value survival; pdf: full strip_pdf run on "
-                         "a real corpus' source PDFs + re-OCR value "
-                         "survival (-c required: real corpora have no seed "
-                         "scheme)")
+                    help="text: span/cell scoring; image: page-by-page strip "
+                         "+ re-OCR value survival (the per-page control); "
+                         "pdf: the two-sweep strip_pdf over whole documents "
+                         "+ the same survival scoring — defaults to the "
+                         "rendered corpus, pass -c for a real one")
     sc.add_argument("--threshold", type=float, default=0.4)
     sc.add_argument("--invalid-identifiers",
                     choices=["ignore", "all", "likely", "context"],
@@ -171,12 +171,13 @@ def main() -> int:
                            ocr_backend=args.ocr_backend,
                            geometry=args.geometry)
     if args.modality == "pdf":
-        if not args.corpus:
-            parser.error("--modality pdf requires -c (a real corpus folder, "
-                         f"e.g. {CORPUS_ROOT}/real/1)")
         from pii_eval.score_pdf import score_pdf
 
-        return score_pdf(args.corpus,
+        # Defaults to the RENDERED corpus (the same folder --modality image
+        # scores): `render` assembles its page images into a PDF per document,
+        # so the two modalities run over identical pixels and differ only in
+        # whether pages are stripped together. -c names a real corpus instead.
+        return score_pdf(args.corpus or _default_corpus(args.seed, "image"),
                          threshold=args.threshold,
                          invalid_identifiers=args.invalid_identifiers,
                          ocr_backend=args.ocr_backend,

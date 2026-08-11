@@ -22,6 +22,21 @@ CSV sources are rendered as column-aligned monospace tables (the
 "tabular statements arrive as scans" scenario) — cell ground truth
 coordinates don't apply to the image path; the image scorer matches
 values, not offsets.
+
+Pagination (2026-08-11): documents span 1-3 pages, because a one-page
+corpus cannot see the failure the two-sweep pipeline exists for — an
+entity detected on one page and missed on another. Text documents carry
+their own page breaks as form feeds emitted by the templates
+(`build.Doc.page_break`), so pagination is described once, in the source
+text, and the truth offsets are unaffected. CSVs cannot: a form feed
+inside a CSV would break the parse, so their tables are split by row
+count here with the COLUMN HEADER row repeated — page furniture carrying
+no PII, which leaves the paired-corpus attribution intact.
+
+Each document renders to one PNG per page and is also assembled into a
+PDF, so the same rendered pixels feed both scoring modalities: `--modality
+image` strips page by page (no cross-page knowledge — the control) and
+`--modality pdf` runs the real two-sweep `strip_pdf` over them.
 """
 
 import csv
@@ -44,10 +59,31 @@ FONT_SIZES = [20, 22, 24, 26]  # px; a readable range for the image tier
 _PAD = 48  # page margin, px
 _LINE_SPACING = 0.35  # extra leading as a fraction of the font's line height
 
+# CSV tables have no form feeds to split on (see the module docstring), so
+# they are cut by row count. Chosen to put a 15-40 row transaction table on
+# 1-2 pages, matching the 1-3 page range the text templates produce.
+_CSV_ROWS_PER_PAGE = 28
+
+# Embedded into the assembled PDF at the DPI the pages were drawn for, so a
+# page comes out at its natural physical size and score_pdf's re-render at
+# the same DPI reproduces these pixels.
+_RENDER_DPI = 150
+
 
 def _is_fixed_column(filename: str) -> bool:
     """Docs whose layout is carried by whitespace must render monospace."""
     return filename.endswith(".csv") or filename.startswith("legacy")
+
+
+def _paginates(filename: str) -> bool:
+    """Whether a doc is worth splitting across pages.
+
+    The name-forms statistics doc is not: every row is a DIFFERENT person by
+    construction, so it has no entity to carry across a page break and
+    splitting it would only spend model time (minutes per page) on pages that
+    can teach the cross-page path nothing.
+    """
+    return not Path(filename).name.startswith("names")
 
 
 def format_csv_table(text: str) -> str:
@@ -63,6 +99,42 @@ def format_csv_table(text: str) -> str:
     return "\n".join(
         "  ".join(cell.ljust(w) for cell, w in zip(r, widths)).rstrip()
         for r in rows
+    )
+
+
+def paginate(text: str, is_csv: bool, enabled: bool = True) -> list[str]:
+    """Split a document's text into pages.
+
+    Text documents carry their own breaks (form feeds from
+    `build.Doc.page_break`) — pagination is a property of the document, not of
+    the renderer, so the text tier and the image tier agree by construction.
+    CSV tables are cut by row count with the column header repeated, because a
+    form feed inside a CSV would break the parse.
+    """
+    if not enabled:
+        return [text.replace("\f", "")]
+    if not is_csv:
+        return text.split("\f")
+    lines = text.splitlines()
+    if len(lines) <= _CSV_ROWS_PER_PAGE + 1:
+        return ["\n".join(lines)]
+    header, rows = lines[0], lines[1:]
+    return [
+        "\n".join([header, *rows[at : at + _CSV_ROWS_PER_PAGE]])
+        for at in range(0, len(rows), _CSV_ROWS_PER_PAGE)
+    ]
+
+
+def write_pdf(pages: list[Image.Image], path: Path) -> None:
+    """Assemble rendered pages into a PDF at their natural physical size.
+
+    Pillow's own PDF writer, not pymupdf: this is corpus construction, and
+    building the input with the same library the pipeline uses to read it
+    would let a bug in that library hide itself.
+    """
+    first, *rest = pages
+    first.save(
+        path, "PDF", resolution=_RENDER_DPI, save_all=True, append_images=rest
     )
 
 
@@ -100,30 +172,60 @@ def render(corpus: str, outdir: str) -> Path:
     manifest = {
         "seed": truth["seed"],
         "source": Path(os.path.relpath(corpus_path, out)).as_posix(),
+        # The DPI the pages were drawn for. score_pdf re-renders the assembled
+        # PDFs at this value, which reproduces exactly these pixels.
+        "dpi": _RENDER_DPI,
         "docs": [],
     }
+    total_pages = 0
     for doc in truth["docs"]:
         text = (corpus_path / doc["file"]).read_text("utf-8")
+        is_csv = doc["file"].endswith(".csv")
         if _is_fixed_column(doc["file"]):
             pool = MONO_FONTS
-            if doc["file"].endswith(".csv"):
+            if is_csv:
                 text = format_csv_table(text)
         else:
             pool = MONO_FONTS + PROPORTIONAL_FONTS
         font_name = rng.choice(pool)
         size = rng.choice(FONT_SIZES)
-        page = render_page(text, font_name, size)
-        name = Path(doc["file"]).stem + ".png"
-        page.save(out / name, dpi=(150, 150))
+
+        stem = Path(doc["file"]).stem
+        page_texts = paginate(text, is_csv, _paginates(doc["file"]))
+        images = [render_page(t, font_name, size) for t in page_texts]
+        # Pages of one document share a raster size — a PDF page whose height
+        # follows its content would make the analysis DPI differ per page.
+        width = max(im.width for im in images)
+        height = max(im.height for im in images)
+        images = [_on_canvas(im, width, height) for im in images]
+
+        names = []
+        for number, image in enumerate(images, 1):
+            name = f"{stem}.p{number}.png"
+            image.save(out / name, dpi=(_RENDER_DPI, _RENDER_DPI))
+            names.append(name)
+        pdf_name = f"{stem}.pdf"
+        write_pdf(images, out / pdf_name)
+        total_pages += len(images)
+
         manifest["docs"].append(
-            {"file": name, "source": doc["file"], "font": font_name,
-             "size": size}
+            {"pages": names, "pdf": pdf_name, "source": doc["file"],
+             "font": font_name, "size": size}
         )
-        print(f"  rendered {name} [{font_name} {size}px "
-              f"{page.width}x{page.height}]")
+        print(f"  rendered {stem} [{len(images)} page(s), {font_name} "
+              f"{size}px {width}x{height}]")
 
     (out / "manifest.json").write_text(
         json.dumps(manifest, indent=1), encoding="utf-8"
     )
-    print(f"{len(manifest['docs'])} pages -> {out}")
+    print(f"{len(manifest['docs'])} docs / {total_pages} pages -> {out}")
     return out
+
+
+def _on_canvas(image: Image.Image, width: int, height: int) -> Image.Image:
+    """Place a page on a uniform white canvas, top-left."""
+    if image.size == (width, height):
+        return image
+    canvas = Image.new("RGB", (width, height), "white")
+    canvas.paste(image, (0, 0))
+    return canvas

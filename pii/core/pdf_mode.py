@@ -1,5 +1,12 @@
 """PDF stripping: PDF -> page images -> image pipeline -> fresh PDF.
 
+Two sweeps, not one: every page is READ (detect + localize + OCR) before
+any page is REDACTED, so the findings can be grouped across the whole
+document first and each page stripped against what all of them know.
+The rendered pages live in a temporary on-disk cache in between — see
+`strip_pdf` for why they are cached rather than rendered twice.
+
+
 PDFs are treated as images (core/TODO.md): render pages to pixels, run
 the image path on each page, reassemble. Rationale for pixels-first:
 financial-sector PDFs often carry junk or broken text layers, and
@@ -33,6 +40,7 @@ import io
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Callable, Iterator
 
 import pymupdf
@@ -92,11 +100,20 @@ class PdfPageResult:
     # ImageStripResult for why they are counted rather than only warned about.
     box_geometry: list = dataclasses.field(default_factory=list)
     unlocated: list = dataclasses.field(default_factory=list)
+    # Subset of `unlocated` whose value was painted elsewhere on the page —
+    # see ImageStripResult for why the two are reported apart.
+    unlocated_painted_elsewhere: list = dataclasses.field(default_factory=list)
+    # Spans this page owes to detections made on OTHER pages — the values that
+    # used to leak here. Counted per page for the same reason as the two above.
+    borrowed: list = dataclasses.field(default_factory=list)
 
 
 @dataclass
 class PdfStripResult:
     pages: list[PdfPageResult]
+    # The document-wide entity groups every page was stripped against, with
+    # the vote each class was elected from (pii.core.grouping).
+    groups: tuple = ()
 
 
 def strip_pdf(
@@ -106,44 +123,87 @@ def strip_pdf(
     out_path: str | Path,
     dpi: int = DEFAULT_DPI,
     ocr_backend: str = "paddle",
-    progress: Callable[[int, int], None] | None = None,
+    progress: Callable[[int, int, str], None] | None = None,
     *,
     detector,
     geometry: str = "hybrid",
 ) -> PdfStripResult:
-    """Strip a PDF page by page and write a fresh, image-only PDF.
+    """Strip a PDF in two sweeps and write a fresh, image-only PDF.
 
-    Each page: render at `dpi` -> detect -> paint placeholders on the pixels
-    -> embed into a new page of the output document at the source page's
-    physical size (points). Pages stream through one pipeline/OCR engine and
-    one shared `pmap`, so memory stays flat and placeholders are consistent
-    across the document.
+    Sweep 1 READS every page — render at `dpi`, detect, localize, OCR — and
+    keeps the findings. Sweep 2 REDACTS every page against what the whole
+    document then knows: values are grouped across pages
+    (`pii.core.grouping`), and each page is searched for every value any page
+    reported. That is the point of the split — a value layer 0 names on page 1
+    and misses on page 4 used to be redacted on page 1 and leak on page 4,
+    because a per-page pipeline had nothing that could notice.
 
-    `progress(page_number, page_count)` is called before each page is
-    processed (OCR + the model make pages slow enough to want a heartbeat).
+    **Rendered pages are cached to disk between the sweeps, never re-rendered.**
+    The model's boxes live in the coordinate space of the pixels it saw; a
+    second render only *assumes* it reproduces the first (dpi rounding, a
+    library bump, page rotation), while a cache makes it identical by
+    construction. PNG, because processing stays lossless until the final embed.
+    The cache holds full unredacted pages — near-PII of the strongest kind — so
+    it lives in a temporary directory that is emptied as the run proceeds (each
+    page's file is unlinked the moment that page is embedded) and removed on
+    the way out, including on an exception.
+
+    One pipeline, one OCR engine and one shared `pmap` serve all pages, so
+    placeholders are consistent across the document.
+
+    `progress(page_number, page_count, phase)` is called before each page,
+    with phase "read" or "redact" — two sweeps really are two passes over the
+    document, and a run measured in minutes per page needs to say which.
     """
     # heavy: the analysis stack
-    from pii.core.image_mode import strip_rendered_page
+    from pii.core.grouping import group_findings
+    from pii.core.image_mode import read_page, strip_from_vlm
 
     # Resolved ONCE for the document, not per page — and skipped entirely on
     # the one path that never reads pixels through OCR (geometry="vlm").
     page_engine = get_ocr_page(ocr_backend) if geometry != "vlm" else None
     pages: list[PdfPageResult] = []
-    out_doc = pymupdf.open()
-    with pymupdf.open(path) as doc:
-        for number, page in enumerate(doc, 1):
+    with TemporaryDirectory(prefix="pii-pages-") as cache_dir:
+        cache = Path(cache_dir)
+        reads = []
+        sizes: list[tuple[float, float]] = []
+        with pymupdf.open(path) as doc:
+            count = doc.page_count
+            for number, page in enumerate(doc, 1):
+                if progress:
+                    progress(number, count, "read")
+                image = _render_page(page, dpi)
+                image.save(_cache_path(cache, number), "PNG")
+                reads.append(
+                    read_page(
+                        image, page_engine,
+                        detector=detector, geometry=geometry,
+                    )
+                )
+                # Captured here so sweep 2 never reopens the source document.
+                sizes.append((page.rect.width, page.rect.height))
+
+        grouping = group_findings([read.findings for read in reads])
+
+        out_doc = pymupdf.open()
+        for index, read in enumerate(reads):
+            number = index + 1
             if progress:
-                progress(number, doc.page_count)
-            image = _render_page(page, dpi)
-            result = strip_rendered_page(
-                image, pipeline, pmap, ocr_engine=page_engine,
-                detector=detector, geometry=geometry,
+                progress(number, count, "redact")
+            cached = _cache_path(cache, number)
+            # Closed before unlinking — an open handle blocks removal on
+            # Windows, and Pillow reads lazily.
+            with Image.open(cached) as stored:
+                image = stored.convert("RGB")
+            result = strip_from_vlm(
+                image, read.findings, pipeline, pmap,
+                ocr=read.ocr, grouping=grouping,
             )
+            cached.unlink()
             buf = io.BytesIO()
             result.image.save(buf, "JPEG", quality=_JPEG_QUALITY)
-            out_page = out_doc.new_page(
-                width=page.rect.width, height=page.rect.height
-            )
+            width, height = sizes[index]
+            out_page = out_doc.new_page(width=width, height=height)
             out_page.insert_image(out_page.rect, stream=buf.getvalue())
             pages.append(
                 PdfPageResult(
@@ -154,14 +214,22 @@ def strip_pdf(
                     segments=result.segments,
                     box_geometry=result.box_geometry,
                     unlocated=result.unlocated,
+                    unlocated_painted_elsewhere=(
+                        result.unlocated_painted_elsewhere
+                    ),
+                    borrowed=result.borrowed,
                 )
             )
-    # A fresh document carries nothing from the source; empty the
-    # metadata dict too so not even library defaults land in the output.
-    out_doc.set_metadata({})
-    out_doc.save(out_path, garbage=4, deflate=True)
-    out_doc.close()
-    return PdfStripResult(pages=pages)
+        # A fresh document carries nothing from the source; empty the
+        # metadata dict too so not even library defaults land in the output.
+        out_doc.set_metadata({})
+        out_doc.save(out_path, garbage=4, deflate=True)
+        out_doc.close()
+    return PdfStripResult(pages=pages, groups=grouping.groups)
+
+
+def _cache_path(cache: Path, number: int) -> Path:
+    return cache / f"page-{number:04d}.png"
 
 
 def rebuild_pdf(

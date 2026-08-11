@@ -14,9 +14,10 @@ statements, but no value in a generated corpus comes from them.
 python -m pii_eval generate --seed 42 --docs 9   # -> pii_eval/corpora/text/s42
 python -m pii_eval score                         # scores corpora/text/s42; full pipeline (GLiNER2 on CUDA)
 python -m pii_eval score --seed 7                # another seed's corpus
-python -m pii_eval render --seed 42              # text/s42 -> image/s42 (paired image corpus)
-python -m pii_eval score --modality image        # image pipeline + re-OCR value survival
-python -m pii_eval score --modality pdf -c pii_eval/corpora/real/1   # full strip_pdf on real source PDFs
+python -m pii_eval render --seed 42              # text/s42 -> image/s42 (paged PNGs + a PDF per doc)
+python -m pii_eval score --modality image        # page-by-page strip + re-OCR survival (the control)
+python -m pii_eval score --modality pdf          # the same pages through two-sweep strip_pdf
+python -m pii_eval score --modality pdf -c pii_eval/corpora/real/1   # ...or real source PDFs
 python -m pii_eval ocr-report                    # OCR-fidelity sweep: font x glyph size (resumable)
 python -m pii_eval ocr-report --summary-only     # re-print matrices from the existing report
 python -m pii_eval ocr-report --ocr-backend paddle:v5_server   # same sweep, another engine
@@ -141,9 +142,26 @@ fixed-column docs (legacy statements, CSVs rendered as aligned tables)
 stay monospace — their layout is the whitespace — while loan docs mix in
 proportional fonts.
 
+**Documents span 1–3 pages** (2026-08-11), because a one-page corpus
+cannot see the failure the two-sweep PDF pipeline exists for: an entity
+detected on one page and missed on another. Text documents carry their
+own page breaks as form feeds emitted by the templates
+(`build.Doc.page_break`), so pagination is described once — in the source
+text — and every tier honours the same one with truth offsets unaffected;
+CSV tables are cut by row count with their column header repeated,
+because a form feed would break the parse. Statements reprint the account
+number on every page and the holder in **caps on page 1, title case on
+continuation pages**: the same entity under two surface forms, which is
+what the document-wide grouping has to recognize. `render` writes one PNG
+per page *and* assembles them into a PDF per document, so both modalities
+run over identical pixels.
+
 `score --modality image` runs each page through the real image pipeline
 (OCR → detect → paint), **re-OCRs the painted output**, and scores every
-truth entity by value survival in the redacted image. Matching is
+truth entity by value survival in the redacted image. Pages of a document
+are stripped one at a time against a shared `PseudonymMap` — no
+cross-page knowledge — which makes this modality the **control** for
+`--modality pdf` below. Matching is
 OCR-tolerant and recall-first: confusion-squashed containment (0/O, 1/l,
 5/S...) and, for long values, a banded edit-distance scan — a value
 surviving with one misread glyph counts as leaked (the `~ocr` column
@@ -163,11 +181,20 @@ survival would need occurrence disambiguation first: personas share
 surname stems with kept business names ("DECKER SERVICES PTY LTD"), so a
 naive token match would report false partials against kept text.
 
-`score --modality pdf -c corpora/real/<set>` (2026-07-18) is the same
-re-OCR value-survival scoring over the **full PDF pipeline**: each real
-corpus source PDF goes through `pii.core.pdf_mode.strip_pdf`, the
-stripped output PDF's pages are rendered and re-OCR'd, and the
-hand-authored truth is matched with the image tier's matcher. Real-truth
+`score --modality pdf` (2026-07-18) is the same re-OCR value-survival
+scoring over the **full PDF pipeline**: each source PDF goes through
+`pii.core.pdf_mode.strip_pdf` — which reads every page before redacting
+any of them — the stripped output's pages are rendered and re-OCR'd, and
+truth is matched with the image tier's matcher. It runs over two corpus
+shapes, told apart by who owns the truth: a **real** corpus
+(`-c corpora/real/<set>`) carries its own hand-authored `truth.json`
+beside the manifest, while the **rendered synthetic** corpus (the
+default, the same folder `--modality image` scores) has none of its own —
+its truth belongs to the text corpus it was generated from. Against the
+image tier over those same pages, grouping is the only variable, so the
+pair is a ready-made A/B for the cross-page path; the run also prints how
+many spans a document owed to detections made on its other pages.
+Real-truth
 specifics: criticality derives from `build.CRITICAL` by type (authored
 truth carries no flags); valueless entities (barcodes) are skipped until
 barcode masking exists; one fresh `PseudonymMap` per document (the CLI's

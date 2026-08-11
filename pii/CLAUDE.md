@@ -91,6 +91,30 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   WRONG region, so `--geometry ocr` stays at exact-or-squash. The confusion table in
   `fuzzy.py` is a *discount inside* the edit distance, never a gate in front of it — folding
   both sides through confusion classes fails on unlisted damage and on dropped characters.
+- **A page is not the unit of truth.** Every page is READ before any page is REDACTED, so a
+  value layer 0 names on page 1 and misses on page 4 strips on both. Do not restore a
+  streaming per-page loop in `strip_pdf`: it is what made that leak invisible.
+- **Cache the raster the model saw; never render a page twice.** The model's `bbox_2d` lives
+  in the coordinate space of those exact pixels, and a second render only assumes it
+  reproduces the first. The cache is PNG (lossless until the final embed), holds full
+  unredacted pages, and must be unlinked per page and removed on the way out.
+- **Grouping decides the class and the report, never recall.** Every constituent is searched
+  independently, so a mis-grouping can only mislabel. Keep it that way — the moment a group's
+  canonical form becomes the needle, a clustering bug becomes a mis-paint.
+- **A group compares normalized and stores verbatim.** Distance runs case- and
+  separator-folded (`SMITH JOHN` vs `Smith John` is 8 raw edits); the constituent's original
+  text is what `locate_borrowed` searches for. Never let a normalized form become a needle.
+- **The identifier confusion table is DERIVED, not listed.** `IDENTIFIER_CONFUSION_PAIRS` is
+  the cross-class subset of `CONFUSION_PAIRS`. A digit read as a letter is damage; a digit
+  read as another digit is a different account, and `1↔2`/`4↔8` are in the measured table.
+  Deriving it is what stops the pending confusion-matrix refresh leaving a stale copy.
+- **The group vote can un-redact, so it must stay auditable.** The elected class replaces
+  every member's own in both directions (deliberate — a 10-to-1 majority for a company is a
+  company). `EntityGroup.votes` must keep reaching the CLI report; a silent election is the
+  failure mode.
+- **A borrowed needle is bounded and never fuzzy.** No box constrains a value borrowed from
+  another page, so matching stays exact-or-squash and both ends must fall on a word edge —
+  exact matching has no length floor, so an unguarded `Wu` paints inside `Would`.
 - **A detected value that cannot be located is a leak.** Unlocatable findings must keep
   warning loudly AND stay counted on `ImageStripResult.unlocated` / `PdfPageResult.unlocated`
   / `TextStripResult.unlocated` — a warning alone is deduplicated by Python's default filter
