@@ -107,7 +107,8 @@ def strip_pdf(
     dpi: int = DEFAULT_DPI,
     ocr_backend: str = "paddle",
     progress: Callable[[int, int], None] | None = None,
-    detector=None,
+    *,
+    detector,
     geometry: str = "hybrid",
 ) -> PdfStripResult:
     """Strip a PDF page by page and write a fresh, image-only PDF.
@@ -122,13 +123,11 @@ def strip_pdf(
     processed (OCR + the model make pages slow enough to want a heartbeat).
     """
     # heavy: the analysis stack
-    from pii.core.image_mode import _needs_ocr, strip_rendered_page
+    from pii.core.image_mode import strip_rendered_page
 
     # Resolved ONCE for the document, not per page — and skipped entirely on
     # the one path that never reads pixels through OCR (geometry="vlm").
-    page_engine = (
-        get_ocr_page(ocr_backend) if _needs_ocr(detector, geometry) else None
-    )
+    page_engine = get_ocr_page(ocr_backend) if geometry != "vlm" else None
     pages: list[PdfPageResult] = []
     out_doc = pymupdf.open()
     with pymupdf.open(path) as doc:

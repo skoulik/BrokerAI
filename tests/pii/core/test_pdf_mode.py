@@ -127,7 +127,8 @@ def _colors(image, box):
     return {color for _, color in region.getcolors(box.width * box.height)}
 
 
-def test_strip_pdf_reassembles_clean_pdf(tmp_path, pipeline, monkeypatch):
+def test_strip_pdf_reassembles_clean_pdf(tmp_path, pipeline, monkeypatch,
+                                         no_findings):
     monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr)
     src = tmp_path / "doc.pdf"
     out = tmp_path / "doc.clean.pdf"
@@ -135,6 +136,7 @@ def test_strip_pdf_reassembles_clean_pdf(tmp_path, pipeline, monkeypatch):
     pmap = PseudonymMap()
     seen = []
     result = strip_pdf(src, pipeline, pmap, out, dpi=72,
+                       detector=no_findings,
                        progress=lambda n, c: seen.append((n, c)))
 
     assert seen == [(1, 2), (2, 2)]
@@ -164,12 +166,14 @@ def test_strip_pdf_reassembles_clean_pdf(tmp_path, pipeline, monkeypatch):
         assert not any(info.values())
 
 
-def test_strip_pdf_paints_over_pii_pixels(tmp_path, pipeline, monkeypatch):
+def test_strip_pdf_paints_over_pii_pixels(tmp_path, pipeline, monkeypatch,
+                                          no_findings):
     monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr)
     src = tmp_path / "doc.pdf"
     out = tmp_path / "doc.clean.pdf"
     _make_marked_pdf(src, pages=1)
-    strip_pdf(src, pipeline, PseudonymMap(), out, dpi=72)
+    strip_pdf(src, pipeline, PseudonymMap(), out, dpi=72,
+              detector=no_findings)
 
     page_image = next(pdf_to_images(out, dpi=72))
     # JPEG blurs edges; sample the box interior, which was solid red.
@@ -184,12 +188,12 @@ def _near_red(colors):
 
 
 def test_strip_pdf_reports_page_text_and_offsets(tmp_path, pipeline,
-                                                 monkeypatch):
+                                                 monkeypatch, no_findings):
     monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr)
     src = tmp_path / "doc.pdf"
     _make_marked_pdf(src, pages=1)
     result = strip_pdf(src, pipeline, PseudonymMap(), tmp_path / "out.pdf",
-                       dpi=72)
+                       dpi=72, detector=no_findings)
     (page_result,) = result.pages
     assert page_result.ocr.text == "Hello\nContact olga@example.com"
     span = page_result.spans[0]

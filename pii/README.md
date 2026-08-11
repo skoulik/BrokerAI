@@ -23,8 +23,10 @@ pip install -r pii/requirements.txt
 python -m spacy download en_core_web_sm
 ```
 
-The NER model (GLiNER2-PII, ~1.2 GB) downloads into `models/hf-cache/` on
-first use.
+**Detection needs a running llama-server.** Layer 0 — a local LLM — is the
+detector for every input mode, reached over HTTP: set `--vlm-url` or
+`$PII_VLM_URL` (default `http://localhost:8080`). Nothing here starts it, and
+there is no offline fallback.
 
 ## Usage
 
@@ -58,20 +60,19 @@ background-filled boxes with the placeholder drawn in, so the output image
 stays pseudonymized and rehydratable, not blacked out. Painting always happens
 on the original image (`pii/core/image_mode.py`).
 
-`--detector` chooses what finds the PII:
+A local LLM finds the PII in every input mode — reading the page image for
+`--image`/`--pdf` and the document text otherwise. The pattern/checksum
+recognizers then refine each value into its precise class, restore the
+checksum-invalid shadows, and add anything the model missed. Minutes per page
+on `--image`/`--pdf`; text is far cheaper, with no image to ingest.
 
-- `vlm` (**default** for `--image`/`--pdf`) — a local vision LLM reads the
-  page image and names the values; the pattern/checksum recognizers then
-  refine each one into its precise class, restore the checksum-invalid
-  shadows, and add anything the model missed. **Needs a running
-  llama-server** — set `--vlm-url` or `$PII_VLM_URL` (default
-  `http://localhost:8080`) — and costs minutes per page.
-- `layers` — the pattern/checksum recognizers and the NER model over the OCR
-  text only. No model server, seconds per page. Text and CSV input always
-  uses this, since there is no page image to read.
+On text and CSV a detected value is located by finding it in the text, and
+**every** occurrence of it is replaced, not only the one the model reported. A
+value the model returns that is not in the text cannot be redacted; those are
+counted and always reported on stderr, independently of `--report`.
 
-`--geometry` (only with `--detector vlm`) chooses how detected values are
-placed on the page.
+`--geometry` chooses how detected values are placed on the *page*, so it
+applies to `--image`/`--pdf` only.
 
 - `hybrid` (**default**) — a second model pass boxes each detected value, and
   those boxes constrain the search for it in the OCR text. Painting still uses
@@ -96,10 +97,9 @@ hand).
 The OCR engine is **PaddleOCR**, and it supplies *geometry*, not detection.
 `--ocr-backend` selects the model tier: `paddle` (default, = `paddle:v6_medium`),
 `paddle:v6_medium` or `paddle:v5_server`. Models auto-download to
-`models/paddlex` on first use. With the GPU paddle wheel the engine and torch
-cannot share a Windows process, so the pipeline drives OCR through a
-persistent worker subprocess (`pii/core/ocr_worker.py`); the CPU wheel runs it
-in-process.
+`models/paddlex` on first use. With the GPU paddle wheel the pipeline drives
+OCR through a persistent worker subprocess (`pii/core/ocr_worker.py`); the CPU
+wheel runs it in-process.
 
 The numbers behind these defaults are in
 [core/reports/2026-08-08-vlm-oneshot-qwen36.md](core/reports/2026-08-08-vlm-oneshot-qwen36.md).
@@ -164,28 +164,33 @@ Three orthogonal controls on `strip`:
 
 Guardrails: a candidate covered by a *validated* detection of another class
 is not collected (every valid TFN fails the ACN checksum; suppression keys
-on the validating recognizer's name so a GLiNER2 phone/card guess never
-suppresses); when a collected span overlaps a valid detection in masking,
+on the validating recognizer's name, so an unvalidated guess of the same
+class never suppresses); when a collected span overlaps a valid detection in masking,
 the extents union and the valid class wins the placeholder (recall-first).
 Tier-1 eval (2026-07-14): `likely` and `context` run zero-noise; `all`
 logged 44 noise findings over 11 docs.
 
 ## Detection layers
 
+0. **Local LLM** — reads the page image (`pii/core/vlm.py`) or the document
+   text (`pii/core/text_llm.py`) and names the values, in five coarse classes.
+   The semantic detector: names, addresses, organizations, dates of birth, and
+   anything identifier-shaped. Layer 1 still runs over the same string and is
+   merged on top.
 1. **Presidio patterns/checksums** — built-in `AU_TFN`, `AU_MEDICARE`,
    `AU_ABN`, `AU_ACN` (checksum-validated, explicit registration needed —
    they are not in Presidio's default registry), credit cards, emails,
    AU-region phones; custom recognizers in `pii/core/recognizers.py` for BSB
    (`AU_BSB`), account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`), and
-   joint-account name forms ("E & J Moore", "JULIE AND BRIAN SUMMERS" →
-   `PERSON`) — mechanical shapes GLiNER2 loses inside transaction-line junk.
-2. **Zero-shot NER** — names, addresses and DOB, distinguishing person vs
-   organization for bank transaction descriptions. GLiNER2
-   (`pii/core/gliner2_recognizer.py`, Fastino's PII-tuned model). Bare place
-   names are not detected — a lone city/town name is acceptable verbatim in
-   financial documents; the address passes still own address-shaped lines.
-   spaCy (`en_core_web_sm`) is Presidio's NLP engine only, not a detector.
-3. **Local-LLM audit pass** — planned; will use llama-server.
+   the joint-account initials form ("E & J Moore" → `PERSON`) and `ATF`
+   trustee clauses. Layer 1 is the deterministic floor under a stochastic
+   detector: it types identifiers, validates their checksums, and catches what
+   the model missed. spaCy (`en_core_web_sm`) is Presidio's NLP engine only,
+   never a detector.
+2. ~~**Zero-shot NER**~~ — retired 2026-08-09; layer 0 replaced it. Bare place
+   names are still not detected — a lone city/town name is acceptable verbatim
+   in financial documents.
+3. **Local-LLM audit pass** — planned.
 
 Behaviour worth knowing when running the tool: `DATE_TIME` and
 `ORGANIZATION` are detected but **kept** by default (transaction dates and
@@ -196,19 +201,19 @@ lives in [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 
 ## Performance
 
-The NER model moves itself to CUDA when available. On the 9-document eval
-corpus the NER share of the run is ~0.7 s (GLiNER2 on the RTX 2080 Ti).
-GLiNER2 always loads; spaCy loads too, as Presidio's NLP engine (still
-required — keep the `en_core_web_sm` download above).
+Dominated by the model server. Text runs at roughly 15 s per document;
+`--image`/`--pdf` at minutes per page, most of it spent ingesting the page
+image. Locally, spaCy loads as Presidio's NLP engine (still required — keep
+the `en_core_web_sm` download above); OCR runs only for `--image`/`--pdf`,
+where it supplies painting geometry.
 
 ## Evaluation
 
 Scored by the Tier-1 synthetic corpus in [pii_eval](../pii_eval/README.md)
 (`python -m pii_eval generate` / `score`). Current state: all pattern
-entities 100%; PERSON 100%; ADDRESS ~83% (the residual leaks are bare
-ALL-CAPS street lines with no state/postcode context). Contextual
-identifiers ("a dentist in Wagga Wagga") are undetectable by layers 1–2 by
-nature — a target for the planned layer-3 LLM audit. Keep presidio ≥
+entities 100%; PERSON, PERSON_REVERSED and PERSON_COMMA 100%. Contextual
+identifiers ("a dentist in Wagga Wagga") remain at 0% — a target for the
+planned layer-3 audit. Keep presidio ≥
 2.2.364: 2.2.362's ACN validator rejects every ACN with check digit 0, and
 2.2.364 changed the ABN validator's leading-zero handling, which the tool's
 own checksum copy mirrors.

@@ -27,18 +27,18 @@ def test_joint_initials_title_case(pipeline):
     assert "Moore" not in out
 
 
-# The shared-surname FULL-name form ('Julie and Brian Summers') is no longer
-# a layer-1 pattern (2026-07-21, issue #4) — it's handled by expanding
-# GLiNER2's own PERSON detections across the ' and '/' & ' connector, so it's
-# model-dependent. Those cases moved to the connector-merge tests in
-# test_gliner2_windows.py (fake model) and the model-marked check below.
+# The shared-surname FULL-name form ('Julie and Brian Summers') is not a
+# layer-1 pattern (2026-07-21, issue #4): matching three words joined by 'and'
+# is indistinguishable from prose by any lexical rule. It belongs to layer 0,
+# which reads it semantically — so there is nothing model-free to assert about
+# it here, and the eval corpus (PERSON_JOINT, 100% on all seeds) measures it.
 
 
 def test_statement_phrases_not_matched_as_joint(pipeline):
     # 'X AND Y Z' caps triples that are prose, not couples. With the full-name
-    # pattern retired (issue #4) no layer-1 rule matches them, and GLiNER2
-    # (stubbed here) doesn't emit persons for them — so they stay put. A
-    # regression guard against re-introducing a lexical full-name pattern.
+    # pattern retired (issue #4) no layer-1 rule matches them, so they stay
+    # put. A regression guard against re-introducing a lexical full-name
+    # pattern.
     for text in (
         "PRINCIPAL AND INTEREST PAYMENT",
         "LOAN TERMS AND CONDITIONS APPLY",
@@ -49,26 +49,11 @@ def test_statement_phrases_not_matched_as_joint(pipeline):
         assert out == text, text
 
 
-@pytest.mark.model
-def test_colliding_surname_couple_given_names_strip(make_pipeline):
-    # Fee/Card are surnames that are also statement vocabulary. The full-name
-    # form is now GLiNER2-driven (connector-merge), and GLiNER2 doesn't
-    # recognise the word-like surname — so the GIVEN names strip (the couple
-    # merges) but the colliding surname leaks. Accepted 2026-07-21; the
-    # non-gated PERSON_COLLIDING eval probe measures the residual.
-    pipeline = make_pipeline(stub_ner=False)
-    out, _, _ = pipeline.strip(
-        "Loan Repayment Julie and Brian Fee", PseudonymMap()
-    )
-    assert "Julie" not in out and "Brian" not in out  # the couple is stripped
-
-
 def test_full_name_org_not_matched_as_joint(pipeline):
     # With the full-name pattern retired, 'X AND Y Z' org names are no longer
-    # mis-split into joint persons by any layer-1 rule (NER stubbed here). A
-    # regression guard. (Under the full pipeline the PTY LTD ones are stripped
-    # as private ORGANIZATION entities by org_policy, issue #2 — a different
-    # path; the connector-merge only fires on GLiNER2 PERSON detections.)
+    # mis-split into joint persons by any layer-1 rule. A regression guard.
+    # (End to end, the PTY LTD ones are stripped as private ORGANIZATION
+    # entities by org_policy, issue #2 — a different path.)
     for text in (
         "EFTPOS ANGUS AND ROBERTSON PTY LTD 4821 AU",
         "PAYMENT TO TAYLOR AND SCOTT LAWYERS PTY LTD",

@@ -4,17 +4,25 @@ Runs detection per cell so dates/amounts columns pass through untouched and
 placeholders never straddle cell boundaries. `columns` restricts processing
 to named columns (header row required); default is every column.
 
-Cells are batched into one analyzer call per column (rows joined by a
-sentinel) — per-cell calls would pay the NER model's per-invocation cost hundreds
+Cells are batched into one detection call per column (rows joined by a
+sentinel) — per-cell calls would pay the model's per-invocation cost hundreds
 of times on a big statement. The sentinel keeps pattern recognizers from
-matching across cells, AND (2026-07-15) its RECORD_SEPARATOR char is a hard
-NER window boundary — the GLiNER2 recognizer predicts each cell in its own
-window, because cross-cell context is pure noise (spans are clamped per
-cell anyway) and same-person mentions in different word orders interfere
-inside one attention window (records in pii/core/DONE.md). NER can still emit a
-span crossing a cell boundary within a window, so detected spans are
-clamped to cell boundaries before replacement (the fragment in each cell
-is replaced independently — recall-first).
+matching across cells. A detector can still return a value spanning a cell
+boundary, so detected spans are clamped to cell boundaries before replacement
+(the fragment in each cell is replaced independently — recall-first).
+
+Detection is delegated to `pii.core.text_mode.detect_text`, so the layer-0
+`TextDetector` serves CSV exactly as it serves plain text. The per-column
+batching is unchanged by that and is the reason it stays: the guarantees it
+buys — placeholders never straddling a cell, date/amount columns passing
+through byte-identical — are structural, independent of which detector runs.
+(Whether a language model would do better seeing whole ROWS than a column of
+values in isolation is an open question, not answered here.)
+
+Historical note: the sentinel's RECORD_SEPARATOR char was ALSO a hard NER
+window boundary, isolating each cell from GLiNER2's global attention
+(2026-07-15, records in pii/core/DONE.md). That half died with the recognizer
+on 2026-08-09; the pattern-isolation half above is why the sentinel remains.
 """
 
 import csv
@@ -23,9 +31,10 @@ import io
 from pii.core.constants import RECORD_SEPARATOR
 from pii.core.mapping import PseudonymMap
 from pii.core.pipeline import PiiPipeline
+from pii.core.text_mode import TextStripResult, detect_text
 
-# Never appears in bank data; blocks patterns from spanning two cells and
-# splits NER prediction windows (see module docstring).
+# Never appears in bank data; blocks patterns from spanning two cells (see
+# module docstring).
 _SENTINEL = f"\n{RECORD_SEPARATOR}\n"
 
 
@@ -34,10 +43,14 @@ def strip_csv(
     pipeline: PiiPipeline,
     pmap: PseudonymMap,
     columns: list[str] | None = None,
-) -> tuple[str, list, list]:
-    """Returns (stripped_csv, applied_detections, invalid_findings).
+    *,
+    detector,
+) -> TextStripResult:
+    """Strip a CSV per cell through the layer-0 `detector` (required — see
+    the module docstring).
 
-    Invalid-finding offsets are relative to the per-column joined blob —
+    Span offsets on the result are relative to the per-column joined blob, as
+    are invalid-finding offsets —
     only their value/type/rule are meaningful to callers. Pattern matches
     cannot cross the sentinel (it contains non-pattern characters), so
     findings never straddle cells; when masking is on, the invalid spans
@@ -46,7 +59,7 @@ def strip_csv(
     """
     rows = list(csv.reader(io.StringIO(text)))
     if not rows:
-        return text, [], []
+        return TextStripResult(text=text, spans=[], invalid=[])
 
     header = rows[0]
     if columns:
@@ -61,15 +74,17 @@ def strip_csv(
 
     all_spans = []
     all_invalid = []
+    all_unlocated = []
     for col in sorted(wanted):
         # Data rows only — the header row is column names, not PII.
         cells = [row[col] if col < len(row) else "" for row in rows[1:]]
         if not any(c.strip() for c in cells):
             continue
         joined = _SENTINEL.join(cells)
-        spans, invalid = pipeline.detect(joined)
+        spans, invalid, unlocated = detect_text(joined, pipeline, detector)
         all_spans.extend(spans)
         all_invalid.extend(invalid)
+        all_unlocated.extend(unlocated)
 
         # Cell offset ranges within `joined`.
         bounds = []
@@ -104,4 +119,9 @@ def strip_csv(
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
     writer.writerows(rows)
-    return out.getvalue(), all_spans, all_invalid
+    return TextStripResult(
+        text=out.getvalue(),
+        spans=all_spans,
+        invalid=all_invalid,
+        unlocated=all_unlocated,
+    )

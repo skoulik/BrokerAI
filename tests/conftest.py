@@ -2,92 +2,32 @@
 
 Heavyweight objects are session-scoped so they are built once per run
 (testbench design, root ROADMAP Phase 2): every PiiPipeline loads the spacy
-NLP engine, and a real one also loads GLiNER2. The default `make_pipeline`
-builds under a GLiNER2 shim (sys.modules stub, no model) so the fast suite
-stays model-free; pass stub_ner=False under the `model` marker for the real
-stack.
+NLP engine.
+
+The suite is model-free by construction since GLiNER2 was retired
+(2026-08-09): `PiiPipeline` is layer 1 only — patterns, checksums and the
+shadows — and the semantic detector is layer 0, which the tests inject as a
+stub. There is no model to shim any more, so the old sys.modules GLiNER2 stub
+and its `stub_ner` switch are gone with it.
 """
 
-import contextlib
-import sys
-import types
-
 import pytest
-from presidio_analyzer import EntityRecognizer
 
-
-class _NoopGliner2(EntityRecognizer):
-    """Stands in for Gliner2Recognizer so the registry can be composed without
-    loading the model. Mirrors the real recognizer's contract but emits
-    nothing. (Standalone LOCATION detection was retired 2026-07-23.)"""
-
-    def __init__(self, **kwargs):
-        # kwargs (e.g. demote_invalid) are accepted and ignored — the stub
-        # must keep the real constructor's signature so PiiPipeline can pass
-        # its configuration through.
-        super().__init__(
-            supported_entities=["PERSON"], name="Gliner2Recognizer"
-        )
-
-    def load(self):
-        pass
-
-    def analyze(self, text, entities, nlp_artifacts=None):
-        return []
-
-
-# The deferred-import target in PiiPipeline.__init__ (pii/core/pipeline.py) —
-# the shim key below and that import must name the same module.
-_GLINER2_MODULE = "pii.core.gliner2_recognizer"
-
-
-@contextlib.contextmanager
-def _gliner2_stub():
-    """Shim the GLiNER2 recognizer module with the noop stub while a
-    PiiPipeline is constructed (its Gliner2Recognizer import is deferred
-    into __init__)."""
-    stub = types.ModuleType(_GLINER2_MODULE)
-    stub.Gliner2Recognizer = _NoopGliner2
-    saved = sys.modules.get(_GLINER2_MODULE)
-    sys.modules[_GLINER2_MODULE] = stub
-    try:
-        yield
-    finally:
-        if saved is None:
-            del sys.modules[_GLINER2_MODULE]
-        else:
-            sys.modules[_GLINER2_MODULE] = saved
-
-
-@pytest.fixture
-def gliner2_stub():
-    """The GLiNER2 stub context manager, for tests that build a pipeline
-    indirectly (e.g. through the CLI, which constructs its own PiiPipeline)."""
-    return _gliner2_stub
+from pii.core.vlm import VlmFinding
 
 
 @pytest.fixture(scope="session")
 def make_pipeline():
     """Cached PiiPipeline factory — one instance per distinct configuration
-    for the whole session. stub_ner=True (default) builds under the GLiNER2
-    shim → fast, model-free; pass stub_ner=False for the real stack and carry
-    the `model` marker. stub_ner is part of the cache key but not forwarded to
-    PiiPipeline."""
+    for the whole session."""
     from pii.core import PiiPipeline
 
     cache = {}
 
     def make(**kwargs):
-        stub_ner = kwargs.pop("stub_ner", True)
-        key = (stub_ner,) + tuple(
-            sorted((k, repr(v)) for k, v in kwargs.items())
-        )
+        key = tuple(sorted((k, repr(v)) for k, v in kwargs.items()))
         if key not in cache:
-            if stub_ner:
-                with _gliner2_stub():
-                    cache[key] = PiiPipeline(**kwargs)
-            else:
-                cache[key] = PiiPipeline(**kwargs)
+            cache[key] = PiiPipeline(**kwargs)
         return cache[key]
 
     return make
@@ -95,5 +35,53 @@ def make_pipeline():
 
 @pytest.fixture(scope="session")
 def pipeline(make_pipeline):
-    """Default pipeline (stubbed NER) with default settings."""
+    """Default pipeline (layer 1) with default settings."""
     return make_pipeline()
+
+
+class StubDetector:
+    """Stands in for a layer-0 detector: returns a fixed finding list and
+    ignores the text.
+
+    Detection is what is being stubbed — location, layer-1 refinement and the
+    merge all run for real against it, so a test using this still exercises
+    everything below the model.
+    """
+
+    def __init__(self, *pairs):
+        self.findings = [
+            VlmFinding(text=text, entity_type=etype) for text, etype in pairs
+        ]
+        self.seen = []
+
+    def detect(self, text):
+        self.seen.append(text)
+        return list(self.findings)
+
+    def localize(self, image, findings):
+        return findings
+
+
+@pytest.fixture
+def stub_detector():
+    """The layer-0 stub class, for tests that build their own findings."""
+    return StubDetector
+
+
+@pytest.fixture
+def no_findings():
+    """A layer-0 detector that finds nothing — isolates layer 1."""
+    return StubDetector()
+
+
+@pytest.fixture
+def cli_no_model(monkeypatch):
+    """Keep a `pii.cli.main` run model-free.
+
+    The CLI always builds a layer-0 detector now (there is no layers path to
+    fall back to), so a CLI test would otherwise demand a model server.
+    Patched at the module attribute because `_build_detector` imports it
+    lazily, inside the call."""
+    monkeypatch.setattr(
+        "pii.core.text_llm.TextDetector", lambda *a, **k: StubDetector()
+    )

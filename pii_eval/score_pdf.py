@@ -45,7 +45,6 @@ from pii_eval.score_image import (
 def score_pdf(corpus: str, threshold: float = 0.4,
               invalid_identifiers: str = "likely",
               ocr_backend: str = "paddle",
-              detector: str = "vlm",
               geometry: str = DEFAULT_GEOMETRY) -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
@@ -56,7 +55,7 @@ def score_pdf(corpus: str, threshold: float = 0.4,
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ocr = reread_engine()
-    vlm = build_detector(detector, geometry)
+    vlm = build_detector(geometry)
     pipeline = PiiPipeline(threshold=threshold,
                            invalid_identifiers=invalid_identifiers)
 

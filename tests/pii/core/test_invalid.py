@@ -133,10 +133,12 @@ def test_masking_off_by_default(make_pipeline):
 
 
 def test_ner_guess_does_not_suppress_finding():
-    # GLiNER2 emits PHONE_NUMBER/CREDIT_CARD as unvalidated guesses;
-    # suppression must key on the VALIDATING recognizer's name, or an NER
-    # phone guess over a typo'd TFN silently swallows the finding
-    # (regression: 'ATO PAYMENT TFN 982 827 379' on the tier-1 corpus).
+    # An unvalidated guess of PHONE_NUMBER/CREDIT_CARD must not suppress:
+    # suppression keys on the VALIDATING recognizer's name, or a phone guess
+    # over a typo'd TFN silently swallows the finding (regression: 'ATO
+    # PAYMENT TFN 982 827 379' on the tier-1 corpus). The rule outlived the
+    # NER layer that motivated it — layer 0 reports identifiers it cannot
+    # verify, so it needs exactly the same guard.
     from pii.core.pipeline import _collect_invalid
 
     text = "ATO PAYMENT TFN 982 827 379"
@@ -182,7 +184,7 @@ def test_merge_ranks_invalid_below_any_valid_type():
     assert merged[0].entity_type == "AU_BANK_ACCOUNT"
 
 
-def test_csv_mode_collects_and_masks_per_cell(make_pipeline):
+def test_csv_mode_collects_and_masks_per_cell(make_pipeline, no_findings):
     from pii.core.csv_mode import strip_csv
 
     text = (
@@ -190,37 +192,37 @@ def test_csv_mode_collects_and_masks_per_cell(make_pipeline):
         f"01/02/2024,ATO PAYMENT TFN {INVALID_TFN},50.00\n"
     )
     p = make_pipeline(invalid_identifiers="likely")
-    out, _, findings = strip_csv(
-        text, p, PseudonymMap(), columns=["Description"]
-    )
+    result = strip_csv(text, p, PseudonymMap(), columns=["Description"],
+                       detector=no_findings)
+    out, findings = result.text, result.invalid
     assert "AU_TFN_INVALID" in types(findings)
     assert INVALID_TFN in out  # not masked
 
     p_mask = make_pipeline(invalid_identifiers="likely", mask_invalid=True)
-    out, _, findings = strip_csv(
-        text, p_mask, PseudonymMap(), columns=["Description"]
-    )
+    out = strip_csv(
+        text, p_mask, PseudonymMap(), columns=["Description"],
+        detector=no_findings,
+    ).text
     assert INVALID_TFN not in out
     assert "TFN_INVALID_1" in out
     assert out.splitlines()[0] == "Date,Description,Amount"
     assert "50.00" in out
 
 
-def test_cli_mask_all_warns_and_logs(tmp_path, capsys, gliner2_stub):
+def test_cli_mask_all_warns_and_logs(tmp_path, capsys, cli_no_model):
     from pii.cli import main
 
     doc = tmp_path / "doc.txt"
     doc.write_text(f"TFN: {INVALID_TFN}\n", encoding="utf-8")
     out_file = tmp_path / "out.txt"
-    with gliner2_stub():  # keep the CLI run model-free (no GLiNER2 load)
-        rc = main(
-            [
-                "strip", str(doc), "-o", str(out_file),
-                "--map", str(tmp_path / "map.json"),
-                "--invalid-identifiers", "all",
-                "--mask-invalid-identifiers", "yes",
-            ]
-        )
+    rc = main(
+        [
+            "strip", str(doc), "-o", str(out_file),
+            "--map", str(tmp_path / "map.json"),
+            "--invalid-identifiers", "all",
+            "--mask-invalid-identifiers", "yes",
+        ]
+    )
     assert rc == 0
     err = capsys.readouterr().err
     assert "warning" in err and "analytical utility" in err

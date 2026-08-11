@@ -64,13 +64,19 @@ not imported from here — `cli` and `gui` never depend on each other.
   construction, so bad invocations fail instantly instead of after the model load.
 - **`--detector` resolves per mode (2026-08-09).** Its argparse default is `None`, not a
   detector name, because the right default differs by input: `vlm` for `--image`/`--pdf`,
-  `layers` for text and CSV, which have no page image for a vision model to read. Only an
-  *explicit* `--detector vlm` on text input is an error. A sentinel rather than a literal
-  default is what lets the CLI tell "the user asked for this" from "nobody said" — with
-  `default="vlm"` a plain `pii strip file.txt` would demand a model server.
+  `layers` for text and CSV (pending the A/B that gates the GLiNER2 retirement). A sentinel
+  rather than a literal default is what lets the CLI tell "the user asked for this" from
+  "nobody said" — with `default="vlm"` a plain `pii strip file.txt` would demand a model
+  server. **Which detector CLASS is built follows the input, not the flag** (`_build_detector`):
+  `--detector vlm` means `VlmDetector` on a page and `TextDetector` on a string. `--geometry`
+  is rejected on text input, because there is no page for it to mean anything about.
 - **VlmError becomes a message, not a traceback.** A missing or unreachable llama-server is an
-  operator problem, so `_strip_media` catches `VlmError` and re-raises as `SystemExit` with the
-  text. This matters more since the flip: it is now the failure mode of the *default* path.
+  operator problem, so both the media path and the text path catch `VlmError` and re-raise as
+  `SystemExit` with the text. This matters more since the flip: it is the failure mode of the
+  *default* path on `--image`/`--pdf`.
+- **Unlocated values are reported unconditionally**, like the media path's geometry warnings
+  and for the same reason: they are detections that were *not* redacted, so the operator must
+  see them whether or not `--report` was asked for.
 - **PDF mode reporting.** `--report` prefixes each detection with its page (`p3`), and a
   `page N/M ...` heartbeat goes to stderr — OCR + NER make multi-page documents slow enough
   to want one.

@@ -65,10 +65,12 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     """The per-form probe types (corpus additions 2026-07-15) must keep
     appearing: bare street lines, suburb-suffixed merchant keep-orgs and
     account-holder private entities (ORGANIZATION_PRIVATE strip, 2026-07-21).
-    The unfixed ones may not enter the critical gate; PERSON_JOINT is gated
-    since the layer-1 joint-name recognizer took ownership (2026-07-15).
-    Bare-town LOCATION became a KEEP probe when standalone location detection
-    was retired (2026-07-23) — asserted in the keep-probe block below."""
+    A probe enters the critical gate only once its form is reliably covered:
+    PERSON_JOINT since the layer-1 joint-name recognizer took ownership
+    (2026-07-15), PERSON_REVERSED since layer 0 closed its residual at 100%
+    on seeds 42/123/7 (2026-08-09). Bare-town LOCATION became a KEEP probe
+    when standalone location detection was retired (2026-07-23) — asserted in
+    the keep-probe block below."""
     generate(str(tmp_path), seed=42, docs=9)
     ents = [e for d in _load(tmp_path)["docs"] for e in d["entities"]]
     by_type = {}
@@ -82,7 +84,7 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
               "ORGANIZATION_ATF"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(e["strip_expected"] for e in by_type[t]), t
-        gated = t == "PERSON_JOINT"
+        gated = t in ("PERSON_JOINT", "PERSON_REVERSED")
         assert all(e["critical"] == gated for e in by_type[t]), t
 
     # The name-forms doc fixes per-form n by construction — real

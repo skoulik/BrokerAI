@@ -200,11 +200,9 @@ def reread_engine():
     return lambda image: linearize(engine(image))
 
 
-def build_detector(detector: str, geometry: str = DEFAULT_GEOMETRY):
-    """The layer-0 detector for the STRIP side, or None for the layers path.
-    Imported lazily so a `--detector layers` run needs no model server."""
-    if detector != "vlm":
-        return None
+def build_detector(geometry: str = DEFAULT_GEOMETRY):
+    """The layer-0 detector for the STRIP side. Imported lazily so the
+    model-server dependency lands only when a scoring run starts."""
     from pii.core.vlm import VlmDetector
 
     # Only the raw-box instrument uses the one-pass boxes prompt; everything
@@ -215,10 +213,9 @@ def build_detector(detector: str, geometry: str = DEFAULT_GEOMETRY):
 def score_image(corpus: str, threshold: float = 0.4,
                 invalid_identifiers: str = "likely",
                 ocr_backend: str = "paddle",
-                detector: str = "vlm",
                 geometry: str = DEFAULT_GEOMETRY) -> int:
     ocr = reread_engine()
-    vlm = build_detector(detector, geometry)
+    vlm = build_detector(geometry)
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     source = (corpus_path / manifest["source"]).resolve()

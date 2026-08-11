@@ -21,7 +21,7 @@ from pathlib import Path
 from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
 from pii.core.ocr import OCR_PAGE_BACKENDS
 # stdlib-only module, so importing it here costs nothing on the default path
-from pii.core.vlm import DEFAULT_GEOMETRY, GEOMETRIES, VlmError
+from pii.core.vlm import DEFAULT_GEOMETRY, DEFAULT_URL, GEOMETRIES, VlmError
 
 
 def _read(source: str) -> str:
@@ -44,35 +44,36 @@ def _derive_map(input_path: str) -> str:
 
 
 def _build_detector(args):
-    """Construct the layer-0 VLM detector, or None for the layers path.
+    """Construct the layer-0 detector for this run.
 
-    Only --image/--pdf have a detector at all: text and CSV input is already
-    text, so there is no page for a vision model to read. `--detector` is
-    therefore resolved per mode — vlm for media, layers for text — and only an
-    EXPLICIT `--detector vlm` on text input is an error.
+    There is no detector CHOICE any more — layer 0 is the only detector since
+    GLiNER2 was retired (2026-08-09), and a patterns-only run is the regime
+    retired 2026-07-15 as unsafe. What varies is the MODALITY, and that
+    follows the input rather than a flag: --image/--pdf read page pixels,
+    text and CSV read the string.
 
-    Imported lazily, so a missing model server only breaks runs that actually
-    reach for one."""
+    Imported lazily, so the import cost and the model-server dependency land
+    only when a run actually reaches for one."""
     media = getattr(args, "image", False) or getattr(args, "pdf", False)
-    detector = getattr(args, "detector", None)
-    if detector is None:
-        detector = "vlm" if media else "layers"
-    elif detector == "vlm" and not media:
-        raise SystemExit("--detector vlm requires --image or --pdf")
     geometry = getattr(args, "geometry", DEFAULT_GEOMETRY)
-    if detector != "vlm":
+    url = getattr(args, "vlm_url", None) or DEFAULT_URL
+
+    if not media:
+        # Text and CSV have no page, so there is nothing for --geometry to
+        # mean: values are located by finding them in the string itself.
         if geometry != DEFAULT_GEOMETRY:
             raise SystemExit(
-                "--geometry is only meaningful with --detector vlm: the "
-                "pattern/NER layers detect in OCR text and have no geometry "
-                "of their own"
+                "--geometry applies to --image/--pdf only: text input has no "
+                "page, so detected values are located in the text itself"
             )
-        return None
+        from pii.core.text_llm import TextDetector
 
-    from pii.core.vlm import DEFAULT_URL, VlmDetector
+        return TextDetector(url=url)
+
+    from pii.core.vlm import VlmDetector
 
     return VlmDetector(
-        url=getattr(args, "vlm_url", None) or DEFAULT_URL,
+        url=url,
         # The one-pass boxes prompt is only used where its boxes are painted
         # directly. Everywhere else geometry comes from the second pass
         # (VlmDetector.localize), which costs no recall.
@@ -331,17 +332,9 @@ def main(argv=None) -> int:
              "torch); the CPU wheel runs it in-process.",
     )
     p_strip.add_argument(
-        "--detector", choices=["layers", "vlm"], default=None,
-        help="what finds the PII in --image/--pdf modes: vlm (the default "
-             "there; a local vision LLM reads the page image and names the "
-             "values, which layer 1 then refines, validates and extends) or "
-             "layers (pattern + checksum recognizers and the NER model over "
-             "OCR text only). vlm needs a llama-server — see --vlm-url. Text "
-             "and CSV input always uses layers",
-    )
-    p_strip.add_argument(
         "--geometry", choices=list(GEOMETRIES), default=DEFAULT_GEOMETRY,
-        help="how detected values are placed on the page when --detector vlm: "
+        help="how detected values are placed on the page (--image/--pdf "
+             "only): "
              "hybrid (default; a second model pass boxes each value, and those "
              "boxes constrain the search for it in the OCR text — painting "
              "still uses exact OCR word boxes, falling back to the model's own "
@@ -350,13 +343,13 @@ def main(argv=None) -> int:
              "for each value — the pre-box baseline), or vlm (paint the "
              "model's own boxes, OCR never runs; faster but measured UNSAFE — "
              "16%% of boxes clip by >20px, stochastically, so it is a "
-             "comparison instrument, not a production option). Only valid "
-             "with --detector vlm",
+             "comparison instrument, not a production option)",
     )
     p_strip.add_argument(
         "--vlm-url", default=None,
-        help="llama-server base URL for --detector vlm (default "
-             "http://localhost:8080, or $PII_VLM_URL)",
+        help="llama-server base URL (default http://localhost:8080, or "
+             "$PII_VLM_URL). Required by every strip mode — the local LLM is "
+             "the detector",
     )
     p_strip.add_argument(
         "--columns",
@@ -384,13 +377,19 @@ def main(argv=None) -> int:
     )
 
     p_analyze = sub.add_parser(
-        "analyze", help="show detections without modifying anything"
+        "analyze",
+        help="show what strip would replace, without modifying anything",
     )
     p_analyze.add_argument("input", help="input text file, or - for stdin")
     p_analyze.add_argument("--threshold", type=float, default=0.4)
     p_analyze.add_argument(
         "--invalid-identifiers",
         choices=["ignore", "all", "likely", "context"], default="likely",
+    )
+    p_analyze.add_argument(
+        "--vlm-url", default=None,
+        help="llama-server base URL (default http://localhost:8080, or "
+             "$PII_VLM_URL)",
     )
 
     p_rehyd = sub.add_parser(
@@ -499,27 +498,59 @@ def main(argv=None) -> int:
     text = _read(args.input)
 
     if args.command == "analyze":
-        spans = pipeline.analyze(text)
-        print(f"{len(spans)} entities detected:")
+        # The same detection strip runs, reported instead of applied — an
+        # analyze that showed only layer 1 would understate what strip does
+        # now that the semantic detector is layer 0.
+        from pii.core.text_mode import detect_text
+
+        try:
+            spans, invalid, unlocated = detect_text(text, pipeline, detector)
+        except VlmError as exc:
+            raise SystemExit(f"pii: {exc}") from None
+        print(f"{len(spans)} entities would be replaced:")
         _report(spans, text, file=sys.stdout)
+        if unlocated:
+            print(
+                f"WARNING: {len(unlocated)} detected value(s) were not found "
+                f"in the text and could NOT be redacted", file=sys.stderr,
+            )
+        # analyze has no --log-invalid-identifiers of its own; the findings
+        # are the point of the command, so they always print.
+        if invalid:
+            _report_invalid(invalid)
         return 0
 
     pmap = PseudonymMap(args.map)
-    if args.csv:
-        from pii.core.csv_mode import strip_csv
+    try:
+        if args.csv:
+            from pii.core.csv_mode import strip_csv
 
-        columns = args.columns.split(",") if args.columns else None
-        stripped, spans, invalid = strip_csv(text, pipeline, pmap, columns=columns)
-        pmap.save()
-        if args.report:
-            print(f"{len(spans)} entities replaced", file=sys.stderr)
-    else:
-        stripped, spans, invalid = pipeline.strip(text, pmap)
-        pmap.save()
-        if args.report:
-            print(f"{len(spans)} entities detected:", file=sys.stderr)
-            _report(spans, text)
-    if args.log_invalid_identifiers == "yes" and invalid:
-        _report_invalid(invalid)
-    _write(args.output, stripped)
+            columns = args.columns.split(",") if args.columns else None
+            result = strip_csv(
+                text, pipeline, pmap, columns=columns, detector=detector
+            )
+        else:
+            from pii.core.text_mode import strip_text
+
+            result = strip_text(text, pipeline, pmap, detector=detector)
+    except VlmError as exc:
+        raise SystemExit(f"pii: {exc}") from None
+    pmap.save()
+    if args.report:
+        if args.csv:
+            print(f"{len(result.spans)} entities replaced", file=sys.stderr)
+        else:
+            print(f"{len(result.spans)} entities detected:", file=sys.stderr)
+            _report(result.spans, text)
+    if result.unlocated:
+        # Always reported, independently of --report: these are detections
+        # that were NOT redacted.
+        print(
+            f"WARNING: {len(result.unlocated)} detected value(s) were not "
+            f"found in the text and were NOT redacted",
+            file=sys.stderr,
+        )
+    if args.log_invalid_identifiers == "yes" and result.invalid:
+        _report_invalid(result.invalid)
+    _write(args.output, result.text)
     return 0

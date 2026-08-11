@@ -9,7 +9,7 @@ the **component boundary and dependency rules**; each component's own design liv
 
 | Component | Package | Role | Docs |
 |---|---|---|---|
-| **Core** (engine) | `pii.core` | Detection + pseudonymization pipeline: Presidio + custom AU recognizers, GLiNER2 NER, CSV/image modes, OCR, pseudonym mapping. The whole detection stack and every engine design decision. | [core/ARCHITECTURE.md](core/ARCHITECTURE.md) · [ROADMAP](core/ROADMAP.md) · [TODO](core/TODO.md) · [DONE](core/DONE.md) |
+| **Core** (engine) | `pii.core` | Detection + pseudonymization pipeline: the layer-0 LLM detectors (page image / document text), Presidio + custom AU recognizers, text/CSV/image/PDF modes, OCR geometry, pseudonym mapping. The whole detection stack and every engine design decision. | [core/ARCHITECTURE.md](core/ARCHITECTURE.md) · [ROADMAP](core/ROADMAP.md) · [TODO](core/TODO.md) · [DONE](core/DONE.md) |
 | **CLI** | `pii.cli` | Command-line front-end: `strip` / `analyze` / `rehydrate` and all flags. | [cli/ARCHITECTURE.md](cli/ARCHITECTURE.md) · [ROADMAP](cli/ROADMAP.md) · [TODO](cli/TODO.md) · [DONE](cli/DONE.md) |
 | **GUI** | `pii.gui` | Local interactive front-end. **Planned — new direction, requirements not yet finalized.** Stubs only. | [gui/ARCHITECTURE.md](gui/ARCHITECTURE.md) · [ROADMAP](gui/ROADMAP.md) · [TODO](gui/TODO.md) · [DONE](gui/DONE.md) |
 
@@ -40,12 +40,13 @@ flowchart LR
   consumers (`pii_eval`, tests) import from it directly.
 - `RECORD_SEPARATOR` lives in `pii/core/constants.py` (a zero-import module) so any core module
   can depend on it without an import cycle.
-- Tests mirror the package layout: `tests/pii/core/` (engine). The GLiNER2 model is stubbed in
-  `sys.modules` at `pii.core.gliner2_recognizer` for the fast, model-free suite.
+- Tests mirror the package layout: `tests/pii/core/` (engine). The fast suite is model-free by
+  construction: `PiiPipeline` is layer 1 only, and layer 0 is injected as a stub detector
+  (`tests/conftest.py`).
 
 ## Where design decisions live
 
-The detailed engine design — the three-layer detection stack, recall-first span handling,
-GLiNER2 tuning, the CSV/image/PDF pipelines, the OCR-backend seam, the contingent layer-3
+The detailed engine design — the detection stack (layer 0 + layer 1), recall-first span
+handling, the text/CSV/image/PDF pipelines, the OCR-backend seam, the contingent layer-3
 audit, and the evaluation tiers — is all in [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 Front-end-specific design is in the respective component's `ARCHITECTURE.md`.

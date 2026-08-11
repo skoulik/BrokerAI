@@ -189,8 +189,9 @@ def http_transport(url: str, payload: dict, timeout: int) -> dict:
         reason = getattr(exc, "reason", exc)
         raise VlmUnavailable(
             f"cannot reach the model server at {url} ({reason}). Start "
-            f"llama-server with a vision model, or pass --vlm-url if it runs "
-            f"on another host (e.g. --vlm-url http://192.168.1.55:8080)."
+            f"llama-server (with a VISION model for --image/--pdf), or pass "
+            f"--vlm-url if it runs on another host "
+            f"(e.g. --vlm-url http://192.168.1.55:8080)."
         ) from exc
 
 

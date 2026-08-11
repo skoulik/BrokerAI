@@ -1,7 +1,13 @@
 """Image stripping: painting and placeholder consistency.
 
 Painting tests run on hand-built OcrPages (no OCR engine); real-engine OCR
-round-trips live in the paddle worker tests (test_ocr_worker.py)."""
+round-trips live in the paddle worker tests (test_ocr_worker.py).
+
+These exercise the painting path with layer 0 finding NOTHING, so the plan
+comes from layer 1 alone — which is what these assertions have always been
+about. `strip_from_page` (the old layers entry point) went with GLiNER2 on
+2026-08-09; `_strip` below is its exact equivalent through the surviving seam.
+"""
 
 from PIL import Image, ImageDraw
 
@@ -9,13 +15,22 @@ from pii.core.image_mode import (
     Segment,
     _grow,
     paint_segments,
-    strip_from_page,
+    strip_from_vlm,
 )
+from pii.core.linearization import linearize
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box
 from pii.core.ocr_page import OcrFrame, build_page
 
 RED = (255, 0, 0)
+
+
+def _strip(image, page, pipeline, pmap, findings=()):
+    """Strip an OcrPage with no layer-0 findings — layer 1 supplies the whole
+    plan, exactly as the retired `strip_from_page` did."""
+    return strip_from_vlm(
+        image, list(findings), pipeline, pmap, ocr=linearize(page)
+    )
 
 
 def _colors(image, box):
@@ -27,7 +42,7 @@ def _page(rows, width=400, height=200):
     return build_page(rows, OcrFrame(width=width, height=height, page=1))
 
 
-def test_strip_from_page_paints_over_pii_pixels(pipeline):
+def test_strip_layer1_paints_over_pii_pixels(pipeline):
     email_box = Box(left=60, top=20, width=120, height=14)
     img = Image.new("RGB", (300, 60), "white")
     ImageDraw.Draw(img).rectangle(
@@ -45,7 +60,7 @@ def test_strip_from_page_paints_over_pii_pixels(pipeline):
         width=300, height=60,
     )
     pmap = PseudonymMap()
-    result = strip_from_page(img, page, pipeline, pmap)
+    result = _strip(img, page, pipeline, pmap)
 
     assert [r.entity_type for r in result.spans] == ["EMAIL_ADDRESS"]
     # The email's pixels are gone...
@@ -57,7 +72,7 @@ def test_strip_from_page_paints_over_pii_pixels(pipeline):
     assert pmap.placeholder_for("EMAIL_ADDRESS", "olga@example.com") == "EMAIL_1"
 
 
-def test_strip_from_page_consistent_placeholder_across_lines(pipeline):
+def test_strip_layer1_consistent_placeholder_across_lines(pipeline):
     boxes = [Box(10, 10, 120, 12), Box(10, 40, 120, 12)]
     img = Image.new("RGB", (200, 70), "white")
     for b in boxes:
@@ -70,7 +85,7 @@ def test_strip_from_page_consistent_placeholder_across_lines(pipeline):
         width=200, height=70,
     )
     pmap = PseudonymMap()
-    result = strip_from_page(img, page, pipeline, pmap)
+    result = _strip(img, page, pipeline, pmap)
 
     assert len(result.spans) == 2
     assert len(pmap) == 1  # one placeholder, both occurrences
@@ -152,7 +167,7 @@ def test_grow_clamps_to_image_bounds():
     assert grown == Box(left=93, top=43, width=7, height=7)
 
 
-# --- strip_from_page: the whole page reaches the recognizer as one string --
+# --- the whole page reaches the recognizer as one string --------------
 
 
 def test_context_promotes_across_lines_on_the_whole_page(pipeline):
@@ -164,7 +179,7 @@ def test_context_promotes_across_lines_on_the_whole_page(pipeline):
         [("BSB", Box(10, 10, 60, 20), 90.0)],
         [("014-936", Box(10, 110, 120, 20), 90.0)],
     ])
-    result = strip_from_page(img, page, pipeline, PseudonymMap())
+    result = _strip(img, page, pipeline, PseudonymMap())
     assert [r.entity_type for r in result.spans] == ["AU_BSB"]
 
 
@@ -175,7 +190,7 @@ def test_spans_address_the_page_text(pipeline):
         [("Contact", Box(10, 110, 80, 20), 90.0),
          ("olga@example.com", Box(100, 110, 170, 20), 90.0)],
     ])
-    result = strip_from_page(img, page, pipeline, PseudonymMap())
+    result = _strip(img, page, pipeline, PseudonymMap())
     assert [r.entity_type for r in result.spans] == ["EMAIL_ADDRESS"]
     span = result.spans[0]
     assert result.ocr.text[span.start : span.end] == "olga@example.com"
@@ -189,13 +204,13 @@ def test_placeholders_are_numbered_in_document_order(pipeline):
         [("second@example.com", Box(10, 110, 180, 20), 90.0)],
     ])
     pmap = PseudonymMap()
-    result = strip_from_page(img, page, pipeline, pmap)
+    result = _strip(img, page, pipeline, pmap)
     assert len(result.spans) == 2
     assert pmap.placeholder_for("EMAIL_ADDRESS", "first@example.com") == "EMAIL_1"
     assert pmap.placeholder_for("EMAIL_ADDRESS", "second@example.com") == "EMAIL_2"
 
 
-def test_strip_from_page_paints_only_the_detected_pixels(pipeline):
+def test_strip_layer1_paints_only_the_detected_pixels(pipeline):
     email_box = Box(left=100, top=110, width=170, height=20)
     img = Image.new("RGB", (400, 200), "white")
     ImageDraw.Draw(img).rectangle(
@@ -207,6 +222,6 @@ def test_strip_from_page_paints_only_the_detected_pixels(pipeline):
         [("Contact", Box(10, 110, 80, 20), 90.0),
          ("olga@example.com", email_box, 90.0)],
     ])
-    result = strip_from_page(img, page, pipeline, PseudonymMap())
+    result = _strip(img, page, pipeline, PseudonymMap())
     assert RED not in _colors(result.image, email_box)
     assert _colors(result.image, Box(10, 10, 60, 20)) == {(255, 255, 255)}

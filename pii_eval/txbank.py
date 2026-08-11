@@ -9,7 +9,8 @@ exception (issue #10, 2026-07-22) is the letter+10-digit NAB receipt shape
 ('W1045366576'): on real statements GLiNER2 labeled that shape TFN /
 driver licence / passport semi-randomly, so it is annotated as the
 REFERENCE_NUMBER keep-probe — the identifier post-validation pass
-(gliner2_recognizer.IDENTIFIER_VALIDATORS) must drop those guesses.
+(retired with the NER layer 2026-08-09) dropped those guesses; the probe now
+measures whether layer 0 plus layer-1 typing keeps them out.
 DIGITS_OVERLONG is its sibling: a bare >16-digit run can never be an AU
 account (+BSB) and must not be stripped as one.
 

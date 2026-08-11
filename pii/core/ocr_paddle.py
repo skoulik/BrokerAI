@@ -30,7 +30,7 @@ geometry follows the 2026-07-16 review findings (record in DONE.md):
   families and the second loader gets WinError 127, whichever the
   order. So the GPU wheel serves torch-free paths (the ocr-report
   fidelity sweep, OCR-only use) at full speed, while the full pii
-  pipeline (GLiNER2 runs on torch in-process) needs the CPU wheel or a
+  pipeline needed the CPU wheel or a
   future paddle worker subprocess (TODO).
 - `enable_mkldnn=False` avoids the paddle 3.3.x oneDNN PIR-executor
   crash on PP-OCRv5 server models (upstream bug; CPU path only, the
@@ -39,7 +39,7 @@ geometry follows the 2026-07-16 review findings (record in DONE.md):
   default is v6_medium after the round-1 bake-off (DEFAULT_TIER below).
   Downloads land under PADDLE_PDX_CACHE_HOME, defaulted here to the
   repo-convention `models/paddlex` (same cwd-relative pattern as
-  GLiNER2's `models/hf-cache`).
+  the repo model-cache convention).
 - On the GPU wheel, torch and paddle cannot share a Windows process, so
   the full pipeline drives paddle through a persistent worker subprocess
   (pii/core/ocr_worker.py); `get_ocr_page` picks worker vs in-process by
@@ -110,7 +110,7 @@ def _stub_torch() -> None:
     shape, torch.multiprocessing, torch.distributed.is_available/
     is_initialized, annotation chains like torch.nn.Module) and
     answers everything else with inert dummies. Anything that later
-    tries REAL torch work in this process (e.g. GLiNER2) gets the stub
+    tries REAL torch work in this process gets the stub
     and fails — by design: a GPU-paddle process is OCR-only.
     """
     import importlib.machinery

@@ -54,15 +54,19 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   (`AU_TFN`, `AU_MEDICARE`, `AU_ABN`, `AU_ACN`) disabled/absent from the default registry —
   they must be registered explicitly, alongside the custom BSB/account/PayID recognizers in
   `pii/core/recognizers.py`.
-- **GLiNER2 is the sole layer-2 NER backend.** GLiNER v1 was removed 2026-07-13 (in git
-  history). Its tuning quirks — windowing, repeated-mention re-finding, per-label schema
-  passes, honorific extension, `max_width` — are documented in `pii/core/gliner2_recognizer.py`;
-  read that docstring before touching NER behaviour. Default `max_width=12`; do not raise
-  past ~12 (wide-span false-positive creep starts around 16).
-- **spaCy is the NLP engine only, not a detector.** `SpacyRecognizer` is not in the registry
-  and the `--no-ner` patterns-only regime is gone; GLiNER2 owns PERSON/ORG/dates. spaCy stays
-  loaded solely for Presidio's context enhancer (tokens/lemmas). Regression-tested in
-  `tests/pii/core/test_registry_policy.py`; rationale in [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
+- **There is no layer 2, and no detector switch.** GLiNER2 was retired 2026-08-09 (GLiNER v1
+  before it, 2026-07-13); both are in git history. Layer 0 — a local LLM over HTTP — is the
+  only semantic detector, in every input mode. Do not re-add an NER model to the registry:
+  `tests/pii/core/test_registry_policy.py` fails if anything there claims ADDRESS or
+  DATE_OF_BIRTH, or claims PERSON without being the mechanical `JointNameRecognizer`.
+- **A strip entry point always takes a detector.** `strip_text` / `strip_csv` / `strip_image` /
+  `strip_pdf` require one — layer 1 alone is the `--no-ner` regime retired 2026-07-15 as unsafe
+  (its name leaks), and it must not be reachable by omitting an argument. `PiiPipeline.detect`
+  stays public as a *layer*, which is what `merge_detections` consumes.
+- **spaCy is the NLP engine only, not a detector.** `SpacyRecognizer` is not in the registry;
+  spaCy stays loaded solely for Presidio's context enhancer (tokens/lemmas). Regression-tested
+  in `tests/pii/core/test_registry_policy.py`; rationale in
+  [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 - **No standalone place-name detection.** A lone city/town name passes verbatim; `LOCATION` is
   not in `DEFAULT_STRIP_ENTITIES`, the placeholder map, or the recognizer's supported entities.
   The ADDRESS passes still strip full addresses and suburb-postcode lines. Rationale in
@@ -84,8 +88,23 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   both sides through confusion classes fails on unlisted damage and on dropped characters.
 - **A detected value that cannot be located is a leak.** Unlocatable findings must keep
   warning loudly AND stay counted on `ImageStripResult.unlocated` / `PdfPageResult.unlocated`
-  — a warning alone is deduplicated by Python's default filter when a later page repeats it.
-  Same for `box_geometry`, which is a weaker redaction rather than none.
+  / `TextStripResult.unlocated` — a warning alone is deduplicated by Python's default filter
+  when a later page or document repeats it. Same for `box_geometry`, which is a weaker
+  redaction rather than none.
+- **On the text path the model names values; WE find the occurrences.** `text_llm`'s prompt
+  asks for each DISTINCT value once, and `locator.locate_in_text` marks every occurrence of
+  it. Do not "fix" the prompt to enumerate occurrences: finding a known string in a known
+  string is exact and free, while a model's enumeration costs output budget and decays with
+  document length. The vision prompt asks for every occurrence only because each one needs
+  its own box.
+- **The two layer-0 prompts are separate strings but ONE class vocabulary.** `vlm.PROMPT` is
+  frozen at the wording that was measured, so `text_llm.PROMPT` is a copy rather than a
+  splice — but both must name exactly the keys of `vlm.TYPE_MAP`, or a class the model emits
+  silently collapses to `IDENTIFIER_GENERIC`. Pinned by a test in `test_text_llm.py`.
+- **Squash matching has a length floor; exact matching must not.** Squash collapses
+  separators, so a short needle matches across word boundaries — tolerable on a page where
+  the model's box constrains it, unbounded in page-wide text. Exact matching keeps no floor:
+  real 2-char surnames (Wu, Ng) and 3-char organizations (NAB, ANZ) exist.
 - **The OCR perception layer (`OcrPage`) carries no character offsets.** Offsets live only in
   the linearization source map (`RecognizerInput` / `linearize`) — an offset is a
   (page, assembly) property; baking one onto a line ties perception to one assembly. Keep the

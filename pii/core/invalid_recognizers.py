@@ -52,9 +52,10 @@ _BARE_SCORE = {"likely": None, "context": 0.15, "all": 0.5}
 # their detections is a valid identifier of another class, not a mangled
 # one — e.g. every valid TFN fails the ACN checksum, every bare mobile
 # number matches the relaxed Medicare shape — and is not collected.
-# Keyed by recognizer NAME, not entity type: GLiNER2 emits the same types
-# (PHONE_NUMBER, CREDIT_CARD) as unvalidated guesses, and an NER guess
-# must never suppress a finding.
+# Keyed by recognizer NAME, not entity type: an unvalidated guess of the
+# same type (PHONE_NUMBER, CREDIT_CARD) must never suppress a finding. The
+# rule outlived the NER layer that motivated it and still applies to layer 0,
+# which reports identifiers it cannot verify.
 VALIDATED_RECOGNIZERS = {
     "AuTfnRecognizer", "AuMedicareRecognizer", "AuAbnRecognizer",
     "AuAcnRecognizer", "CreditCardRecognizer", "PhoneRecognizer",

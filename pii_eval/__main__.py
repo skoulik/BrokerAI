@@ -111,15 +111,10 @@ def main() -> int:
                          "paddle, the product default). The re-read of "
                          "stripped output is pinned to the default tier, so "
                          "the measuring instrument stays constant")
-    sc.add_argument("--detector", choices=["layers", "vlm"], default="vlm",
-                    help="what finds the PII on the strip side for "
-                         "--modality image/pdf: vlm (default, the product "
-                         "default — needs a llama-server, see $PII_VLM_URL, "
-                         "and runs at minutes per page) or layers")
     sc.add_argument("--geometry", choices=list(GEOMETRIES),
                     default=DEFAULT_GEOMETRY,
-                    help="how detected values are placed on the page under "
-                         "--detector vlm (default: hybrid, the product "
+                    help="how detected values are placed on the page for "
+                         "--modality image/pdf (default: hybrid, the product "
                          "default). The A/B that matters is hybrid vs ocr: "
                          "same detector, same locator, boxes as the only "
                          "variable")
@@ -174,7 +169,6 @@ def main() -> int:
                            threshold=args.threshold,
                            invalid_identifiers=args.invalid_identifiers,
                            ocr_backend=args.ocr_backend,
-                           detector=args.detector,
                            geometry=args.geometry)
     if args.modality == "pdf":
         if not args.corpus:
@@ -186,7 +180,6 @@ def main() -> int:
                          threshold=args.threshold,
                          invalid_identifiers=args.invalid_identifiers,
                          ocr_backend=args.ocr_backend,
-                         detector=args.detector,
                          geometry=args.geometry)
     from pii_eval.score import score
 

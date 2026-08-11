@@ -12,7 +12,7 @@ The project is being revived in phases (see `ROADMAP.md`; design decisions in `A
 
 There is no requirements.txt or lint. Key deps: quart, chromadb, pymupdf, anytree, httpx, python-box, transformers, langchain-text-splitters, aiofiles, aiopath.
 
-- `pytest` — run the testbench (`tests/`, mirrors the package layout; config in `pyproject.toml`). The default run is fast and model-free; `pytest -m "slow or model"` adds the heavyweight tests (GLiNER2, tier-1 eval gate), `pytest -m ""` runs everything. A JUnit XML report lands in `test-results/junit.xml` on every run.
+- `pytest` — run the testbench (`tests/`, mirrors the package layout; config in `pyproject.toml`). The default run is fast and model-free; `pytest -m "slow or model"` adds the heavyweight tests (the tier-1 eval gate, which needs a llama-server — see `$PII_VLM_URL`), `pytest -m ""` runs everything. A JUnit XML report lands in `test-results/junit.xml` on every run.
 
 - `python ingest.py` — build trees from PDFs and embed them into ChromaDB. Idempotent: skips a document if `db/trees/<id>.json` exists (tree step) or if its Chroma collection exists (embedding step). To re-ingest a document, delete its tree JSON and its Chroma collection.
 - `python app.py` — run the Quart web app (binds 0.0.0.0, default port 5000). Serves the frontend from `frontend/` and expects ingestion to have been run already (it calls `get_collection`, which fails on missing collections).

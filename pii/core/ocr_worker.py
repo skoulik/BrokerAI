@@ -3,7 +3,7 @@
 Why a subprocess at all: on Windows the GPU paddle wheel and torch cannot
 share a process — both bundle cudnn from different CUDA families and the
 second loader gets WinError 127 (full story in ocr_paddle.py). The full
-pii pipeline runs GLiNER2 on torch in-process, so with Tesseract retired
+pii pipeline ran an NER model on torch in-process, so with Tesseract retired
 paddle-GPU has to live somewhere torch never loads: its own interpreter.
 
 Design:

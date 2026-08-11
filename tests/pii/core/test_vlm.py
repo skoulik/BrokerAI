@@ -470,7 +470,7 @@ def test_identifier_generic_is_stripped_and_has_a_placeholder():
 # The VLM emits ONE coarse identifier class on purpose; layer 1 is what turns
 # a digit run into TFN/Medicare/ABN/BSB/account/card, restores the checksum
 # shadows, and backstops what the model missed. All model-free: the stubbed
-# GLiNER2 emits nothing, so what these assert is layer 1 alone.
+# Layer 0 is stubbed to emit nothing, so what these assert is layer 1 alone.
 
 VALID_TFN = "291 417 774"      # passes TFN mod-11 (mirrors test_invalid.py)
 INVALID_TFN = "291 417 775"    # single-digit typo

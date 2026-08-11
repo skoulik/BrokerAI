@@ -1,36 +1,39 @@
-"""Layered PII detection + pseudonymization pipeline.
+"""Layer 1 — pattern/checksum detection — and the pseudonymization pipeline.
 
-Layer 0: a local vision LLM reads the page image and names the values
-         (pii.core.vlm) — the detector for --image/--pdf. It emits COARSE
-         classes on purpose, because it is measurably unreliable at typing
-         identifiers; `merge_detections` folds a layer-1 pass over the same
-         OCR text on top to refine, validate and extend them.
-Layer 1: Presidio pattern/checksum recognizers — built-in AU_TFN, AU_ABN,
-         AU_ACN, AU_MEDICARE, credit cards, emails — plus the custom
-         recognizers in pii.core.recognizers (BSB, account, PayID,
-         joint-account name forms) and an AU-region phone recognizer.
-         URL/IP detection is deliberately dropped (not relevant to
-         financial documents): the predefined UrlRecognizer/IpRecognizer
-         are removed from the registry.
-Layer 2: zero-shot NER (names, addresses, DOB, person-vs-org) — GLiNER2.
-         Bare place names are not detected (pass verbatim). spaCy is
-         Presidio's NLP engine only (tokens/lemmas → context enhancer),
-         not a detector.
-Layer 3 (future): local-LLM audit pass via llama-server.
+`PiiPipeline` is layer 1: Presidio pattern/checksum recognizers (built-in
+AU_TFN, AU_ABN, AU_ACN, AU_MEDICARE, credit cards, emails), the custom
+recognizers in pii.core.recognizers (BSB, account, PayID, joint-account
+name forms, ATF trustee clauses), an AU-region phone recognizer, and the
+invalid-candidate shadows. URL/IP detection is deliberately dropped (not
+relevant to financial documents): the predefined UrlRecognizer and
+IpRecognizer are removed from the registry.
+
+The SEMANTIC detector is layer 0 and lives outside this module — a local
+LLM reading the page image (pii.core.vlm) or the document text
+(pii.core.text_llm). It emits COARSE classes on purpose, because it is
+measurably unreliable at typing identifiers, and `merge_detections` folds
+a layer-1 pass over the same string on top to refine, validate and extend
+them. The front-ends (pii.core.text_mode, pii.core.image_mode) own that
+composition; a front-end never strips a document without a layer-0
+detector.
+
+There is no layer 2. GLiNER2 was retired 2026-08-09 after layer 0 beat it
+on every semantic class and seed (ARCHITECTURE "Layer 0"). spaCy remains
+Presidio's NLP engine only (tokens/lemmas → context enhancer), never a
+detector.
 
 Detected spans are resolved for overlaps and replaced with consistent
 placeholders from a PseudonymMap.
 
 Checksum-invalid identifier candidates (a value shaped like a TFN whose
 mod-11 arithmetic fails — a typo, bad OCR, or forgery) are collected by
-the shadow recognizers in pii.core.invalid_recognizers — plus GLiNER2
-identifier guesses demoted by post-validation (shape-correct, checksum-
-failed; pii.core.gliner2_recognizer) — controlled by the
+the shadow recognizers in pii.core.invalid_recognizers, controlled by the
 `invalid_identifiers` tier, and returned by detect()/strip() as
 InvalidFinding records. They are only *masked* when mask_invalid=True
-adds the invalid classes to strip_entities. The findings are near-PII
-(a typo'd TFN is a real TFN minus a digit) — treat any log of them as a
-local-only artifact, like the pseudonym map.
+adds the invalid classes to strip_entities — note layer 0 strips such a
+value anyway under IDENTIFIER_GENERIC, which is a known open item (TODO).
+The findings are near-PII (a typo'd TFN is a real TFN minus a digit) —
+treat any log of them as a local-only artifact, like the pseudonym map.
 """
 
 from dataclasses import dataclass
@@ -136,7 +139,7 @@ class PiiPipeline:
         registry = RecognizerRegistry(supported_languages=["en"])
         registry.load_predefined_recognizers(nlp_engine=nlp_engine)
         # spaCy stays as Presidio's NLP engine (tokens/lemmas feed the context
-        # enhancer) but is not a detector: GLiNER2 owns PERSON/ORG/dates and
+        # enhancer) but is not a detector: layer 0 owns PERSON/ORG/dates and
         # spaCy's own emissions only added glue spans (PERSON crossing OCR line
         # breaks) and date-as-PERSON false positives. See ARCHITECTURE.md.
         registry.remove_recognizer("SpacyRecognizer")
@@ -172,31 +175,19 @@ class PiiPipeline:
         # AU_DRIVERS_LICENCE (issue #8c / review other-finding #1).
         registry.add_recognizer(AuAfslRecognizer())
         registry.add_recognizer(AuCreditLicenceRecognizer())
-        # Joint-account name forms ('E & J Moore', 'JULIE AND BRIAN
-        # SUMMERS') — mechanical enough for layer 1, and GLiNER2's known
-        # segmentation gap under transaction junk (2026-07-15, DONE.md).
+        # Joint-account initials forms ('E & J Moore') — mechanical enough
+        # for layer 1, and a deterministic floor under a stochastic detector
+        # (2026-07-15, DONE.md).
         registry.add_recognizer(JointNameRecognizer())
         # '<company> ATF <trust>' trustee clauses — mechanical legal form
-        # owned at layer 1 (issue #9): doc-truncated trust names defeat NER
-        # confidence and marker matching, the connector never does.
+        # owned at layer 1 (issue #9): doc-truncated trust names defeat both
+        # model confidence and marker matching, the connector never does.
         registry.add_recognizer(AtfTailRecognizer())
         for recognizer in make_invalid_recognizers(invalid_identifiers):
             registry.add_recognizer(recognizer)
-        # Layer 2: GLiNER2 zero-shot NER. The import is deferred so tests can
-        # shim pii.core.gliner2_recognizer in sys.modules and compose the
-        # registry without loading the model (fast, model-free default suite).
-        from pii.core.gliner2_recognizer import Gliner2Recognizer
-
-        # NER identifier guesses are post-validated in the recognizer
-        # (checksums/format, issue #10); shape-correct checksum failures
-        # demote to the *_INVALID classes and join the findings below —
-        # except under the 'ignore' tier, which keeps the historical
-        # silent drop for NER guesses too.
-        registry.add_recognizer(
-            Gliner2Recognizer(
-                demote_invalid=(invalid_identifiers != "ignore")
-            )
-        )
+        # There is no layer 2 any more: GLiNER2 was retired 2026-08-09 after
+        # layer 0 beat it on every semantic class (ARCHITECTURE "Layer 0").
+        # This registry IS layer 1 — patterns, checksums and the shadows.
         self.analyzer = AnalyzerEngine(
             nlp_engine=nlp_engine, registry=registry, supported_languages=["en"]
         )
@@ -312,18 +303,29 @@ class PiiPipeline:
         Returns (stripped_text, applied_detections, invalid_findings).
         """
         spans, invalid = self.detect(text)
-        # Allocate placeholders in document order (readable numbering), then
-        # splice right-to-left so earlier offsets stay valid.
-        placeholders = [
-            pmap.placeholder_for(r.entity_type, text[r.start : r.end])
-            for r in spans
-        ]
-        out = text
-        for r, placeholder in sorted(
-            zip(spans, placeholders), key=lambda p: p[0].start, reverse=True
-        ):
-            out = out[: r.start] + placeholder + out[r.end :]
-        return out, spans, invalid
+        return apply_plan(text, spans, pmap), spans, invalid
+
+
+def apply_plan(text: str, spans, pmap: PseudonymMap) -> str:
+    """Replace each planned span with its placeholder.
+
+    Split out of `PiiPipeline.strip` so the layer-0 text path
+    (`pii.core.text_mode`) applies a plan exactly the way the layered path
+    does — the plan's provenance must not change how it is spliced.
+
+    Placeholders are allocated in document order (readable numbering), then
+    spliced right-to-left so earlier offsets stay valid.
+    """
+    placeholders = [
+        pmap.placeholder_for(r.entity_type, text[r.start : r.end])
+        for r in spans
+    ]
+    out = text
+    for r, placeholder in sorted(
+        zip(spans, placeholders), key=lambda p: p[0].start, reverse=True
+    ):
+        out = out[: r.start] + placeholder + out[r.end :]
+    return out
 
 
 def _resolve_overlaps(results):
@@ -408,8 +410,8 @@ def _collect_invalid(results, text: str) -> list[InvalidFinding]:
     Two filters:
     - a candidate COVERED by a validated detection (VALIDATED_RECOGNIZERS —
       checksummed identifiers, Luhn cards, libphonenumber phones; matched
-      by recognizer name so an NER guess of the same entity type never
-      suppresses) is a valid identifier of another class, not a mangled
+      by recognizer name, the discipline that kept an unvalidated NER guess
+      of the same entity type from suppressing) is a valid identifier of another class, not a mangled
       one: every valid TFN fails the ACN checksum, every bare mobile
       number matches the relaxed Medicare shape;
     - a candidate strictly contained in a longer invalid candidate is

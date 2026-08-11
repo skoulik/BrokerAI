@@ -10,16 +10,14 @@ The drawing toolkit itself (`Segment` / `paint_segments` / fill / frame)
 lives in `pii.core.paint`, shared with the OCR-debug overlay; the names used
 by callers and the eval harness are re-exported here for backward compat.
 
-Two detectors reach the painting path, and they differ only in what produces
-the plan — everything from `_paint_plan` down is shared:
+Detection is layer 0: a `VlmDetector` reads the page image and names the
+values (`strip_from_vlm`); `pii.core.locator` places each one in the OCR text
+and layer 1 refines, validates and extends them. The detector is REQUIRED —
+running layer 1 alone over OCR text is the patterns-only regime retired
+2026-07-15 as unsafe, and the layered path was deleted with GLiNER2 on
+2026-08-09.
 
-- `detector=None` (`strip_from_page`) — the layered path: OCR the page,
-  linearize it, run the whole text pipeline on that string.
-- a `VlmDetector` (`strip_from_vlm`) — layer 0 reads the page image and names
-  the values; `pii.core.locator` places each one in the OCR text and layer 1
-  refines them.
-
-Painting geometry comes from OCR word boxes in both cases (the VLM's own
+Painting geometry comes from OCR word boxes (the VLM's own
 boxes are measured unsafe — see `pii.core.vlm`), so detection never decides
 pixels and painting never sees raw analyzer results. The one exception is
 the locator's tier-3 residue: values with no OCR text at all (a logo, a
@@ -41,7 +39,6 @@ from pii.core.linearization import RecognizerInput, linearize
 from pii.core.locator import locate_findings
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box, get_ocr_page
-from pii.core.ocr_page import OcrPage
 from pii.core.paint import Segment, paint_segments
 from pii.core.pipeline import InvalidFinding, PiiPipeline
 from pii.core.vlm import (
@@ -86,24 +83,22 @@ def strip_image(
     pmap: PseudonymMap,
     lang: str = "eng",
     ocr_backend: str = "paddle",
-    detector=None,
+    *,
+    detector,
     geometry: str = DEFAULT_GEOMETRY,
     pad: int = DEFAULT_PAD,
 ) -> ImageStripResult:
     """Detect the PII on the page and replace it with painted placeholders.
 
-    `detector` (a `pii.core.vlm.VlmDetector`) makes layer 0 the detector: the
-    model reads the page image and names the values, and layer 1 then refines
-    and extends them. `geometry` chooses how those values are placed on the
-    page: "hybrid" (production) adds a second model pass for boxes and uses
-    them to constrain the search, "ocr" searches the whole page string
-    unconstrained, "vlm" paints the model's own boxes and skips OCR
-    altogether. See `pii.core.vlm` and `pii.core.locator` for the rationale.
-
-    With `detector=None` the layered path runs instead: OCR the page,
-    linearize it, and feed the whole page string to the text pipeline."""
+    `detector` (a `pii.core.vlm.VlmDetector`) is layer 0: the model reads the
+    page image and names the values, and layer 1 then refines and extends
+    them. `geometry` chooses how those values are placed on the page:
+    "hybrid" (production) adds a second model pass for boxes and uses them to
+    constrain the search, "ocr" searches the whole page string unconstrained,
+    "vlm" paints the model's own boxes and skips OCR altogether. See
+    `pii.core.vlm` and `pii.core.locator` for the rationale."""
     ocr_engine = None
-    if _needs_ocr(detector, geometry):
+    if geometry != "vlm":
         engine = get_ocr_page(ocr_backend)
         ocr_engine = lambda im: engine(im, lang=lang)  # noqa: E731
     return strip_rendered_page(
@@ -112,18 +107,13 @@ def strip_image(
     )
 
 
-def _needs_ocr(detector, geometry: str) -> bool:
-    """Whether OCR has to run at all. Only one configuration skips it —
-    a VLM detector painting its own boxes."""
-    return detector is None or geometry != "vlm"
-
-
 def strip_rendered_page(
     image: Image.Image,
     pipeline: PiiPipeline,
     pmap: PseudonymMap,
     ocr_engine=None,
-    detector=None,
+    *,
+    detector,
     geometry: str = DEFAULT_GEOMETRY,
     pad: int = DEFAULT_PAD,
 ) -> ImageStripResult:
@@ -131,35 +121,19 @@ def strip_rendered_page(
     (`image -> OcrPage`, or None only when `geometry="vlm"` and OCR never
     runs).
 
-    The detector/geometry dispatch lives here, in one place, so `strip_pdf`
-    can resolve the engine once per document instead of once per page — and
-    so both entry points share exactly one decision about what runs."""
-    if detector is not None:
-        if geometry not in GEOMETRIES:
-            raise ValueError(f"unknown geometry: {geometry!r}")
-        findings = detector.detect(image)
-        if geometry == "hybrid":
-            # Pass 2: the boxes are a search constraint for the locator, not
-            # paint geometry. Kept a separate call from detect() so pass 1
-            # stays byte-identical to the measured recall baseline.
-            findings = detector.localize(image, findings)
-        ocr = None if geometry == "vlm" else linearize(ocr_engine(image))
-        return strip_from_vlm(image, findings, pipeline, pmap, ocr=ocr, pad=pad)
-    return strip_from_page(image, ocr_engine(image), pipeline, pmap)
-
-
-def strip_from_page(
-    image: Image.Image,
-    page: OcrPage,
-    pipeline: PiiPipeline,
-    pmap: PseudonymMap,
-) -> ImageStripResult:
-    """Strip against an OcrPage through the layered detector — a separate
-    seam so the PDF page loop and the eval harness reuse the painting path
-    without re-running OCR."""
-    ocr = linearize(page)
-    spans, invalid = pipeline.detect(ocr.text)
-    return _paint_plan(image, ocr, spans, invalid, pmap)
+    The geometry dispatch lives here, in one place, so `strip_pdf` can resolve
+    the engine once per document instead of once per page — and so both entry
+    points share exactly one decision about what runs."""
+    if geometry not in GEOMETRIES:
+        raise ValueError(f"unknown geometry: {geometry!r}")
+    findings = detector.detect(image)
+    if geometry == "hybrid":
+        # Pass 2: the boxes are a search constraint for the locator, not
+        # paint geometry. Kept a separate call from detect() so pass 1
+        # stays byte-identical to the measured recall baseline.
+        findings = detector.localize(image, findings)
+    ocr = None if geometry == "vlm" else linearize(ocr_engine(image))
+    return strip_from_vlm(image, findings, pipeline, pmap, ocr=ocr, pad=pad)
 
 
 def strip_from_vlm(

@@ -26,6 +26,7 @@ from pathlib import Path
 
 from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
 from pii.core.csv_mode import strip_csv
+from pii.core.text_mode import strip_text
 
 
 def _norm(s: str) -> str:
@@ -123,10 +124,19 @@ def _noise(findings, inv_entities, kind):
     return out
 
 
+def build_text_detector():
+    """The layer-0 detector for text/CSV documents. Imported lazily so the
+    model-server dependency lands only when a scoring run starts."""
+    from pii.core.text_llm import TextDetector
+
+    return TextDetector()
+
+
 def score(corpus: str, threshold: float = 0.4,
           invalid_identifiers: str = "likely") -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "truth.json").read_text("utf-8"))
+    layer0 = build_text_detector()
     pipeline = PiiPipeline(threshold=threshold,
                            invalid_identifiers=invalid_identifiers)
 
@@ -141,13 +151,14 @@ def score(corpus: str, threshold: float = 0.4,
         reg_ents = [e for e in doc["entities"]
                     if e["type"] not in INVALID_ENTITY_TYPES]
         if doc["kind"] == "csv":
-            stripped, _, findings = strip_csv(
-                text, pipeline, pmap, columns=["Description"]
-            )
+            result = strip_csv(text, pipeline, pmap,
+                               columns=["Description"], detector=layer0)
+            stripped, findings = result.text, result.invalid
             _score_csv(reg_ents, stripped)
             _score_invalid_csv(inv_ents, findings, stripped)
         else:
-            stripped, spans, findings = pipeline.strip(text, pmap)
+            result = strip_text(text, pipeline, pmap, detector=layer0)
+            stripped, spans, findings = result.text, result.spans, result.invalid
             _score_text(reg_ents, spans, stripped)
             _score_invalid_text(inv_ents, findings, spans)
         for e in doc["entities"]:

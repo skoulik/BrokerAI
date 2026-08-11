@@ -1614,3 +1614,142 @@ the move; new completed tasks append to the matching section with their records.
       Fast suite **308 green** (was 266: +12 `test_fuzzy.py`, +23 `test_locator.py`, +7 net in
       `test_vlm.py` — 11 added against the 4 retired `locate()` tests, which moved to
       `test_locator.py` as the no-box cases they now describe); heavyweight suite 8 green.)*
+
+- [x] **Layer 0 for text and CSV — the Qwen3.6 text modality** *(2026-08-09, Sergei's call;
+      step 1 of the three-step GLiNER2/spaCy/Presidio retirement scoped the same day — the
+      order and rationale are in [TODO.md](TODO.md)'s direction note, the design in
+      [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0".*
+
+      **Why it had to come first.** Retiring GLiNER2 leaves text and CSV with no PERSON,
+      ORGANIZATION, ADDRESS or DATE_OF_BIRTH detection at all — that is the retired `--no-ner`
+      regime, which was removed 2026-07-15 as unsafe. Image/PDF was already covered by layer 0;
+      text was not, because it has no page image. So the replacement is built and measurable
+      *before* the incumbent is deleted, and no input mode is ever without a semantic detector.
+
+      **What shipped.** `text_llm.py` — the same model and the same five coarse classes reading
+      the document string; `text_mode.py` — the text counterpart of `image_mode` (detect →
+      locate → `apply_plan`); `locator.locate_in_text` — placement without geometry;
+      `pipeline.apply_plan` split out of `PiiPipeline.strip` so both detectors splice a plan
+      identically. `csv_mode` delegates detection to `detect_text`, so a detector serves CSV
+      for free; its per-column batching is untouched (the guarantees it buys — no placeholder
+      straddling a cell, date/amount columns byte-identical — are structural, independent of
+      which detector runs). `strip_csv` and `strip_text` now return a `TextStripResult`
+      carrying `unlocated`, because a detection that cannot be placed must be *counted* and not
+      only warned about (Python's default filter deduplicates a repeated warning).
+
+      **Three design points that differ from the vision path**, all consequences of holding the
+      source text rather than pixels. (1) *No geometry leg at all* — the model quotes from the
+      string it was handed, so location is a search, not a reconciliation. (2) *The prompt asks
+      for DISTINCT values only*, and every occurrence is then found mechanically — exact, free,
+      complete, and it does not degrade with document length the way asking a model to
+      enumerate does. (3) *Nested findings are not suppressed*: the image locator must stop
+      "John" from hunting a different John because each finding needs its own box, whereas in
+      text a second John SHOULD be marked, and the overlap is unioned by `_merge_overlaps`.
+
+      **Windowing, and why the overlap is cheap.** Findings are located against the whole text,
+      not the window that produced them, so a value cut in half by a boundary only has to
+      survive intact in *one* window to then be marked everywhere. That makes the overlap a
+      recall backstop rather than a correctness requirement; windows cut on line boundaries to
+      make intact survival the common case. 4000/400 chars, calibrated by analogy to a page
+      (the only unit that has been measured) — a sweep is unspent work.
+
+      **Squash fallback carries a length floor (4 chars) that exact matching deliberately does
+      not.** Squash collapses separators, so it matches across word boundaries; on a page that
+      is held in check by the model's box, and here there is no box. Exact matching keeps no
+      floor at all — real 2-char surnames (Wu, Ng) and 3-char organizations (NAB, ANZ) exist,
+      per the 2026-07-14 no-floor decision.
+
+      **Found by the new tests, not by review:** `PROMPT.format(document=...)` raised
+      `KeyError: '"text"'` — the prompt contains a literal JSON example, so treating it as a
+      format template makes every brace a field. Fixed by dropping the template entirely
+      (`build_prompt` concatenates) rather than by doubling braces, which would have left the
+      trap armed for the next edit of the output shape.
+
+      **Deliberately still opt-in.** `--detector vlm` now works on text and CSV, but the text
+      default stays `layers` until the A/B against GLiNER2 is scored (TODO item; it gates the
+      deletion). Both regimes are runnable from `pii_eval score --detector`, so the comparison
+      is same corpus, same layer 1, semantic detector as the only variable.
+
+      **Found while wiring the A/B, and it would have invalidated it.** ARCHITECTURE said
+      layer 0 replaces layer 2, but `merge_detections` runs the whole registry and GLiNER2 is
+      unconditionally in it — so `--detector vlm` has been unioning layer 2 in all along, on
+      image/PDF too, since the 2026-08-09 flip. Verified directly:
+      `PiiPipeline().merge_detections([], 'Olga Kulik paid rent to Sergei Kulik')` returns two
+      PERSON spans from no layer-0 findings at all. Left as-is in production (recall-safe, and
+      it resolves itself when GLiNER2 goes — the open question is recorded in
+      [TODO.md](TODO.md)), but the eval harness now builds `PiiPipeline(ner=False)` whenever a
+      layer-0 detector is in play, so the comparison differs by the semantic detector alone.
+      `ner=False` is an instrument, not a regime: a user-facing patterns-only mode is the
+      retired `--no-ner`, removed 2026-07-15 as unsafe.
+
+      Fast suite **344 green** (was 308: +18 `test_text_llm.py`, +16 `test_text_mode.py`,
+      +2 `test_registry_policy.py`). The corpus probe half of the dual-coverage rule is the
+      A/B run itself.)*
+
+- [x] **Retire layer 2: GLiNER2 and the `--detector` flag deleted** *(2026-08-09, Sergei's call
+      on the A/B — [reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md).
+      Step 2 of the three-step GLiNER2/spaCy/Presidio retirement; current design in
+      [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 2 (GLiNER2) retired".*
+
+      **What decided it.** Seeds 42/123/7, layer 1 held constant, semantic detector as the only
+      variable (the layer-0 arm builds without the NER model — see the confound note in the
+      previous record). Layer 0 equal or better on every class and seed; `PERSON_REVERSED`
+      89/95/95% -> **100/100/100**; ORGANIZATION over-strips 32->29, 30->25, 40->28; s42's gate
+      flipped FAIL -> PASS. The only ADDRESS "regression" (100% -> 83% on every seed) was read
+      back from the output and is a scoring artifact: on fixed-column locality lines the model
+      returns `NEW KAYLAMOUTH` and `NSW 2926` as the two values they are, both strip, and the
+      column padding between the placeholders is what the span-coverage scorer counts as
+      uncovered.
+
+      **Accepted losses, recorded rather than fixed** (Sergei, on review): the colliding-surname
+      case that fails s7 in both arms — a surname that is also a banking word (`... PERSON_5 FEE`)
+      is not worth further precision engineering — and the two invalid-identifier regressions,
+      both now TODO items: the *context* tier lost its only source (GLiNER2's post-validation
+      demoted shape-correct checksum failures; the shadows do not collect those at `likely`), and
+      layer 0 strips a checksum-failed identifier under `IDENTIFIER_GENERIC` regardless of
+      `--mask-invalid-identifiers`.
+
+      **What was deleted.** `gliner2_recognizer.py` (495 lines) and its two test modules; the
+      `--detector` flag from both the CLI and `pii_eval`; the layers path in `image_mode`
+      (`strip_from_page`, `_needs_ocr`) and its `detector=None` branches everywhere;
+      `PiiPipeline(ner=...)`, which existed for one afternoon as the A/B instrument; the
+      conftest `sys.modules` GLiNER2 shim and its `stub_ner` switch; the "Experiments — GLiNER2
+      tuning" TODO section (55 lines, all of it hypotheses about a component that no longer
+      exists); `gliner2` from requirements.
+
+      **The detector is now REQUIRED at every strip entry point** (`strip_text`, `strip_csv`,
+      `strip_image`, `strip_pdf` — keyword-only, no default). That is the substantive design
+      choice in this step rather than a mechanical consequence: with layer 2 gone, a call that
+      omits a detector would silently become the patterns-only `--no-ner` regime retired
+      2026-07-15 as *unsafe*, so it must not be reachable by forgetting an argument.
+      `PiiPipeline.detect` stays public as a **layer** — it is what `merge_detections` consumes —
+      never as a way to strip a document. `tests/pii/core/test_registry_policy.py` was rewritten
+      around the new invariant: no registry entry may claim ADDRESS or DATE_OF_BIRTH, and PERSON
+      only from the mechanical `JointNameRecognizer`.
+
+      **Follow-through the retirement earned.** `PERSON_REVERSED` promoted into
+      `pii_eval.build.CRITICAL` — the 2026-07-15 record said "when the residual closes, promote
+      it", and it closed at 100% on three seeds. The tier-1 gate test now fails with an
+      explanatory message rather than a raw `ConnectionRefusedError` when no server is up.
+
+      **Consequences worth knowing.** Every input mode now needs a llama-server, the tier-1 gate
+      included — there is no offline path left, accepted knowingly. And `csv_mode`'s sentinel
+      keeps only one of its two jobs: it still blocks pattern matches across cells, but it is no
+      longer an attention-window boundary.
+
+      **The torch consequence was claimed too early and is WRONG — corrected same day.** This
+      record originally said the pipeline no longer imports torch and that `ocr_worker.py` might
+      therefore be retirable. Sergei asked for the retirement; the "verify, do not assume" check
+      the TODO item demanded is what caught it. GLiNER2 was the only *direct* torch consumer,
+      but spaCy's `thinc` ships a PyTorch shim and imports real torch eagerly, so
+      `import spacy` / `import thinc` / `import presidio_analyzer` each leave torch in
+      `sys.modules` with `cuda.is_available() == True`, and so does `PiiPipeline()`. The
+      paddle-GPU DLL conflict is untouched and the worker stays. Its retirement moves downstream
+      of the Presidio/spaCy step, which is what actually removes thinc.
+
+      Fast suite **329 green** (was 344 before the deletion: -33 GLiNER2 test modules, -2 the
+      `ner=False` instrument tests, +4 new registry-policy and CSV-clamping tests, +16 net from
+      earlier in the session). Test conversions worth noting: `test_image_mode.py`'s six
+      `strip_from_page` call sites now go through `strip_from_vlm` with an empty finding list,
+      which is exactly equivalent (layer 1 supplies the whole plan) and is what those assertions
+      were always about.)*

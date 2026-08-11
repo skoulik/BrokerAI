@@ -19,18 +19,33 @@ The segmenter is retired and layer 0 is the default detector (record in
   programme (orphan clustering, trial linearizations, table-cell structure, layout thresholds,
   region detection) and the layout half of issue #8a. The VLM reads spatial structure natively.
 - **Layer 1 stays**, in the narrowed role it now actually has: classifier, checksum validator,
-  and deterministic recall floor over layer 0's findings (`merge_detections`). Whether that
-  means presidio or our own code is still open — note it *inverts* the "Stop duplicating
-  Presidio's checksum arithmetic" item below, whose proposed fix is to delegate *to* presidio.
+  and deterministic recall floor over layer 0's findings (`merge_detections`).
 - **PaddleOCR stays** and supplies paint geometry: VLM boxes are stochastically unreliable to
   paint, so `--geometry vlm` is a comparison instrument only. They *are* used in production
   (`--geometry hybrid`, the default) as a search constraint, which tolerates the error they
   actually have — see [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0".
-- **GLiNER2 (and spaCy with it) are the next retirement candidate** — beaten on this corpus at
-  things they structurally cannot do — but the decision has NOT been taken. They still run as
-  part of the layer-1 union, which preserves cross-layer disagreement as a signal the tier-3
-  metrics plan wants. The "Experiments — GLiNER2 tuning" section below is on hold behind that
-  decision, not active work.
+
+**Decision taken 2026-08-09 (Sergei): GLiNER2, spaCy and Presidio are all being retired.** In
+this order, and the order is deliberate — the replacement is built before the incumbent is
+deleted, so no input mode is ever without a semantic detector:
+
+1. **Text/CSV layer 0** — DONE 2026-08-09 (`text_llm.py`, `text_mode.py`). Same model, text
+   modality.
+2. **Delete GLiNER2 and the `--detector` flag** — DONE 2026-08-09 on the A/B numbers
+   ([reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md)).
+   The layers path went with it in every mode: layer 0 is now the only detector and the mode
+   entry points *require* one, because a patterns-only strip is the `--no-ner` regime retired
+   2026-07-15 as unsafe. Consequence accepted knowingly: **every** input mode now needs a
+   llama-server, including the tier-1 gate.
+3. **Replace the Presidio chassis** with our own engine + recognizers, spaCy going with it.
+   This *closes* the "Stop duplicating Presidio's checksum arithmetic" item below by deletion:
+   one rule per identifier class owns one pattern set and one checksum call and emits the valid
+   class, the `*_INVALID` shadow or the `*_MALFORMED` shadow, so the two halves can no longer
+   desync. It also fixes a live leak found 2026-08-09 while scoping this: Presidio's AU
+   patterns only accept SPACE-grouped digits, while our shadows accept `[- ]`, so a
+   **hyphen-grouped VALID** TFN/ABN/ACN/Medicare (`123-456-782`) is detected by nothing at layer
+   1 — only the invalid one is caught. The eval corpus is blind to it (`pii_eval/au.py` emits
+   space-grouped forms only), so the fix needs a probe as well as a test.
 
 **Now the top open risk: throughput.** ~3 min/page is a research profile, so the serving /
 quantization item below is what stands between this and a usable product.
@@ -257,6 +272,45 @@ quantization item below is what stands between this and a usable product.
       backends** (2026-08-09) — it needed blocks to crop by. If revived, it would have to
       detect its own crops. Keep the Surya round-2 lessons in view either way: silent omission
       is the VLM failure mode that matters for redaction.
+- [ ] **Investigate serving PaddleOCR-VL through llama.cpp instead of the paddle wheel**
+      (Sergei, 2026-08-09; the serving axis of the backend item above — read that one first
+      for the model's two modes and why layout mode is unusable). Note the production OCR
+      today, PP-OCRv6_medium, is a classic det/rec CNN pipeline and can **not** run on
+      llama.cpp; this is specifically about swapping the OCR engine to the 0.9B VLM *and*
+      moving it onto the server we already run.
+
+      **The model side is settled — the harness is the open question.** Verified 2026-08-09:
+      llama.cpp has PaddleOCR-VL support (ggml-org/llama.cpp#18825, mtmd with
+      `mtmd_decode_use_mrope`), and PaddlePaddle publishes official GGUFs for 1.5 and 1.6.
+      There is an open eval bug against 1.6 (ggml-org/llama.cpp#25339) — check its state
+      before trusting that tier. What llama.cpp gives back is a token stream; everything the
+      `paddleocr` Python pipeline does around the model is ours to rebuild:
+      1. spotting-mode prompt + decoding the `<LOC_n>` quads interleaved with the text into
+         `{"rec_polys", "rec_texts"}` (the keys `_result_lines` already consumes — the
+         adapter itself stays small, the decoder is the new code);
+      2. coordinate dequantization from the per-page 1/1000 grid (~2.3 px vertically on a
+         300 dpi A4 — noted in the item above);
+      3. whether mtmd preserves the model's native tiling/resolution handling. A VLM OCR fed
+         at the wrong input resolution drops small print *silently*, which is the Surya
+         round-2 lesson and the failure mode that matters most here;
+      4. determinism under `-np 1`, the same gate requirement layer 0 carries;
+      5. **the make-or-break: are word- or at least line-level boxes obtainable this way?**
+         Block-level geometry is useless for painting — that is what killed layout mode.
+
+      What it buys, and why it is worth the investigation now: one serving stack for
+      everything (layer-0 detection and OCR geometry on the same llama-server), and it drops
+      `paddleocr` + the `paddlepaddle` wheel + `models/paddlex`. Combined with the
+      GLiNER2 retirement making the pipeline process torch-free, it would also remove the
+      last reason `ocr_worker.py` exists — the paddle-GPU wheel is the most fragile
+      dependency in the project (Windows DLL conflicts, per-machine wheel choice).
+
+      Two costs to weigh. **Memory/process budget:** llama-server serves one model per
+      process, so this is a second server alongside Qwen3.6 — it lands directly on the
+      constraint the serving/quantization item below is already fighting. **A generative
+      geometry source:** `ocr_page.py`'s "an OCR line is never dropped" invariant would then
+      rest on a model that can omit, and OCR is what supplies the pixels we paint. That is a
+      strictly weaker guarantee than a det/rec pipeline gives, and it needs measuring against
+      the fidelity sweep and the leak gate before it could ever be a default.
 - [ ] Watch for **a PP-OCRv6 server tier** (none in paddlex 3.7.2 — tiny/small/medium only);
       if released, benchmark it with the ocr-report sweep against v6_medium — v6_medium
       already dominates, a v6_server should only strengthen it. Add it to `MODEL_TIERS`.
@@ -277,6 +331,93 @@ quantization item below is what stands between this and a usable product.
       (pymupdf `get_text("dict")` spans matched to line boxes) — `None` from any OCR engine.
       engine. Must never feed the strip decision (we deliberately distrust the text layer).
 ## Detection pipeline
+
+- [ ] **Retire `ocr_worker.py` once the pipeline is genuinely torch-free — BLOCKED on the
+      Presidio/spaCy retirement** (2026-08-09; the check that was going to justify deleting it
+      instead saved it). The worker subprocess and the "routing is by wheel" rule in
+      `ocr_paddle.py` exist for ONE reason: on Windows the GPU paddle wheel and torch cannot
+      share a process (bundled-cudnn mutual exclusion, ARCHITECTURE "Paddle worker-process
+      isolation").
+      **Measured 2026-08-09, and it contradicts the assumption the GLiNER2 deletion was written
+      under:** GLiNER2 was the only *direct* torch consumer, not the only one. `import spacy`,
+      `import thinc` and `import presidio_analyzer` each pull in **real torch with
+      `cuda.is_available() == True`** — thinc ships a PyTorch shim and loads it eagerly — so
+      `PiiPipeline()` still puts torch in `sys.modules` and the DLL conflict is untouched. The
+      worker stays.
+      This makes the retirement **downstream of step 3**: dropping presidio and spaCy drops
+      thinc, and only then is the strip path actually torch-free. Re-run the check then
+      (`python -c "from pii.core import PiiPipeline; PiiPipeline(); import sys;
+      print('torch' in sys.modules)"`), and if it prints False, verify GPU paddle in-process in
+      a fresh interpreter before deleting anything — it must neither crash nor silently fall
+      back to CPU. Payoff when it lands: `ocr_worker.py` (253 lines), its framed stdio protocol,
+      the torch stub in the paddle adapter, and a per-call PNG encode + pipe + pickle. The eval
+      harness and `pii debug ocr` share the seam, so the change is one function
+      (`get_ocr_page`). Keep the worker in git history regardless — anything that reintroduces
+      torch brings the conflict back.
+
+
+- [x] ~~**Measure text layer 0 against GLiNER2 on the tier-1 corpus**~~ — **DONE 2026-08-09**,
+      seeds 42/123/7, record in
+      [reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md).
+      Layer 0 equals or beats GLiNER2 on every semantic class and seed (PERSON_REVERSED 100%
+      across all three, closing the residual below), over-strips *less*, and flips s42's gate to
+      PASS. Two things it does not fix: CONTEXTUAL_ID (0% either way) and the colliding-surname
+      case that fails s7 in both arms. One regression needs a decision before the deletion — the
+      invalid-identifier feature loses its context-tier coverage (GLiNER2's demotion path) and
+      its report/mask separation (layer 0 strips invalid identifiers as IDENTIFIER_GENERIC).
+      Original scope, kept for the record:
+      `python -m pii_eval score --detector vlm` against `--detector layers`, same corpus, same
+      layer 1, the semantic detector as the only variable. What the numbers have to answer:
+      (a) per-class recall on PERSON/ADDRESS/ORGANIZATION/DATE_OF_BIRTH — the four classes
+      GLiNER2 owns and the only ones that can regress; (b) whether the known GLiNER2 residuals
+      close, specifically `PERSON_REVERSED` ('REID THOMAS', 70/72 across seeds 42+123) and the
+      `CONTEXTUAL_ID` probe that sits at 0% at every seed; (c) the over-strip axis, since the
+      prompt carries no institutional carve-outs and the keep-list does not exist yet;
+      (d) throughput per document, which is a new cost on a path that had none.
+      **Score several seeds, not one.** The tier-1 gate already fails at seeds 2, 3 and 7 on
+      unmodified code — always a residual GLiNER2 PERSON miss (the de-flake item below) — so a
+      single-seed comparison would measure the draw as much as the detector. If layer 0 closes
+      those residuals, that item closes with it and `PERSON_REVERSED` can finally be promoted
+      into `build.CRITICAL`.
+      Note the corpus is text-shaped, not statement-shaped: it will not exercise the windowing,
+      so a long-document check (window boundaries, a value repeated across windows) belongs in
+      the same session.
+      The text scorer suppresses layer 2 under `--detector vlm` (`PiiPipeline(ner=False)`) so
+      the arms differ by the semantic detector alone — see the discrepancy note below, which
+      this A/B would otherwise have measured straight past.
+
+- [ ] **Decide whether production `--detector vlm` should stop running GLiNER2** (found
+      2026-08-09 while wiring the A/B above). ARCHITECTURE says layer 0 replaces layer 2, but
+      `merge_detections` runs the whole registry and GLiNER2 is unconditionally in it — so the
+      shipping image/PDF default has been running layer 0 **and** layer 1 **and** layer 2 since
+      2026-08-09. Recall-safe (more detectors, not fewer) and it resolves itself when GLiNER2 is
+      deleted, so this is a question of whether to align earlier: aligning now would make the
+      image/PDF path preview its post-deletion recall, which is worth knowing *before* the
+      deletion rather than after. Note the consequence either way — the frozen PDF baseline
+      (445 findings / 350 distinct values, 31 pages) was measured in values mode with no layer 1
+      at all, so it does not pin this and cannot be used to detect the change.
+
+- [ ] **Invalid identifiers lose their context-tier coverage with GLiNER2** (measured
+      2026-08-09, [reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md);
+      Sergei: log and proceed). `AU_TFN_INVALID` logged drops 3 → 2 per seed on every seed, and
+      the lost candidate is the *context*-tier one every time. The shadow recognizers do not
+      collect that at the default `likely` tier — it was GLiNER2's identifier post-validation
+      demoting a shape-correct checksum failure, and that path died with the recognizer. Nothing
+      replaces it today. Cheapest candidate fix: raise the shadow default tier to `context`,
+      which is a deliberate noise/coverage trade (bare digit runs promoted by nearby label
+      words) and therefore a decision, not a patch. Measure the noise column before adopting it.
+
+- [ ] **Layer 0 strips invalid identifiers regardless of `--mask-invalid-identifiers`** (same
+      measurement; Sergei: log and proceed). Layer 0 reports a checksum-failed identifier as
+      `PII_IDENTIFIER`, so it strips under `IDENTIFIER_GENERIC` whatever the mask setting says —
+      `stripped-anyway` went 0 → 4 for TFN on s42. The direction is safe (a typo'd TFN is a real
+      TFN minus a digit) but it breaks the feature's documented contract, which separates
+      *reporting* a candidate from *masking* it, and an operator cannot review a value that has
+      already been replaced. Options when picked up: exempt spans whose only detection is a
+      layer-0 generic identifier overlapping an `*_INVALID` shadow from the strip plan when
+      `mask_invalid` is off (keeps the contract, costs a knowingly-unredacted near-PII value in
+      the output — probably wrong), or restate the contract as "layer 0 strips what it sees; the
+      mask flag governs layer 1 only" and fix the docs instead. Decide which before coding.
 
 - [ ] **User-editable keep-list ("do not strip") mechanism** (Sergei, 2026-07-18): a
       user-editable configuration file of do-not-strip entries, grouped per entity
@@ -418,61 +559,6 @@ quantization item below is what stands between this and a usable product.
       or layer-3 findings show bare towns must be caught. If revived, the corpus `LOCATION`
       probe (now a KEEP probe) flips back, and a no-context short-suburb surface form should
       be re-added.
-
-## Experiments — GLiNER2 tuning
-
-- [ ] Per-class max_width for GLiNER2 (requested by Sergei 2026-07-14 —
-      discomfort with the blanket default max_width=12). Only ADDRESS needs wide
-      spans (tier-1: every other class ≤ 4 words), and w16 already showed wide-span
-      FP creep, so enumerating 12-word candidate spans for *all* labels buys nothing
-      for the narrow classes and may cost precision. Try per-pass widths — the
-      recognizer already runs dedicated address passes, and max_width is an
-      inference-time attribute that can be set before each pass (both copies:
-      `model.max_width` and `model.span_rep.span_rep_layer.max_width`): address
-      passes at 12, everything else back at the trained 8. Rerun tier-1 per-class
-      P/R + latency. Natural companion to the labels-per-pass experiment below
-      (same grid infrastructure); if per-pass mutation proves racy or awkward,
-      evaluate two recognizer instances as the fallback.
-- [ ] Labels-per-pass (schema partitioning). Label competition
-      suppresses sibling scores (documented in pii/core/gliner2_recognizer.py — the same
-      span scores 1.0 alone vs 0.49 among siblings); addresses already get dedicated
-      passes. New direct evidence (2026-07-15, reversed-caps diagnosis above): on CSV
-      column blobs a person-only pass emits 'FULLER CHRISTOPHER'@0.80 where the
-      production schema emits 0.33 — isolation rescues real misses, not just points.
-      Question: does everything benefit from isolation? Grid to evaluate on
-      tier-1, per-class P/R + layer-2 latency:
-      (a) all-in-one (current baseline, minus the address passes),
-      (b) full isolation — one label per pass (~11 passes; each pass re-encodes the
-          3000-char window, so expect roughly linear cost growth),
-      (c) themed groups — e.g. semantic {person, org, address, DOB} split from
-          numeric IDs {TFN, Medicare, phone, bank account, licence, passport},
-      (d) current production config as reference.
-      Hypotheses: isolation lifts recall on semantic classes (competition is what we
-      pay descriptions to overcome) but hurts precision on confusable numeric IDs,
-      where competition doubles as disambiguation — a lone "9-digit number" label
-      will claim TFNs, ACNs and phone fragments alike. Numeric precision loss is
-      partly tolerable since layer-1 checksum/regex recognizers dominate those
-      classes and validation filters impostors. Expected sweet spot: a few themed
-      groups, not full isolation. Sequencing: needs at least a provisional
-      cross-pass overlap-resolution rule — best run together with (or right after)
-      the overlaps-merging task above.
-- [ ] Ablation: are the address workarounds still needed at max_width=12?
-      Postponed (decision 2026-07-14) until the tier-1 corpus has more and more
-      varied address examples — 12 ADDRESS spans from a handful of templates is
-      too thin a basis for removing belt-and-braces protections. *(2026-07-15:
-      variety widened — PO Box postal lines, `ADDRESS_BARE` bare street lines in
-      transaction descriptions; seed 42 now has 18 ADDRESS + 12 ADDRESS_BARE
-      spans. Better, but still template-thin; judge again when picked up.)* When picked up,
-      fold it into the labels-per-pass experiment above (same mechanics: rerun
-      the eval with the extra address passes disabled).
-- [ ] LoRA adapter for Australian addresses on GLiNER2 — close the multi-part address
-      fragmentation gap at the model level (GLiNER2 ships open training code and
-      load_adapter(); pii_eval's generator can produce the training pairs). Revisit after
-      the overlaps-merging task lands, which should already close most of the gap.
-      *(2026-07-14: priority further reduced — the max_width=12 lift closed the
-      one-line-address fragmentation on tier-1; LoRA now only matters if real-world
-      wide spans score poorly, or for the '53 MILES SUBWAY'-style bare street-line
-      recall misses.)*
 
 ## Evaluation
 

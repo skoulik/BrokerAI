@@ -1,4 +1,14 @@
-"""Box-guided value location: VLM findings -> spans in the OCR text.
+"""Value location: layer-0 findings -> spans in the text they were read from.
+
+This module owns *both* placement paths, because "a named value becomes a
+span" is one concept and splitting it across two homes is how the two drift
+apart. `locate_findings` is the image path — box-guided, three geometry tiers,
+described below. `locate_in_text` is the text path and is far simpler: the
+model was handed the very string it is quoting from, so there is nothing to
+reconcile, no geometry to resolve, and every occurrence of a value can be
+marked mechanically. It lives at the bottom of the file.
+
+The rest of this docstring is about the image path.
 
 The VLM names values; this decides WHERE each one is. Layer 0's box is used
 here as a **search constraint**, not as paint geometry, and that distinction
@@ -45,6 +55,7 @@ change cannot regress any value that located correctly before.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from pii.core import fuzzy
@@ -349,3 +360,108 @@ def _intersection_area(a: Box, b: Box) -> int:
 
 def _area(box: Box) -> int:
     return max(box.width, 0) * max(box.height, 0)
+
+
+# --------------------------------------------------------------------------
+# Text path: findings -> spans, no geometry involved.
+# --------------------------------------------------------------------------
+
+# Squash matching collapses separators, so it can match ACROSS word
+# boundaries — on a page that is held in check by the box, and here there is
+# no box. A short squashed needle would therefore match arbitrary runs of
+# neighbouring words, so the fallback tier requires a value with some
+# substance. There is deliberately NO floor on exact matching: real 2-char
+# surnames (Wu, Ng) and 3-char organizations (NAB, ANZ) exist, and the
+# no-floor-on-names decision is recorded in core/ARCHITECTURE.md.
+_MIN_SQUASH_CHARS = 4
+
+
+@dataclass(frozen=True)
+class TextPlacement:
+    """Where one finding landed in the text. `kind` records which tier
+    resolved it — "exact", "squash", or None for a value that is not in the
+    text at all. `spans` holds EVERY occurrence, not just the first."""
+
+    finding: VlmFinding
+    kind: str | None
+    spans: tuple[tuple[int, int], ...] = ()
+
+
+@dataclass
+class TextLocateResult:
+    placements: list[TextPlacement] = field(default_factory=list)
+
+    @property
+    def located(self) -> list[TextPlacement]:
+        return [p for p in self.placements if p.spans]
+
+    @property
+    def unlocated(self) -> list[TextPlacement]:
+        """Values the model reported that are not in the text. On the image
+        path this means OCR could not read them; here the model was given the
+        text itself, so it means the value was reformatted or invented. Either
+        way it is a detection we cannot act on, and it is surfaced rather than
+        dropped."""
+        return [p for p in self.placements if not p.spans]
+
+
+def locate_in_text(findings: list[VlmFinding], text: str) -> TextLocateResult:
+    """Place every finding at EVERY occurrence of its value in `text`.
+
+    Marking all occurrences ourselves — rather than trusting the model to
+    enumerate them — is the whole reason the text prompt asks for distinct
+    values only. Finding a known string in a known string is exact, free and
+    complete; asking a model to do it costs output budget and degrades with
+    document length.
+
+    Nested and overlapping findings need no special handling here (unlike the
+    image path, where each finding must claim its own geometry): "John" inside
+    an already-marked "John Smith" simply produces an overlapping span, and
+    `PiiPipeline._merge_overlaps` unions them into one replacement. A "John"
+    elsewhere in the document is a separate occurrence that SHOULD also be
+    marked — which is precisely what the image path's containment rule has to
+    suppress, and what text wants.
+    """
+    squashed: tuple[str, list[int]] | None = None
+    placements = []
+    for finding in findings:
+        spans = _text_occurrences(text, finding.text)
+        kind = "exact" if spans else None
+        if not spans:
+            if squashed is None:
+                squashed = squash_map(text)
+            spans = _squash_occurrences(squashed, finding.text)
+            kind = "squash" if spans else None
+        placements.append(
+            TextPlacement(finding=finding, kind=kind, spans=tuple(spans))
+        )
+    return TextLocateResult(placements=placements)
+
+
+def _text_occurrences(text: str, needle: str) -> list[tuple[int, int]]:
+    """Case-insensitive occurrences of `needle`. Matched through `re` rather
+    than by lower-casing both sides, so the offsets are always coordinates in
+    the ORIGINAL string — some Unicode case mappings change length, which
+    would silently shift every span after them."""
+    if not needle:
+        return []
+    return [
+        m.span() for m in re.finditer(re.escape(needle), text, re.IGNORECASE)
+    ]
+
+
+def _squash_occurrences(
+    squashed: tuple[str, list[int]], needle: str
+) -> list[tuple[int, int]]:
+    """Occurrences of `needle` ignoring spacing, punctuation and case — the
+    fallback for a value the model re-spaced or re-punctuated as it copied."""
+    hay_sq, index = squashed
+    need_sq, _ = squash_map(needle)
+    if len(need_sq) < _MIN_SQUASH_CHARS:
+        return []
+    out = []
+    at = hay_sq.find(need_sq)
+    while at != -1:
+        out.append((index[at], index[at + len(need_sq) - 1] + 1))
+        at = hay_sq.find(need_sq, at + 1)
+    return out

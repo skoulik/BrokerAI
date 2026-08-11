@@ -1,10 +1,9 @@
 """Checksum arithmetic for Australian identifiers and payment cards.
 
-Pure functions over digit strings, shared by the shadow recognizers
-(pii.core.invalid_recognizers, inverted use: emit on FAILURE) and the
-GLiNER2 identifier post-validation (pii.core.gliner2_recognizer, direct
-use: an NER identifier guess must pass its class arithmetic to strip
-under that class). Each function expects the digits already extracted
+Pure functions over digit strings, used by the shadow recognizers
+(pii.core.invalid_recognizers, inverted use: emit on FAILURE). They were
+also the arithmetic behind NER identifier post-validation until layer 2
+was retired 2026-08-09. Each function expects the digits already extracted
 (see digits()) and returns whether the value passes its rule; lengths
 outside the rule's domain return False.
 """

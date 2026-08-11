@@ -1,27 +1,22 @@
-"""Registry composition policy after the spaCy detector retirement (2026-07-15).
+"""Registry composition policy: what layer 1 does and does not contain.
 
-spaCy stays as Presidio's NLP engine (tokens/lemmas → context enhancer) but is
-no longer a detector: SpacyRecognizer is gone from the registry and GLiNER2
-owns PERSON/ORG/dates. en_core_web_sm's own PERSON/DATE_TIME emissions were
-glue spans crossing OCR line breaks ('Emily Watson\\nAddress') and date-as-name
-false positives.
+`PiiPipeline` is layer 1 — patterns, checksums and the invalid-candidate
+shadows. Two detectors were deliberately removed from it and must stay out:
 
-Standalone LOCATION detection was retired 2026-07-23: a bare city/town name is
-acceptable verbatim in financial documents, so GLiNER2's location pass and its
-char floor were removed. The ADDRESS passes still own full addresses and
-suburb-state-postcode lines.
+- **SpacyRecognizer** (2026-07-15). spaCy stays as Presidio's NLP engine
+  (tokens/lemmas → context enhancer) but is not a detector: en_core_web_sm's
+  own PERSON/DATE_TIME emissions were glue spans crossing OCR line breaks
+  ('Emily Watson\\nAddress') and date-as-name false positives.
+- **Gliner2Recognizer** (2026-08-09). Layer 2 is retired outright — layer 0
+  (a local LLM, `pii.core.vlm` / `pii.core.text_llm`) beat it on every
+  semantic class and seed. The semantic classes it used to own are now
+  measured through the eval corpus, not here: they need a model, so there is
+  nothing model-free left to assert about them.
 
-Registry-composition tests use a stubbed GLiNER2 (no model load); the marked
-tests check the nuances on the real stack.
+URL/IP are removed as irrelevant to financial documents, and standalone
+LOCATION detection was retired 2026-07-23 (a bare city/town name is acceptable
+verbatim; the layer-0 ADDRESS classes still own address-shaped content).
 """
-
-import pytest
-
-TRANSFER_LINE = "03/06/2026 Transfer from PayID emily.w87@gmail.com +$250.00"
-HOLDER_LINES = (
-    "Account holder: Emily Watson\n"
-    "Address: Unit 3, 42 Wattle Street, Newtown NSW 2042"
-)
 
 
 def _recognizer(pipeline, name):
@@ -33,6 +28,44 @@ def _recognizer(pipeline, name):
 
 def test_spacy_recognizer_retired(pipeline):
     assert _recognizer(pipeline, "SpacyRecognizer") is None
+
+
+def test_gliner2_recognizer_retired(pipeline):
+    """Layer 2 is gone. If this fails, something re-registered an NER model
+    into layer 1 — which would also silently re-confound any layer-0 A/B."""
+    assert _recognizer(pipeline, "Gliner2Recognizer") is None
+
+
+def test_no_model_driven_semantic_detection(pipeline):
+    """Stronger than the name check: nothing in layer 1 claims the classes
+    only a model can decide.
+
+    ADDRESS and DATE_OF_BIRTH are layer-0's outright. PERSON has exactly one
+    layer-1 source, and it is a *mechanical* one — `JointNameRecognizer`, the
+    initials form 'E & J Moore' that a lexical rule can own (ARCHITECTURE,
+    "Mechanical joint-name forms are layer-1 patterns"). Any other PERSON
+    source appearing here means an NER model crept back in."""
+    for recognizer in pipeline.analyzer.registry.recognizers:
+        supported = set(recognizer.supported_entities)
+        assert not {"ADDRESS", "DATE_OF_BIRTH"} & supported, recognizer.name
+        if "PERSON" in supported:
+            assert recognizer.name == "JointNameRecognizer"
+
+
+def test_layer1_recognizers_still_registered(pipeline):
+    """The deletion must not have taken layer 1 with it."""
+    for name in (
+        "AuTfnRecognizer",
+        "AuMedicareRecognizer",
+        "AuAbnRecognizer",
+        "AuAcnRecognizer",
+        "AuBsbRecognizer",
+        "AuAccountNumberRecognizer",
+        "PayIdRecognizer",
+        "JointNameRecognizer",
+        "AtfTailRecognizer",
+    ):
+        assert _recognizer(pipeline, name) is not None, name
 
 
 def test_url_ip_recognizers_removed(pipeline):
@@ -50,61 +83,13 @@ def test_url_ip_not_in_default_strip():
     assert "IP_ADDRESS" not in DEFAULT_STRIP_ENTITIES
 
 
-def test_gliner2_present_and_location_retired(pipeline):
-    # Standalone LOCATION detection retired 2026-07-23: the recognizer is
-    # present but no longer advertises LOCATION as a supported entity.
-    gliner2 = _recognizer(pipeline, "Gliner2Recognizer")
-    assert gliner2 is not None
-    assert "LOCATION" not in gliner2.supported_entities
-
-
 def test_location_not_in_default_strip():
     from pii.core import DEFAULT_STRIP_ENTITIES
 
     assert "LOCATION" not in DEFAULT_STRIP_ENTITIES
 
 
-@pytest.mark.model
-def test_real_ner_demo_statement_nuances(make_pipeline):
-    pipe = make_pipeline(stub_ner=False)
-    text = HOLDER_LINES + "\n" + TRANSFER_LINE
-    plan = pipe.plan(text)
-    persons = [
-        text[r.start : r.end] for r in plan if r.entity_type == "PERSON"
-    ]
-    assert persons == ["Emily Watson"]  # exact span, no cross-line glue
-    assert all("\n" not in text[r.start : r.end] for r in plan)
-    assert not any(  # the transaction date is not painted over
-        r.start <= text.index(TRANSFER_LINE) < r.end for r in plan
-    )
-
-
-@pytest.mark.model
-def test_real_ner_bare_town_not_detected_as_location(make_pipeline):
-    # Standalone LOCATION detection retired 2026-07-23: a bare town name in
-    # prose ('a teacher in Cairns') emits no LOCATION span and passes verbatim.
-    # (The ADDRESS passes are untouched and still own address-shaped lines;
-    # this asserts only that the dedicated location net is gone.)
-    pipe = make_pipeline(stub_ner=False)
-    text = "Her partner is a teacher in Cairns."
-    results = pipe.analyze(text)
-    assert not any(r.entity_type == "LOCATION" for r in results)
-    cairns = text.index("Cairns")
-    plan = pipe.plan(text)
-    assert not any(r.start <= cairns < r.end for r in plan)  # kept verbatim
-
-
-@pytest.mark.model
-def test_real_ner_suburb_in_address_context_still_stripped(make_pipeline):
-    # Standalone LOCATION detection is retired (2026-07-23), so a bare town in
-    # plain prose passes verbatim (test_real_ner_bare_town_not_detected...).
-    # The ADDRESS passes are deliberately untouched, though: a suburb in
-    # address-flavored context ('resided in Kew') is still emitted by the
-    # ADDRESS pass — verified 2026-07-15 at barely-above-threshold score (Kew
-    # 0.433 vs threshold 0.4). This documents the residual, intended overlap;
-    # if it starts failing the ADDRESS pass weakened, not a regression here.
-    pipe = make_pipeline(stub_ner=False)
-    text = "Applicant 1 previously resided in Kew."
-    plan = pipe.plan(text)
-    kew = text.index("Kew")
-    assert any(r.start <= kew < r.end for r in plan)
+def test_layer1_still_detects_its_own_classes(pipeline):
+    """The registry composition above is only meaningful if layer 1 works."""
+    spans, _ = pipeline.detect("TFN 123 456 782 and olga@example.com")
+    assert {s.entity_type for s in spans} == {"AU_TFN", "EMAIL_ADDRESS"}

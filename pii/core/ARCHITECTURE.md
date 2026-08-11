@@ -25,8 +25,8 @@ or the web app; the only planned shared infrastructure is the local llama-server
 |---|---|
 | `presidio-analyzer` ≥ 2.2.364 | The orchestrator and layer 1: recognizer registry, pattern/checksum recognizers (including the built-in AU ones), scoring, and the lemma-based context enhancer. **Not** `presidio-image-redactor` — see the orthogonality decision below. |
 | spaCy (`en_core_web_sm`) | Presidio's mandatory **NLP engine** — tokenization and lemmas that feed the context enhancer. Not a detector: `SpacyRecognizer` was retired 2026-07-15 (decision below); spaCy stays loaded solely for the NLP engine. |
-| GLiNER2 (`fastino/gliner2-privacy-filter-PII-multi`, ~1.2 GB) | Layer-2 zero-shot NER — names, addresses, DOB, person-vs-organization. Wrapped as an ordinary Presidio recognizer. |
-| PaddleOCR (`paddleocr` + a `paddlepaddle` wheel) | The OCR engine behind the image path (Tesseract was the first backend, retired 2026-07-17 — decision below). GPU wheel runs in a worker subprocess (torch coexistence). |
+| llama-server (llama.cpp), Qwen3.6-27B | **Layer 0**, the semantic detector — reached over HTTP, never imported. Not a dependency of `pii.core` (stdlib `urllib` transport) but a hard runtime requirement of every strip mode. |
+| PaddleOCR (`paddleocr` + a `paddlepaddle` wheel) | The OCR engine behind the image path — **geometry only, never detection** (Tesseract was the first backend, retired 2026-07-17 — decision below). GPU wheel runs in a worker subprocess, historically for torch coexistence. |
 | Pillow | Pixel painting for image output. |
 
 ### Our modules
@@ -38,14 +38,15 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | Module | Role |
 |---|---|
 | `__init__.py`, `constants.py` | Public API surface (`PiiPipeline`, `PseudonymMap`, `RECORD_SEPARATOR`, `DEFAULT_STRIP_ENTITIES`, `InvalidFinding`, `INVALID_ENTITY_TYPES`); `RECORD_SEPARATOR` lives in `constants.py` (zero-import, cycle-free) |
-| `pipeline.py` | `PiiPipeline` — builds the Presidio registry (all three layers), runs one analyzer pass, filters to the strip list, union-merges overlaps, collects checksum-invalid findings |
+| `pipeline.py` | `PiiPipeline` — **layer 1**: builds the Presidio registry, runs one analyzer pass, filters to the strip list, union-merges overlaps, collects checksum-invalid findings. `merge_detections` folds layer 0 in on top |
 | `recognizers.py` | Custom AU pattern recognizers: BSB, bank account (context-boosted), PayID |
 | `invalid_recognizers.py` | Shadow recognizers with inverted validation — collect checksum-fail candidates (`*_INVALID` / `*_MALFORMED`) |
-| `gliner2_recognizer.py` | GLiNER2 as a Presidio recognizer; **all layer-2 tuning lives in its docstring** — read it before touching NER behaviour |
 | `mapping.py` | `PseudonymMap` — placeholder allocation, JSON persistence, rehydration |
 | `csv_mode.py` | Per-cell transaction-CSV processing |
-| `vlm.py` | **Layer 0** — a local vision LLM reads the page image and names the PII; transport, both prompts (detect / localize), parsing |
-| `locator.py` | Layer-0 findings → spans in the OCR text: candidate scoring with the model's box as a search constraint, and the three geometry tiers |
+| `vlm.py` | **Layer 0, pixels** — a local vision LLM reads the page image and names the PII; transport, both prompts (detect / localize), parsing |
+| `text_llm.py` | **Layer 0, text** — the same model reading document text instead of a page; windowing, prompt, per-window deduplication |
+| `text_mode.py` | Text front-end: layer-0 detect → locate → splice placeholders. The text counterpart of `image_mode` |
+| `locator.py` | Layer-0 findings → spans. Both placement paths: box-guided in the OCR text (`locate_findings`, three geometry tiers) and plain occurrence search in document text (`locate_in_text`) |
 | `fuzzy.py` | Confusion-weighted Levenshtein — the fuzzy tier of location, admissible only inside a box |
 | `ocr.py` | OCR-engine seam (`get_ocr_page`) + the shared pixel toolkit (`Box`, `_rows` banding, word-box normalization) |
 | `ocr_page.py` | Perception: `OcrPage` → `OcrLine` → `OcrWord` + `OcrFrame`. Geometry only, no character offsets |
@@ -54,7 +55,7 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `ocr_worker.py` | Persistent PaddleOCR worker subprocess (GPU paddle can't share a process with torch) — framed PNG-in / `OcrPage`-out |
 | `ocr_debug.py` | `pii debug ocr` renderers over an `OcrPage`: JSON, text summary, annotated overlay |
 | `paint.py` | The drawing toolkit (`Segment`, `paint_segments`, fill/frame styles), shared by strip and the debug overlay |
-| `image_mode.py` | Image front/back-end: detect (layer 0 or the layers path), locate in the OCR text, paint placeholders onto the original pixels |
+| `image_mode.py` | Image front/back-end: layer-0 detect, locate in the OCR text, paint placeholders onto the original pixels |
 | `pdf_mode.py` | PDF render + reassembly legs: pages → pixels → image pipeline per page → fresh image-only PDF (`pdf_to_images`, `strip_pdf`) |
 
 ### The whole picture
@@ -71,6 +72,10 @@ flowchart TB
     IMG --> OCRPY["ocr.py seam → ocr_paddle.py (PaddleOCR)<br>GPU: ocr_worker.py subprocess<br>OcrPage → linearize:<br>page string + word-box source map"]
     CSV --> CSVM["csv_mode.py<br>per-cell, sentinel-joined batches"]
 
+    TXT --> TLLM["text_llm.py — Layer 0<br>windowed read, name the values"]
+    CSVM --> TLLM
+    TLLM -- "values" --> TLOC["locator.locate_in_text<br>every occurrence, exact / squash"]
+    TLOC -- "spans" --> MRG
     TXT --> AE
     CSVM --> AE
     OCRPY -- "page string" --> AE
@@ -81,11 +86,9 @@ flowchart TB
     subgraph PIPE["pipeline.py — PiiPipeline"]
         AE["Presidio AnalyzerEngine<br>(spaCy NLP engine: tokens/lemmas<br>→ context enhancer)"]
         L1["Layer 1 — patterns/checksums<br>built-in AU TFN/Medicare/ABN/ACN,<br>cards, email, phone, IBAN<br>+ recognizers.py: BSB, account, PayID<br>+ invalid_recognizers.py: shadows"]
-        L2["Layer 2 — gliner2_recognizer.py<br>GLiNER2: PERSON, ORG, ADDRESS, DOB"]
         L3["Layer 3 — local-LLM audit<br>via llama-server (planned)"]
         MRG["filter to strip list →<br>union-merge overlapping spans<br>(layer 1 refines IDENTIFIER_GENERIC)"]
         AE --- L1
-        AE --- L2
         AE -.- L3
         AE --> MRG
     end
@@ -102,10 +105,22 @@ flowchart TB
 
 ### Text — the core; every other mode wraps it
 
-One Presidio analyzer pass over the input produces raw detections from all registered
-recognizers. `PiiPipeline` then: (1) filters to strip-listed entity types, (2) union-merges
-overlapping spans, (3) allocates placeholders in document order from the `PseudonymMap` and
-splices them in right-to-left so offsets stay valid. The same pass also yields the
+Detection is layer 0 (`text_mode.detect_text`), and there is no alternative — see the layer-2
+retirement below. `text_llm.py` reads the document text in overlapping windows and names the
+values; `locator.locate_in_text` then marks **every** occurrence of each one, and layer 1
+refines, validates and extends the result exactly as on the image path (`merge_detections`).
+There is no geometry leg — the model quotes from the very string it was handed, so a located
+value needs no reconciliation. See "Layer 0" below.
+
+Layer 1 on its own stays reachable as `PiiPipeline.detect` — as a *layer*, which is what
+`merge_detections` consumes — but never as a way to strip a document: `strip_text` and
+`strip_csv` require a detector, because a patterns-only strip is the `--no-ner` regime retired
+2026-07-15 as unsafe and must not be reachable by omitting an argument.
+
+`PiiPipeline` then: (1) filters to strip-listed entity types, (2) union-merges overlapping
+spans, (3) allocates placeholders in document order from the `PseudonymMap` and splices them
+in right-to-left so offsets stay valid (`pipeline.apply_plan`, shared by both modalities — a
+plan's provenance must not change how it is applied). The same pass also yields the
 checksum-invalid findings (collected, deduplicated, optionally masked). `rehydrate` is the
 inverse: placeholders in a cloud answer are replaced with the first-seen surface forms from
 the mapping.
@@ -123,8 +138,8 @@ Front-end: OCR the page into an `OcrPage` and `linearize` it into the flat page 
 source map recording `(char_start, char_end, bbox)` per word *as it is written*. Detection is
 layer 0 by default — two model passes name the values and box them, and `locator.py` turns
 each into a span of that string using the box to constrain the search — or, with
-`--detector layers`, the full text pipeline run on the string verbatim. Either way layer 1
-supplies the precise classes, the checksum shadows and a recall floor. Back-end
+`locator.py` turns each into a span of that string, using the box to constrain the search.
+Layer 1 then supplies the precise classes, the checksum shadows and a recall floor. Back-end
 (`image_mode.py`): mapping merged spans to boxes is pure interval intersection over the
 recorded intervals; each span's placeholder is painted over its boxes on the **original**
 image (background-filled box with the placeholder text drawn in — pseudonymization, not
@@ -151,29 +166,37 @@ Three layers, unioned — no single detector catches everything (2026-07-05):
 
 | Layer | Engine | Owns | Status |
 |---|---|---|---|
-| 0 | Local VLM reading the page image (`vlm.py`) | everything, from pixels — an *alternative* to 1+2 on the image/PDF paths, not an addition to them | shipped 2026-08-08, opt-in (`--detector vlm`) |
+| 0 | Local LLM reading the page image (`vlm.py`) or the document text (`text_llm.py`) | everything, semantically — refined, validated and extended by layer 1 | pixels shipped 2026-08-08 (default 2026-08-09); text shipped 2026-08-09. **The only detector** since layer 2 was retired |
 | 1 | Presidio patterns + checksums | TFN, Medicare, ABN/ACN, BSB, account, PayID, cards, email, phone, IBAN; invalid-candidate shadows | shipped |
-| 2 | GLiNER2 zero-shot NER | PERSON, ORGANIZATION, ADDRESS, DATE_OF_BIRTH (+ unvalidated guesses of layer-1 types) | shipped |
+| 2 | ~~GLiNER2 zero-shot NER~~ | PERSON, ORGANIZATION, ADDRESS, DATE_OF_BIRTH | **retired 2026-08-09** — layer 0 replaced it (decision below) |
 | 3 | Local LLM audit (llama-server) | contextual identifiers ("the borrower's wife, a dentist in Wagga Wagga") | planned |
 
-Layer 0 *replaces* 1+2 rather than joining the union: it is selected instead of them, so the
-"three layers, unioned" statement above describes the default `--detector layers` path.
-Combining them — layer 1 refining and validating layer 0's findings — is designed and not yet
-built (TODO.md).
+**Layer 0 replaced layer 2 outright on 2026-08-09**; there is no detector choice left. Every
+strip mode runs layer 0 and merges layer 1 on top (`merge_detections` — refine, validate,
+extend), so a run is a union of 0 and 1. The mode entry points *require* a detector: layer 1
+alone is the `--no-ner` patterns-only regime retired 2026-07-15 as unsafe, and it must not be
+reachable by forgetting an argument. `PiiPipeline.detect` still exposes layer 1 on its own —
+as a *layer*, which is what `merge_detections` consumes, never as a way to strip a document.
 
-One pipeline (the `--no-ner` patterns-only regime was retired 2026-07-15, decision below):
-GLiNER2 always loads and owns PERSON/ORG/ADDRESS/DOB; `SpacyRecognizer` is removed from the
-registry, and spaCy serves only as Presidio's NLP engine. Slower than a pattern-only pass
-(model load + CUDA inference), full recall. Standalone `LOCATION` detection was retired
-2026-07-23 (decision below) — bare place names now pass verbatim.
+Consequence, accepted knowingly: **every input mode now requires a llama-server**, including
+the tier-1 acceptance gate. There is no offline path.
 
-### Do we still need Presidio and spaCy when NER does the heavy lifting? Yes.
+Standalone `LOCATION` detection was retired 2026-07-23 (decision below) — bare place names
+pass verbatim.
+
+### Do we still need Presidio and spaCy? For now.
+
+*(Being reconsidered: retiring Presidio and spaCy is the next step of the 2026-08-09
+programme — see [TODO.md](TODO.md)'s direction note. The reasons below are why they survived
+the GLiNER2 retirement, not a permanent answer.)*
 
 - **Checksum validation is Presidio's, not ours.** The AU TFN/Medicare/ABN/ACN validators and
   Luhn are Presidio's own code (verified working); our custom recognizers add BSB, account
   numbers and PayID, and our shadow recognizers invert those validators for the
-  invalid-identifier feature. GLiNER2 emits *unvalidated guesses* of these types — layer 1 is
-  what makes them trustworthy. The shadows *re-implement* rather than call that arithmetic
+  invalid-identifier feature. Layer 0 names identifiers but cannot verify them — it reads a
+  TFN, it cannot check mod-11 — so layer 1 is what makes an identifier trustworthy and what
+  types it at all (the layer-0 class vocabulary is deliberately coarse). The shadows
+  *re-implement* rather than call that arithmetic
   (`pii/core/checksums.py`), so each copy must track Presidio exactly: a valid/invalid pair
   partitions its digit space, and any disagreement drops values through both sides
   unreported. Presidio 2.2.364's ABN change proved the risk — see [DONE.md](DONE.md).
@@ -185,8 +208,8 @@ registry, and spaCy serves only as Presidio's NLP engine. Slower than a pattern-
   merging, invalid findings, pseudonym planning) sits on top of it.
 - **spaCy is the NLP engine, not a detector (since 2026-07-15).** The lemma-based context
   enhancer consumes spaCy's tokens/lemmas, so spaCy stays loaded — but `SpacyRecognizer` is
-  removed (decision below). Contextual identifiers, including bare place names, are deferred
-  to the planned layer-3 audit.
+  removed (decision below). Note this is now spaCy's *only* remaining job, which is what makes
+  it a retirement candidate alongside Presidio.
 
 ## Design decisions
 
@@ -239,41 +262,56 @@ classified PII. Every ambiguity resolves toward stripping.
   algorithm (weight combination, disagreeing classes, kept-type nesting) is still to be
   defined — see the overlaps task in TODO.md.
 
-### NER backend: GLiNER v1 → GLiNER2 (2026-07-12; v1 removed 2026-07-13)
+### Layer 2 (GLiNER2) retired — layer 0 replaced it (2026-08-09)
 
-The original backend (`urchade/gliner_multi_pii-v1`) had two empirical quirks found on the
-synthetic sample — ALL-CAPS text tanked recall, and entities found reliably in a short line
-were missed when the same line sat inside a full document — worked around with multi-pass
-prediction (document windows + individual lines, each also de-capitalized, unioned).
+GLiNER2 was the zero-shot NER backend from 2026-07-12 and owned PERSON, ORGANIZATION, ADDRESS
+and DATE_OF_BIRTH. It is deleted. The A/B that decided it is
+[reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md):
+on the tier-1 corpus at seeds 42/123/7, with layer 1 held constant and the semantic detector
+as the only variable, layer 0 was **equal or better on every class and every seed**, took
+`PERSON_REVERSED` from 89/95/95% to **100% on all three** (closing a residual that had carried
+its own TODO item since 2026-07-15), and **over-stripped less** on ORGANIZATION — the axis a
+carve-out-free prompt was expected to hurt.
 
-GLiNER2 (Fastino, Apache 2.0, PII-tuned model with schema descriptions) has neither weakness,
-matched v1 on Tier-1 PERSON (100%) and ran ~4.7× faster, so it became the sole backend; the
-v1 recognizer and its `--ner-backend` switch were removed (recoverable from git history, last
-commit with v1: 46212eb). GLiNER2's own quirks and tuning live in
-`pii/core/gliner2_recognizer.py`'s docstring — windowing for memory, re-finding of repeated
-mentions, separate schema passes for addresses, honorific extension. Accepted cost either
-way: some over-stripping (e.g. a merchant line labeled as an address) — a precision-tuning
-item, not a leak.
+What went with it, and why none of it is worth resurrecting separately: the whole family of
+workarounds existed to compensate for a span-labelling model reading flat text. Prediction
+windowing (encoder memory), per-cell window isolation at `RECORD_SEPARATOR` (same-person
+mentions in two word orders interfered inside one attention window), `max_width=12` (the
+trained default of 8 could not emit a one-line AU address), dedicated single-label ADDRESS
+passes (label competition inside a schema), honorific extension, reversed-name re-finding,
+adjacent-fragment coalescing, and post-validation of the model's identifier guesses (it
+labelled bank receipt references as TFNs semi-randomly). Layer 0 has none of those failure
+modes, so it needs none of those repairs. Records and eval numbers stay in [DONE.md](DONE.md);
+the code is one revert away in git history, the same disposition as Tesseract and Surya.
 
-### GLiNER2 span width: default max_width=12 (2026-07-14)
+Two things did NOT come free, both logged in [TODO.md](TODO.md) rather than fixed here: the
+invalid-identifier feature lost its *context*-tier coverage (GLiNER2's post-validation had been
+demoting shape-correct checksum failures, which the shadow recognizers do not collect at the
+default `likely` tier), and layer 0 strips a checksum-failed identifier under
+`IDENTIFIER_GENERIC` regardless of `--mask-invalid-identifiers`, breaking that feature's
+report-vs-mask separation.
 
-GLiNER2 enumerates candidate spans of 1..max_width words; the trained default of 8 was the
-root cause of multi-part AU address fragmentation (the only entity class wider than 8 words).
-max_width is an inference-time parameter, not baked into weights, and the scorer generalizes
-past its training width — lifting it to 12 flipped all four fragmented one-line addresses to
-fully stripped on Tier-1, with no other class changed and negligible latency. 16 showed the
-first wide-span false-positive creep, so 12 it is; note the model's word tokenizer counts a
-comma as a word, so nominal word counts need ~+1 margin. Label competition inside a schema
-(count-based decoding — confirmed reading gliner2-rs) is why addresses get dedicated passes;
-those workarounds are kept regardless of width. Full experiment records and the gliner2-rs
-harvest are in DONE.md; per-class widths and schema partitioning are open experiments in
-TODO.md.
+One consequence beyond detection: the `csv_mode` sentinel keeps only one of its two jobs — it
+still stops pattern recognizers matching across cells, but it is no longer an attention-window
+boundary.
+
+**A consequence that was expected and did not materialise:** the pipeline is *not* torch-free.
+GLiNER2 was the only thing that imported torch directly, but spaCy's `thinc` ships a PyTorch
+shim and loads real torch eagerly, so `import presidio_analyzer` alone still puts it in
+`sys.modules` with CUDA live (measured 2026-08-09). The paddle worker subprocess therefore
+stays exactly as it is; its retirement is downstream of the Presidio/spaCy retirement, and is
+recorded that way in [TODO.md](TODO.md).
+
+One layer-1 rule outlived the retirement and should not be mistaken for NER leftovers:
+`AuAccountNumberRecognizer`'s >=5-digit floor (`validate_result`). It was introduced alongside
+the GLiNER2 guess floors on 2026-07-14 but is a property of the account *pattern*, not of any
+model.
 
 ### spaCy retired as a detector; no standalone place-name detection (2026-07-15; LOCATION reversed 2026-07-23)
 
 Current design: `SpacyRecognizer` is not in the registry and the `--no-ner` patterns-only
 regime is gone — spaCy serves only as Presidio's mandatory NLP engine (tokens/lemmas →
-context enhancer). GLiNER2 owns PERSON, ORGANIZATION, ADDRESS and DATE_OF_BIRTH. **No
+context enhancer). Layer 0 owns PERSON, ORGANIZATION, ADDRESS and DATE_OF_BIRTH. **No
 standalone place-name detection runs:** a lone city/town name ('Security property is in
 Cairns') passes verbatim — acceptable in mortgage-policy and bank-statement documents, and
 not worth a dedicated schema pass' latency or false-positive surface. The ADDRESS passes are
@@ -283,82 +321,31 @@ intended residual overlap. Contextual identifiers that are neither addresses nor
 types are deferred to the planned layer-3 audit.
 
 Why spaCy's detector went: on OCR text en_core_web_sm produced cross-line glue PERSON spans
-('Emily Watson\nAddress') and date-as-PERSON false positives, while GLiNER2 already owned
-PERSON/ORG/dates cleanly (source-level mechanism in the "spaCy source review" decision below).
-The `--no-ner` regime was removed outright (Sergei) — its name leaks made it unsafe, and every
-input mode now runs the one pipeline.
+('Emily Watson\nAddress') and date-as-PERSON false positives, while the NER layer of the day
+already owned PERSON/ORG/dates cleanly (source-level mechanism in the "spaCy source review"
+decision below). The `--no-ner` regime was removed outright (Sergei) — its name leaks made it
+unsafe, and every input mode now runs the one pipeline. That ruling is why the mode entry
+points *require* a layer-0 detector today: patterns-only must not be reachable by accident.
 
-History: a dedicated GLiNER2 LOCATION pass shipped 2026-07-15 (chosen head-to-head over spaCy
+History: a dedicated NER LOCATION pass shipped 2026-07-15 (chosen head-to-head over spaCy
 LOCATION, which is blind to towns like 'Wagga Wagga'/'Dubbo') and was retired 2026-07-23 when
 the lone-place-name policy above was adopted. The head-to-head numbers, the
 `LOCATION_MIN_CHARS=4` floor trade-off, and the retirement are in DONE.md.
 
-Registry composition is regression-tested in `tests/pii/core/test_registry_policy.py`
-(SpacyRecognizer absent, Gliner2Recognizer present and not supporting LOCATION; model-free
-GLiNER2 shim, plus two model-marked real-stack tests).
-
-### Min-length floors on GLiNER2 guesses — where they apply and where they must not (2026-07-14)
-
-From the "short strings shouldn't qualify" discussion (the location floor was a same-day
-sibling, since removed with the location pass):
-- **AU_BANK_ACCOUNT: always-on digit floor** (`AU_BANK_ACCOUNT_MIN_DIGITS=5`, matching layer-1's
-  `\d{5,10}`) — kills fragment guesses ('42') at zero recall cost. Digits, not characters:
-  GLiNER2 emits space-grouped accounts ('0007 3111 4') as one span, and separators must not
-  push a real account under the floor (regression-tested in `tests/pii/core/test_gliner2_floors.py`).
-  Layer-1's `AuAccountNumberRecognizer.validate_result` applies the same >=5-digit rule.
-- **PERSON and ORGANIZATION: no floor, deliberately** (confirmed with Sergei) — real 2-char
-  surnames (Wu, Ng) make a PERSON floor a leak risk on a CRITICAL type; real 3-char orgs
-  (NAB, ANZ, BHP) make an ORG floor wrong. The measured short FPs cluster on numeric-ID
-  types instead; their general policy shipped 2026-07-22 as identifier post-validation
-  (next section).
-
-### NER identifier guesses are post-validated — checksums where they exist, structure where they don't (2026-07-22)
-
-Layer-1's identifier recognizers are validation-backed (AU checksums, Luhn), but GLiNER2's
-numeric-ID emissions used to strip unvalidated — and on real statements the model labels
-bank receipt references (a letter + 10 digits, 'W1045366576') semi-randomly as TFN, driver
-licence or passport (14 junk identifier detections on one NAB statement — review issue #10,
-which also covered the AFSL/credit-licence-as-drivers-licence finding). Every numeric-ID
-guess now passes its class rule before it may strip
-(`gliner2_recognizer.IDENTIFIER_VALIDATORS`; arithmetic in `pii/core/checksums.py`, shared
-with the shadow recognizers):
-
-- **Checksummed classes (AU_TFN, AU_MEDICARE): digit count + class arithmetic.** A guess
-  with the right SHAPE but a failing checksum demotes to its `*_INVALID` class and joins
-  the shadow-recognizer findings — same typo/OCR-mangle/forgery rationale, Sergei's
-  option (b) 2026-07-22 — unless the pipeline runs `invalid_identifiers="ignore"` (wired
-  as `Gliner2Recognizer(demote_invalid=False)`, keeping the historical silent drop).
-  Structurally impossible guesses (wrong digit count, bad Medicare first digit) are
-  plain-dropped. Exception: legacy 8-digit TFNs pass structurally WITHOUT arithmetic —
-  there is no reliable public checksum variant for them and layer-1's 9-digit pattern
-  can't cover them, so a wrong 8-digit guess merely over-strips while a wrong demotion
-  could leak a real one.
-- **AU_BANK_ACCOUNT: 5-16 digits** — the 2026-07-14 floor plus a cap (10-digit account +
-  6-digit BSB prefix the model sometimes emits in one span). The cap kills the bogus
-  22-digit run that over-extended a credit card via `_merge_overlaps` (issue #6's
-  recorded side effect).
-- **No-checksum classes get structural caps only**: PASSPORT ≤ 9 digits (AU format is
-  1-2 letters + 7 digits), AU_DRIVERS_LICENCE ≤ 10 alphanumeric characters (no AU state
-  issues longer ones — this also drops 'Australian credit licence NNNNNN' phrases).
-- **Masked last-4 disclosures ('card ending 1234') are deliberately not strip-worthy** —
-  they fall under the digit floors, consistent with layer-1 (`\d{5,10}` never matched
-  them). The CARD_LAST4 keep-probe watches the stance.
-
-Trade-off accepted: a real TFN with an OCR-mangled digit, unlabeled and ungrouped in free
-text, is now dropped instead of stripped — indistinguishable from the junk population; the
-labeled/grouped/context cases stay covered by the shadow recognizers. Dual coverage:
-model-free validator tests in `tests/pii/core/test_gliner2_floors.py`, keep-probes
-REFERENCE_NUMBER / DIGITS_OVERLONG / CARD_LAST4 in pii_eval.
+Registry composition is regression-tested in `tests/pii/core/test_registry_policy.py`:
+SpacyRecognizer and Gliner2Recognizer both absent, no registry entry claiming ADDRESS or
+DATE_OF_BIRTH, and PERSON claimed only by the mechanical `JointNameRecognizer`.
 
 ### Mechanical joint-name forms are layer-1 patterns, not an NER problem (2026-07-15)
 
 `JointNameRecognizer` (pii/core/recognizers.py, emits PERSON) owns the joint-account name
 shapes: initials-pair 'E & J Moore' (@0.5) and shared-surname 'Julie and Brian Summers' /
 'JULIE AND BRIAN SUMMERS' (@0.45). Rationale from the raw-emission diagnostic (DONE.md):
-GLiNER2 labels these forms confidently (0.93+) in clean context but loses *span
-segmentation* when adjacent ref-codes/keywords crowd them in transaction lines — glue
-spans, dropped initials, split pairs. The very regularity that breaks the NER makes the
-forms pattern-matchable, so the fix belongs in layer 1, not in schema/description tuning.
+the NER model of the day labelled these forms confidently (0.93+) in clean context but lost
+*span segmentation* when adjacent ref-codes/keywords crowded them in transaction lines — glue
+spans, dropped initials, split pairs. The very regularity that broke the model makes the forms
+pattern-matchable, so the rule belongs in layer 1. It outlived the layer-2 retirement as a
+deterministic floor under a stochastic detector, which is layer 1's standing job.
 
 Two design points:
 
@@ -380,43 +367,19 @@ Two design points:
   couples ('Julie and Brian Fee') are drawn as ordinary critical PERSON, so a guard
   regression trips the gate.
 
+**Accepted as a standing loss (2026-08-09, Sergei).** When the shared surname is *also* a
+banking word the given names strip and the surname survives — `LOAN REPAYMENT PERSON_5 FEE` —
+which fails seed 7's critical gate. It fails under **both** detectors: layer 0 inherits the
+residual rather than fixing it (it does downgrade seed 7's full leak to a partial). A surname
+like Fee in bank-statement context is not worth further precision engineering, so seed 7's
+failure is a known trade-off, not an open regression. Record:
+[reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md).
+
 With this, `PERSON_JOINT` moved into the eval's CRITICAL gate (100% on seeds 42/123).
 `PERSON_REVERSED` ('MOORE OLGA') stays a per-form probe: two bare caps words admit no
 pattern, so the reversed-caps residual keeps its own TODO item (diagnosis there: the
 misses are CSV-blob effects — mention shadowing and blob-scale label competition — not
 coalescible fragments).
-
-### Cell-isolation NER windows and person-fragment coalescing (2026-07-15)
-
-The GLiNER2 recognizer never lets a prediction window span a `RECORD_SEPARATOR`
-(U+241E, defined in `pii/core/constants.py`); csv_mode's cell sentinel embeds that char, so
-every CSV cell is predicted in its own window. Rationale (probe records in DONE.md):
-the model's global attention lets same-person mentions interfere — when 'JOSEPH
-SCHAEFER' (canonical, one row) and 'SCHAEFER JOSEPH' (reversed, another row) share a
-window, the canonical mention keeps its score and the reversed one collapses to
-sub-threshold fragments. Reversed order per se is learned (0.94 in junk blobs without
-the canonical mention), so the fix is to stop showing the model both orders at once.
-Cells are the natural isolation unit: they are independent transactions, and NER spans
-were already clamped to cell boundaries — cross-cell context could only ever mislead.
-Ordinary text (no separator) windows exactly as before.
-
-Two supporting pieces:
-
-- **Same-type adjacent-span coalescing** now covers PERSON alongside ADDRESS
-  (`_coalesce_adjacent`): isolated statement lines emit reversed names as fragment
-  pairs ('SCHAEFER' + 'JOSEPH RENT') whose union misses only the joining space.
-  Merging two genuinely distinct adjacent names would cost a pseudonym-consistency
-  wart, never a leak (both get stripped either way).
-- **Negative result, recorded so nobody retries it:** steering the person label
-  description with a surname-first hint lowered every score, canonical mentions
-  included (0.92→0.53).
-
-Measured on the name-forms statistics doc (fixed per-form n, see pii_eval):
-PERSON_REVERSED went from 20–75%-per-seed noise (n=5) to 70/72 across seeds 42+123;
-comma/particle/multiword forms 100%; ORGANIZATION over-strips improved (13→7 on
-seed 42). The two residual reversed leaks are label competition on isolated caps
-lines — owned by the labels-per-pass experiment (TODO), with a person-names database
-layer as the deterministic fallback.
 
 ### What is deliberately kept (2026-07-12)
 
@@ -536,21 +499,23 @@ adapter (`ocr_paddle.py`) established two structural rules the seam now carries:
 - **Process rules are part of a backend's contract.** On Windows, paddlepaddle-gpu and torch
   cannot share a process (bundled-cudnn mutual exclusion; full story in the adapter docstring
   and the 2026-07-17 DONE record). GPU paddle therefore serves torch-free OCR-only processes
-  (the pii_eval fidelity sweep) directly; the full pipeline (GLiNER2 on torch) reaches it
-  through the worker subprocess below. The adapter installs a torch *stub* to satisfy
+  (the pii_eval fidelity sweep) directly; the full pipeline reaches it through the worker
+  subprocess below. Still true after the 2026-08-09 layer-2 retirement: GLiNER2 was the only
+  *direct* torch consumer, but spaCy/thinc load real torch transitively, so the pipeline process
+  still holds it (measured — see the layer-2 decision above). The adapter installs a torch *stub* to satisfy
   paddleocr's modelscope import chain in GPU processes.
 - **Package inits stay lazy (PEP 562) — load-bearing.** `pii/__init__` and
   `pii/core/__init__` resolve their public names lazily so `import pii.core.ocr` never drags
   in presidio → spaCy → thinc → torch. OCR-only processes depend on this to stay torch-free;
   don't re-add eager imports to those `__init__`s.
 - Backend model caches follow the repo convention: `models/paddlex` (PADDLE_PDX_CACHE_HOME,
-  set by the adapter), alongside GLiNER2's `models/hf-cache`.
+  set by the adapter).
 
 ### Paddle worker-process isolation (2026-07-17)
 
 The GPU paddle wheel and torch cannot share a Windows process (the cudnn mutual exclusion
-above). With Tesseract retired, the image pipeline has to run both — GLiNER2 on torch for
-detection, paddle for OCR — so paddle moves into its own interpreter: a **persistent worker
+above). With Tesseract retired, the image pipeline had to run both — GLiNER2 on torch for
+detection, paddle for OCR — so paddle moved into its own interpreter: a **persistent worker
 subprocess** (`ocr_worker.py`), spawned lazily and kept alive for the run. The engine loads
 once per worker; PNG bytes go in and a pickled `OcrPage` comes back over a framed
 stdio protocol. Design decisions and their rationale:
@@ -559,7 +524,7 @@ stdio protocol. Design decisions and their rationale:
   returns the worker-backed callable on the GPU wheel and the in-process partial on the CPU
   wheel. Choosing by wheel (not "is torch imported yet") makes the decision independent of
   call ordering — the image pipeline OCRs *before* it runs NER, so a torch-presence check
-  would wrongly pick in-process and then break when GLiNER2 loads. The CPU wheel coexists
+  would wrongly pick in-process and then break when the torch model loaded. The CPU wheel coexists
   with torch (torch just has to import first, which the pipeline already does) and stays
   in-process, so the torch-free fidelity sweep keeps its fast direct path.
 - **fd 1 is the protocol; paddle noise is redirected.** The worker dups stdout to a private
@@ -579,7 +544,7 @@ stdio protocol. Design decisions and their rationale:
   `python -m pii.core.ocr_worker <tier>`. So the torch-holding parent can `import
   pii.core.ocr_worker` without tainting itself (regression-tested).
 - **Cost accepted.** Both models hold VRAM at once during pipeline runs (worker paddle +
-  parent GLiNER2 on one GPU); on the 11 GB 2080 Ti this is fine for page-sized renders but is
+  parent NER model on one GPU); on the 11 GB 2080 Ti this was fine for page-sized renders but is
   the first place to watch for OOM on very large images (`text_det_limit_side_len` is the
   lever). Per-call IPC is a PNG encode + pipe transfer + pickle — negligible next to GPU
   inference. `worker_page` replaces a worker that died between documents (fresh attempt) while
@@ -666,9 +631,40 @@ the seam, not Tesseract-specific. Leak-gate parity confirmed before removal
 `vlm.py` is a detector, not an OCR backend: it reads the page image and names the PII directly,
 honouring the same contract as `PiiPipeline.detect`, so placeholder allocation, overlap merging,
 painting, PDF rebuild and map handling are shared with the layered path. **It is the default for
-`--image`/`--pdf` since 2026-08-09** (`--detector layers` is the fallback; text and CSV input has
-no page image and always uses layers). Evidence for every claim below is in
+`--image`/`--pdf` since 2026-08-09**, and the only option there since the layer-2 retirement.
+Evidence for every
+claim below is in
 [reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md).
+
+**Text and CSV reach layer 0 through `text_llm.py`** (2026-08-09) — the same model and the same
+five-class vocabulary, reading the document string instead of a page. It exists because the
+semantic classes are what a language model is good at and a pattern layer structurally cannot
+do, so retiring GLiNER2 needed a replacement on the paths that have no page image. Two things
+differ from the vision path, both consequences of having the source text in hand:
+
+- **No geometry, ever.** No second pass, no `bbox_2d`, no locator tiers — the model is quoting
+  from the very string it was given, so `locator.locate_in_text` places a value by finding it.
+  A value that is *not* in the text means the model reformatted or invented it, and is
+  surfaced on `TextStripResult.unlocated` under the same rule as the image path.
+- **One entry per DISTINCT value.** The vision prompt asks for every occurrence because each
+  occurrence needs its own box; here every occurrence is found mechanically, exactly and for
+  free, so asking a model to enumerate them would spend output budget on work we do better —
+  and it degrades with document length, which a page's bounded size hides.
+
+Long text is cut into overlapping windows (`text_llm.windows`), and the overlap is a recall
+*backstop* rather than a correctness requirement: findings are located against the whole text,
+not the window that produced them, so a value cut in half by one boundary only has to survive
+intact in one window to then be marked at every occurrence in the document. Windows cut on line
+boundaries to make that the common case.
+
+The two prompts are deliberately separate strings rather than spliced from shared fragments:
+`vlm.PROMPT` is frozen at the wording that was measured, and sharing would couple any future
+edit of one modality to the other. What must not drift is the class vocabulary, and that is
+pinned by a test asserting both prompts name exactly the keys of `vlm.TYPE_MAP`.
+
+**Text layer 0 is the only text detector since 2026-08-09**, when the A/B against GLiNER2
+retired layer 2 (that decision above carries the numbers). `--detector` went with it: there is
+nothing left to choose between.
 
 **Consequence of the flip: `--image`/`--pdf` now require a llama-server** (`--vlm-url`, or
 `$PII_VLM_URL`) and run at minutes per page rather than seconds. Accepted knowingly (Sergei,
@@ -862,9 +858,10 @@ filter — useful framing when we define our merge algebra.
 - `pii/` keeps its own `requirements.txt`; repo-wide `pyproject.toml` + uv is a Phase 2 item
   (root ROADMAP).
 - presidio ≥ 2.2.364 (see the AU-recognizers decision above).
-- CUDA torch installed 2026-07-12 for the RTX 2080 Ti — CPU-only NER cost ~1 min/page; with
-  CUDA the NER share of an eval run is ~0.7 s.
-- GLiNER2 weights download once into `models/hf-cache/` (gitignored).
+- **A llama-server is required by every strip mode** (`--vlm-url` / `$PII_VLM_URL`): layer 0
+  is reached over HTTP, so it is a runtime dependency rather than a package one. Nothing in
+  this repo starts it.
+- No torch, and no local NER weights, since the 2026-08-09 layer-2 retirement.
 - spaCy model: `python -m spacy download en_core_web_sm`.
 - OCR: `paddleocr` + a `paddlepaddle` wheel (GPU `paddlepaddle-gpu` here; the image pipeline
   drives it via the worker subprocess). Tesseract + `pytesseract` retired 2026-07-17.
