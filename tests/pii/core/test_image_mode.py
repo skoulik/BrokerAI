@@ -1,7 +1,7 @@
 """Image stripping: painting and placeholder consistency.
 
 Painting tests run on hand-built OcrPages (no OCR engine); real-engine OCR
-round-trips live in the paddle worker tests (test_ocr_worker.py).
+round-trips live in the paddle adapter tests (test_ocr_paddle.py).
 
 These exercise the painting path with layer 0 finding NOTHING, so the plan
 comes from layer 1 alone — which is what these assertions have always been

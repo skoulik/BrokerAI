@@ -20,7 +20,6 @@ design and open tasks are in [core/ARCHITECTURE.md](core/ARCHITECTURE.md) and
 
 ```
 pip install -r pii/requirements.txt
-python -m spacy download en_core_web_sm
 ```
 
 **Detection needs a running llama-server.** Layer 0 — a local LLM — is the
@@ -97,9 +96,7 @@ hand).
 The OCR engine is **PaddleOCR**, and it supplies *geometry*, not detection.
 `--ocr-backend` selects the model tier: `paddle` (default, = `paddle:v6_medium`),
 `paddle:v6_medium` or `paddle:v5_server`. Models auto-download to
-`models/paddlex` on first use. With the GPU paddle wheel the pipeline drives
-OCR through a persistent worker subprocess (`pii/core/ocr_worker.py`); the CPU
-wheel runs it in-process.
+`models/paddlex` on first use. OCR runs in-process on either wheel.
 
 The numbers behind these defaults are in
 [core/reports/2026-08-08-vlm-oneshot-qwen36.md](core/reports/2026-08-08-vlm-oneshot-qwen36.md).
@@ -151,7 +148,7 @@ Three orthogonal controls on `strip`:
   are *collected* (default `likely`). Cumulative tiers: `likely` needs
   evidence inside the span (canonical grouping "123 456 782" or an adjacent
   label "TFN: 123456780"); `context` adds bare digit runs promoted by
-  nearby context words (Presidio's lemma enhancer); `all` takes every
+  nearby context words; `all` takes every
   failing match — noisy, ~90% of random 9-digit runs fail the TFN checksum.
 - `--log-invalid-identifiers {yes,no}` (default `yes`) — list the collected
   candidates on stderr with the precise failed rule. **The log is
@@ -177,16 +174,15 @@ logged 44 noise findings over 11 docs.
    The semantic detector: names, addresses, organizations, dates of birth, and
    anything identifier-shaped. Layer 1 still runs over the same string and is
    merged on top.
-1. **Presidio patterns/checksums** — built-in `AU_TFN`, `AU_MEDICARE`,
-   `AU_ABN`, `AU_ACN` (checksum-validated, explicit registration needed —
-   they are not in Presidio's default registry), credit cards, emails,
-   AU-region phones; custom recognizers in `pii/core/recognizers.py` for BSB
-   (`AU_BSB`), account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`), and
-   the joint-account initials form ("E & J Moore" → `PERSON`) and `ATF`
-   trustee clauses. Layer 1 is the deterministic floor under a stochastic
-   detector: it types identifiers, validates their checksums, and catches what
-   the model missed. spaCy (`en_core_web_sm`) is Presidio's NLP engine only,
-   never a detector.
+1. **Patterns and checksums** (`pii/core/recognizers.py`, run by
+   `pii/core/engine.py`) — `AU_TFN`, `AU_MEDICARE`, `AU_ABN`, `AU_ACN` and
+   payment cards, each from ONE rule that emits the valid class or its
+   `*_INVALID` shadow from a single checksum call; plus BSB (`AU_BSB`),
+   account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`), the joint-account
+   initials form ("E & J Moore" → `PERSON`), `ATF` trustee clauses, email,
+   IBAN and AU-region phones. Layer 1 is the deterministic floor under a
+   stochastic detector: it types identifiers, validates their checksums, and
+   catches what the model missed.
 2. ~~**Zero-shot NER**~~ — retired 2026-08-09; layer 0 replaced it. Bare place
    names are still not detected — a lone city/town name is acceptable verbatim
    in financial documents.
@@ -203,9 +199,8 @@ lives in [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 
 Dominated by the model server. Text runs at roughly 15 s per document;
 `--image`/`--pdf` at minutes per page, most of it spent ingesting the page
-image. Locally, spaCy loads as Presidio's NLP engine (still required — keep
-the `en_core_web_sm` download above); OCR runs only for `--image`/`--pdf`,
-where it supplies painting geometry.
+image. Locally there is nothing heavy left to load — layer 1 is regexes —
+and OCR runs only for `--image`/`--pdf`, where it supplies painting geometry.
 
 ## Evaluation
 
@@ -213,7 +208,4 @@ Scored by the Tier-1 synthetic corpus in [pii_eval](../pii_eval/README.md)
 (`python -m pii_eval generate` / `score`). Current state: all pattern
 entities 100%; PERSON, PERSON_REVERSED and PERSON_COMMA 100%. Contextual
 identifiers ("a dentist in Wagga Wagga") remain at 0% — a target for the
-planned layer-3 audit. Keep presidio ≥
-2.2.364: 2.2.362's ACN validator rejects every ACN with check digit 0, and
-2.2.364 changed the ABN validator's leading-zero handling, which the tool's
-own checksum copy mirrors.
+planned layer-3 audit.

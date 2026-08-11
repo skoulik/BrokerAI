@@ -1,11 +1,18 @@
 """Checksum arithmetic for Australian identifiers and payment cards.
 
-Pure functions over digit strings, used by the shadow recognizers
-(pii.core.invalid_recognizers, inverted use: emit on FAILURE). They were
-also the arithmetic behind NER identifier post-validation until layer 2
-was retired 2026-08-09. Each function expects the digits already extracted
-(see digits()) and returns whether the value passes its rule; lengths
-outside the rule's domain return False.
+**This module is now the single source of truth.** Each rule in
+pii.core.recognizers calls its function exactly once per match and branches
+on the result: pass emits the valid class, fail emits the `*_INVALID`
+shadow. Because one call decides both, the two halves cannot disagree —
+which is the whole reason the Presidio dependency went (2026-08-09). Until
+then these were hand-mirrors of Presidio's validators that had to stay
+bit-identical to them, and a version bump could silently desync a
+valid/invalid pair and drop values through both sides unreported; the
+2.2.364 ABN change proved it (record in DONE.md).
+
+Pure functions over digit strings. Each expects the digits already
+extracted (see digits()) and returns whether the value passes its rule;
+lengths outside the rule's domain return False.
 """
 
 
@@ -34,13 +41,12 @@ def medicare_checksum(d: str) -> bool:
 def abn_checksum(d: str) -> bool:
     """ABN mod-89 over 11 digits.
 
-    Must stay bit-identical to presidio's AuAbnRecognizer.validate_result
-    (>= 2.2.364): AU_ABN and the AU_ABN_INVALID shadow partition the
-    11-digit space between them, so any disagreement either drops a value
-    from both (a silent leak) or reports a stripped one as invalid.
-    Presidio 2.2.364 dropped the leading-zero special case (0 -> 9) for the
-    plain ABR subtract-1; the two accept disjoint sets, so an unsynced copy
-    misclassifies every leading-zero value that either side accepts.
+    The ABR algorithm subtracts 1 from the first digit, so a leading zero
+    becomes -1 and the value correctly fails — valid ABNs never start with
+    0. (Presidio carried a special case remapping 0 to 9 until 2.2.364,
+    which admitted some invalid leading-zero numbers; the two accept
+    disjoint sets. `pii_eval/au.py:abn_valid` mirrors THIS function so the
+    corpus generator and the detector agree.)
     """
     weights = (10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
     if len(d) != len(weights):
@@ -70,3 +76,27 @@ def luhn_checksum(d: str) -> bool:
             x *= 2
         total += x - 9 if x > 9 else x
     return total % 10 == 0
+
+
+def iban_checksum(value: str) -> bool:
+    """ISO 13616 mod-97 over an IBAN (separators tolerated).
+
+    Move the first four characters to the end, map letters to 10-35, and
+    require the whole number mod 97 == 1.
+    """
+    compact = "".join(c for c in value if c.isalnum()).upper()
+    if not 15 <= len(compact) <= 34:
+        return False
+    if not compact[:2].isalpha() or not compact[2:4].isdigit():
+        return False
+    rearranged = compact[4:] + compact[:4]
+    total = 0
+    for ch in rearranged:
+        if ch.isdigit():
+            total = total * 10 + int(ch)
+        elif ch.isalpha():
+            total = total * 100 + (ord(ch) - 55)
+        else:
+            return False
+        total %= 97
+    return total == 1

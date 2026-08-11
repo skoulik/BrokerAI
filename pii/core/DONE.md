@@ -1753,3 +1753,87 @@ the move; new completed tasks append to the matching section with their records.
       `strip_from_page` call sites now go through `strip_from_vlm` with an empty finding list,
       which is exactly equivalent (layer 1 supplies the whole plan) and is what those assertions
       were always about.)*
+
+- [x] **Retire Presidio and spaCy; the detection engine is ours** *(2026-08-09, step 3 of the
+      three-step retirement. Design in [ARCHITECTURE.md](ARCHITECTURE.md) "Presidio and spaCy
+      retired"; this record is the before/after.)*
+
+      **What we were actually using** was a regex loop, a three-way validation hook, a context
+      boost and a threshold. What it cost was a mandatory spaCy NLP engine, ten recognizers we
+      never stripped on running on every call (US SSN/bank/passport/ITIN/licence, NHS, crypto,
+      MAC, medical licence, DATE_TIME), and split ownership of every checksummed identifier.
+      `engine.py` (~190 lines) + `detection.py` (~40) replace `AnalyzerEngine`,
+      `RecognizerRegistry`, `PatternRecognizer`, `RecognizerResult` and
+      `LemmaContextAwareEnhancer`.
+
+      **The split ownership was a LIVE LEAK, and it is what made this urgent.** Presidio owned
+      the valid classes with SPACE-only patterns; our shadows owned the invalid ones with
+      `[- ]`. A hyphen-grouped **valid** TFN/ABN/ACN/Medicare (`123-456-782`) therefore matched
+      Presidio not at all and was dropped by the shadow *for passing its checksum* — detected by
+      nothing, in all four classes. Verified directly before the merge. The corpus could not see
+      it: `pii_eval/au.py` only ever emitted space-grouped forms, so the gate had never had a
+      chance. `ChecksumRule` now matches once, extracts digits once, calls the checksum once and
+      branches, so the halves cannot disagree — there is no second implementation to disagree
+      *with*. `pii/core/checksums.py` becomes the single source of truth, closing the standing
+      "stop duplicating Presidio's checksum arithmetic" item by deletion (its proposed fix,
+      delegating *to* presidio, was inverted by the retirement).
+
+      **Behaviour preserved deliberately**, because every score in `recognizers.py` was tuned
+      against it: validation overrides the pattern score (True -> 1.0, False -> drop, None ->
+      keep), context boost +0.35 floored to 0.4 capped at 1.0, duplicate spans collapse to the
+      highest score. Pinned in the new `test_engine.py` rather than left implicit.
+
+      **Behaviour deliberately CHANGED, twice.** (1) Context matching went from spaCy lemmas to
+      a 60-char window searched for the term as a substring — which is what the 2026-07-15 spaCy
+      source review concluded ("keep label/context matching char-level") after finding that
+      `a/c` fragments into three tokens while `TFN:123456782` stays one, so the label never
+      surfaced as a token either way. (2) Labels are matched as LOOKBEHINDS, so the span is the
+      value alone. The old shadows matched labels in-span and got away with it — an invalid
+      candidate is reported, not aliased — but for a valid identifier a span covering
+      "TFN: 123 456 782" keys the pseudonym map on a different string than a bare occurrence,
+      forking one TFN into TFN_1 and TFN_2 inside a document. Caught by the existing
+      placeholder-consistency test, which is exactly what it was written for.
+
+      **Harvested rather than reimplemented**: Presidio's email regex (it handles punycode/IDN
+      labels) with `tldextract` validation kept, and its credit-card brand-prefix pattern. IBAN
+      dropped the ~90-entry per-country format table for a generic shape plus ISO 13616 mod-97 —
+      mod-97 is what actually validates an IBAN and AU documents carry them rarely. `phonenumbers`
+      is now a direct dependency instead of reaching it through Presidio. `regex` stays, and is
+      load-bearing: the account-after-BSB and labeled-identifier patterns use variable-length
+      lookbehind that stdlib `re` cannot compile.
+
+      **Then the paddle worker went too.** Making the process torch-free is what finally
+      satisfied the precondition recorded that morning — see the next record.
+
+      Fast suite **360 green** (was 329: +16 `test_engine.py`, +22 `test_checksum_rules.py`,
+      -11 the deleted worker-protocol module, plus ports). Dual coverage on the leak: the
+      regression tests above AND a corpus probe (`au.hyphenate`, emitting a hyphen-grouped ABN)
+      so the eval can see the class of bug that hid this one.
+
+- [x] **Retire the paddle worker subprocess** *(2026-08-09, immediately after the chassis swap.
+      Sergei asked for it earlier the same day; the "verify, do not assume" clause on the TODO
+      item is what stopped it going out wrong.)*
+
+      **The first attempt was based on a false premise.** The GLiNER2 record claimed the pipeline
+      had become torch-free because GLiNER2 was "the only torch consumer in the repo". It was
+      the only *direct* one. spaCy's `thinc` ships a PyTorch shim and imports real torch eagerly,
+      so `import spacy` / `import thinc` / `import presidio_analyzer` — and therefore
+      `PiiPipeline()` — all still left torch in `sys.modules` with `cuda.is_available()` True.
+      Measured, not guessed. The worker was kept and the retirement re-recorded as downstream of
+      the Presidio/spaCy step.
+
+      **After step 3 the premise holds.** Verified before deleting anything: the full analysis
+      stack plus in-process GPU paddle in ONE interpreter, on the 2080 Ti (Compute Capability
+      7.5), correct OCR output, ~11 s cold. A second finding fell out of that run — `image_mode`
+      and `text_mode` still imported `RecognizerResult` from presidio, which alone was enough to
+      drag torch back into the image path. Both now import `Detection`; the subprocess import
+      test in `test_registry_policy.py` was widened to cover the front-ends, not just
+      `PiiPipeline`.
+
+      **Gone**: `ocr_worker.py` (253 lines), its framed stdio protocol, its test module, and the
+      "routing is by wheel" branch in `get_ocr_page` — OCR is in-process on either wheel.
+      **Kept, and load-bearing**: the torch guard in `ocr_paddle._engine` (now the *only* thing
+      between paddle-GPU and torch — it turns a re-introduction into a clear error rather than a
+      WinError 127 crash), the modelscope torch stub, and the lazy package inits. The worker is
+      one revert away in git history, the same disposition as Tesseract, Surya and the layout
+      backends.)*

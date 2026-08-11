@@ -27,7 +27,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass, field
 
-from presidio_analyzer import RecognizerResult
+from pii.core.detection import Detection
 
 from pii.core.locator import locate_in_text
 from pii.core.mapping import PseudonymMap
@@ -51,7 +51,7 @@ def detect_text(
     """One detection pass -> (strip plan, invalid findings, unlocated)."""
     placed = locate_in_text(detector.detect(text), text)
     detected = [
-        RecognizerResult(
+        Detection(
             entity_type=placement.finding.entity_type,
             start=start,
             end=end,

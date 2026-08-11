@@ -2,14 +2,11 @@
 masking, overlap ranking (design decided 2026-07-14, record in pii/DONE.md)."""
 
 import pytest
-from presidio_analyzer import RecognizerResult
 
-from pii.core.invalid_recognizers import (
-    INVALID_ENTITY_TYPES,
-    make_invalid_recognizers,
-)
+from pii.core.detection import Detection
 from pii.core.mapping import PseudonymMap
 from pii.core.pipeline import _merge_overlaps
+from pii.core.recognizers import INVALID_ENTITY_TYPES, build_rules
 
 # Literals with verified checksum status (see pii_eval.au validators):
 VALID_TFN = "291 417 774"      # passes TFN mod-11
@@ -27,8 +24,17 @@ def types(findings):
 
 def test_tier_validation():
     with pytest.raises(ValueError):
-        make_invalid_recognizers("bogus")
-    assert make_invalid_recognizers("ignore") == []
+        build_rules("bogus")
+
+
+def test_ignore_tier_still_detects_the_valid_classes():
+    """The tier governs only the INVALID branch. Since the merge (2026-08-09)
+    one rule owns both, so 'ignore' must not take the valid class with it."""
+    from pii.core.engine import Analyzer
+
+    analyzer = Analyzer(build_rules("ignore"))
+    found = analyzer.analyze(f"TFN: {VALID_TFN}", 0.4)
+    assert {d.entity_type for d in found} == {"AU_TFN"}
 
 
 def test_likely_collects_labeled_typo_without_masking(make_pipeline):
@@ -142,34 +148,43 @@ def test_ner_guess_does_not_suppress_finding():
     from pii.core.pipeline import _collect_invalid
 
     text = "ATO PAYMENT TFN 982 827 379"
-    shadow = RecognizerResult(
-        entity_type="AU_TFN_INVALID", start=12, end=27, score=0.85
+    shadow = Detection(
+        entity_type="AU_TFN_INVALID", start=12, end=27, score=0.85,
+        recognizer="AuTfnRule",
     )
 
-    ner_guess = RecognizerResult(
+    guess = Detection(
         entity_type="PHONE_NUMBER", start=12, end=27, score=0.9
     )
-    assert types(_collect_invalid([shadow, ner_guess], text)) == {
-        "AU_TFN_INVALID"
-    }
+    assert types(_collect_invalid([shadow, guess], text)) == {"AU_TFN_INVALID"}
 
-    validated = RecognizerResult(
-        entity_type="PHONE_NUMBER",
-        start=12,
-        end=27,
-        score=0.75,
-        recognition_metadata={
-            RecognizerResult.RECOGNIZER_NAME_KEY: "PhoneRecognizer"
-        },
+    validated = Detection(
+        entity_type="PHONE_NUMBER", start=12, end=27, score=0.75,
+        recognizer="PhoneRule",
     )
     assert _collect_invalid([shadow, validated], text) == []
+
+
+def test_a_rules_own_invalid_span_does_not_suppress_it():
+    """Since one rule emits both classes (2026-08-09), the covered-by-a-
+    validated-rule test has to exclude invalid spans, or every finding would
+    suppress itself."""
+    from pii.core.pipeline import _collect_invalid
+
+    shadow = Detection(
+        entity_type="AU_TFN_INVALID", start=0, end=11, score=0.5,
+        recognizer="AuTfnRule",
+    )
+    assert types(_collect_invalid([shadow], "291 417 775")) == {
+        "AU_TFN_INVALID"
+    }
 
 
 def test_merge_ranks_invalid_below_any_valid_type():
     # Overlap rule (decided): union the extents, the valid class wins the
     # placeholder regardless of score — the loser's tail must never leak.
     def rr(etype, start, end, score):
-        return RecognizerResult(
+        return Detection(
             entity_type=etype, start=start, end=end, score=score
         )
 
@@ -230,32 +245,30 @@ def test_cli_mask_all_warns_and_logs(tmp_path, capsys, cli_no_model):
     assert "TFN_INVALID_1" in out_file.read_text(encoding="utf-8")
 
 
-def test_abn_checksum_tracks_presidio_exactly():
-    """AU_ABN (presidio) and AU_ABN_INVALID (our shadow) partition the
-    11-digit space, so the two ABN implementations must agree everywhere.
-    Where they disagree a value is either stripped and reported invalid at
-    once, or — the dangerous direction — matched by neither and passed
-    through silently, absent from the output and the invalid report alike.
-    Presidio 2.2.364 replaced the leading-zero special case (0 -> 9) with
-    the plain ABR subtract-1, and the pre/post accepted sets are disjoint;
-    pin the agreement rather than a snapshot of either side.
+def test_corpus_generator_and_detector_agree_on_abn():
+    """The one ABN mirror that survives: `pii_eval/au.py:abn_valid` (which the
+    corpus generator uses to build valid/invalid values) against
+    `pii.core.checksums.abn_checksum` (which the detector uses).
+
+    The old version of this test pinned our arithmetic against PRESIDIO's, and
+    that coupling is gone — since 2026-08-09 one rule calls one function, so
+    the valid class and its shadow cannot disagree by construction. What can
+    still desync is truth-vs-detector: if the generator thinks a value is a
+    valid ABN and the detector does not, the corpus reports a leak that isn't
+    one, or worse, hides one. Leading zeros are the discriminating class (the
+    ABR subtract-1 makes them fail), so they are drawn explicitly.
     """
     import random
 
-    from presidio_analyzer.predefined_recognizers import AuAbnRecognizer
-
     from pii.core.checksums import abn_checksum
+    from pii_eval.au import abn_valid
 
-    validate = AuAbnRecognizer().validate_result
     rng = random.Random(0)
     cands = [str(rng.randrange(10**10, 10**11)) for _ in range(2000)]
-    # Leading zeros are the class 2.2.364 moved and are never drawn above.
     cands += ["0" + str(rng.randrange(10**9, 10**10)) for _ in range(2000)]
-    # Discriminating literals: the first two pass only under <= 2.2.363,
-    # the last two only under >= 2.2.364.
     cands += ["06700094948", "00238288185", "08737167868", "01039931582"]
     for d in cands:
-        assert abn_checksum(d) == validate(d), d
+        assert abn_checksum(d) == abn_valid(d), d
 
 
 def test_leading_zero_abn_is_never_dropped_by_both(make_pipeline):

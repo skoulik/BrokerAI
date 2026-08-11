@@ -28,10 +28,8 @@ geometry follows the 2026-07-16 review findings (record in DONE.md):
   verified on the 2080 Ti), torch and paddle are MUTUALLY EXCLUSIVE in
   one process: both bundle cudnn_cnn64_9.dll from different CUDA
   families and the second loader gets WinError 127, whichever the
-  order. So the GPU wheel serves torch-free paths (the ocr-report
-  fidelity sweep, OCR-only use) at full speed, while the full pii
-  pipeline needed the CPU wheel or a
-  future paddle worker subprocess (TODO).
+  order. Every path is torch-free since 2026-08-09, so the GPU wheel
+  serves all of them at full speed.
 - `enable_mkldnn=False` avoids the paddle 3.3.x oneDNN PIR-executor
   crash on PP-OCRv5 server models (upstream bug; CPU path only, the
   flag is inert on GPU).
@@ -40,10 +38,12 @@ geometry follows the 2026-07-16 review findings (record in DONE.md):
   Downloads land under PADDLE_PDX_CACHE_HOME, defaulted here to the
   repo-convention `models/paddlex` (same cwd-relative pattern as
   the repo model-cache convention).
-- On the GPU wheel, torch and paddle cannot share a Windows process, so
-  the full pipeline drives paddle through a persistent worker subprocess
-  (pii/core/ocr_worker.py); `get_ocr_page` picks worker vs in-process by
-  wheel. See that module and the seam in pii/core/ocr.py.
+- The worker subprocess that used to isolate GPU paddle from torch was
+  retired 2026-08-09: nothing in the strip path imports torch since Presidio
+  and spaCy went, so OCR runs in-process on either wheel. `_engine` below
+  still refuses to start when torch IS loaded — that guard is what turns a
+  future re-introduction into a clear error instead of a DLL crash, and it
+  is the only thing standing between the two libraries now.
 """
 
 import os
@@ -162,10 +162,10 @@ def _engine(tier: str = DEFAULT_TIER):
             raise RuntimeError(
                 "paddlepaddle-gpu and torch cannot share a process on "
                 "Windows (conflicting bundled cudnn DLLs). This process "
-                "already imported torch — run paddle through the worker "
-                "subprocess (pii/core/ocr_worker.py, which get_ocr uses on "
-                "the GPU wheel), install the CPU paddle wheel, or use a "
-                "torch-free process."
+                "already imported torch. Nothing in the strip path should "
+                "— that is what let the worker subprocess be retired "
+                "(2026-08-09) — so find the import and drop it, or install "
+                "the CPU paddle wheel."
             )
         import paddle  # noqa: F401  (GPU DLLs must load first)
 

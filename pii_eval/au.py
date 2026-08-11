@@ -34,6 +34,20 @@ def tfn(rng: random.Random) -> str:
             return f"{s[:3]} {s[3:6]} {s[6:]}"
 
 
+def hyphenate(formatted: str) -> str:
+    """The same value with hyphens instead of spaces between its groups.
+
+    A surface form the generators deliberately did not produce until
+    2026-08-09, which is why the corpus was blind to a real leak: the valid
+    AU recognizers accepted SPACE-grouped digits only, while the shadow
+    recognizers accepted `[- ]`, so a hyphen-grouped VALID identifier was
+    detected by neither. Now one rule owns both halves
+    (pii/core/recognizers.py) — this keeps the corpus able to see it if that
+    ever regresses.
+    """
+    return formatted.replace(" ", "-")
+
+
 def medicare(rng: random.Random, irn: bool = True) -> str:
     # d1 in 2..6; d9 = weighted sum of d1..d8 with (1,3,7,9,1,3,7,9) mod 10;
     # d10 is the card issue number
@@ -160,7 +174,7 @@ def drivers_licence(rng: random.Random) -> str:
 
 
 # --- Checksum validators -----------------------------------------------------
-# Mirror the detectors' arithmetic (presidio's AU recognizers / Luhn) so the
+# Mirror the detectors' arithmetic (pii.core.checksums) so the
 # typo injectors below can guarantee a corrupted value really fails
 # validation. All take the bare digit string (see digits()).
 
@@ -185,7 +199,7 @@ def abn_valid(d: str) -> bool:
         return False
     weights = (10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
     nums = [int(x) for x in d]
-    nums[0] = nums[0] - 1  # as presidio computes it (>= 2.2.364)
+    nums[0] = nums[0] - 1  # the ABR subtract-1, as pii.core.checksums does
     return sum(w * x for w, x in zip(weights, nums)) % 89 == 0
 
 

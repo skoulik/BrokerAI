@@ -1,95 +1,124 @@
-"""Registry composition policy: what layer 1 does and does not contain.
+"""Layer-1 composition policy: what the rule set does and does not contain.
 
-`PiiPipeline` is layer 1 — patterns, checksums and the invalid-candidate
-shadows. Two detectors were deliberately removed from it and must stay out:
+`PiiPipeline` is layer 1 — the pattern/checksum rules in `pii.core.recognizers`,
+run by `pii.core.engine`. Three detectors were deliberately removed over time
+and must stay out:
 
-- **SpacyRecognizer** (2026-07-15). spaCy stays as Presidio's NLP engine
-  (tokens/lemmas → context enhancer) but is not a detector: en_core_web_sm's
-  own PERSON/DATE_TIME emissions were glue spans crossing OCR line breaks
-  ('Emily Watson\\nAddress') and date-as-name false positives.
-- **Gliner2Recognizer** (2026-08-09). Layer 2 is retired outright — layer 0
-  (a local LLM, `pii.core.vlm` / `pii.core.text_llm`) beat it on every
-  semantic class and seed. The semantic classes it used to own are now
-  measured through the eval corpus, not here: they need a model, so there is
-  nothing model-free left to assert about them.
+- **spaCy's NER** (2026-07-15). On OCR text en_core_web_sm produced glue PERSON
+  spans crossing line breaks ('Emily Watson\\nAddress') and date-as-name false
+  positives. spaCy survived as Presidio's NLP engine until the chassis went.
+- **GLiNER2** (2026-08-09). Layer 0 — a local LLM — beat it on every semantic
+  class and seed. The classes it owned are measured through the eval corpus
+  now: they need a model, so there is nothing model-free left to assert here.
+- **Presidio itself** (2026-08-09), and with it a pile of recognizers we never
+  stripped on: US SSN/bank/passport/ITIN/licence, NHS, crypto, MAC, medical
+  licence, and a DATE_TIME detector. They ran on every call and produced
+  nothing but report clutter.
 
-URL/IP are removed as irrelevant to financial documents, and standalone
-LOCATION detection was retired 2026-07-23 (a bare city/town name is acceptable
-verbatim; the layer-0 ADDRESS classes still own address-shaped content).
+URL/IP are absent as irrelevant to financial documents, and standalone LOCATION
+detection was retired 2026-07-23 (a bare city/town name passes verbatim).
 """
 
+import pytest
 
-def _recognizer(pipeline, name):
-    return next(
-        (r for r in pipeline.analyzer.registry.recognizers if r.name == name),
-        None,
+from pii.core.engine import Rule
+
+
+def _rule(pipeline, name):
+    return pipeline.analyzer.rule(name)
+
+
+def test_building_a_pipeline_imports_no_presidio_spacy_or_torch():
+    """The chassis is ours, and this is not hygiene.
+
+    spaCy pulls in thinc, thinc imports real torch, and torch cannot share a
+    Windows process with the GPU paddle wheel (ARCHITECTURE, 'Paddle
+    worker-process isolation') — so a re-introduced import would silently put
+    the OCR seam back on a worker subprocess it no longer needs.
+
+    Run in a SUBPROCESS deliberately: `sys.modules` in a pytest session is
+    polluted by whatever ran earlier, so an in-process assertion would pass or
+    fail on test ordering rather than on the thing being claimed."""
+    import subprocess
+    import sys
+
+    # The FRONT-ENDS too, not just PiiPipeline: image_mode and text_mode each
+    # imported RecognizerResult from presidio after the engine swap, which was
+    # by itself enough to drag torch back into the image path (2026-08-09).
+    probe = (
+        "import sys;"
+        "import pii.core.image_mode, pii.core.text_mode,"
+        " pii.core.csv_mode, pii.core.pdf_mode;"
+        "from pii.core import PiiPipeline;"
+        "PiiPipeline();"
+        "print(','.join(m for m in "
+        "('presidio_analyzer', 'spacy', 'thinc', 'torch') if m in sys.modules))"
     )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert out.stdout.strip() == "", out.stdout
 
 
-def test_spacy_recognizer_retired(pipeline):
-    assert _recognizer(pipeline, "SpacyRecognizer") is None
-
-
-def test_gliner2_recognizer_retired(pipeline):
-    """Layer 2 is gone. If this fails, something re-registered an NER model
-    into layer 1 — which would also silently re-confound any layer-0 A/B."""
-    assert _recognizer(pipeline, "Gliner2Recognizer") is None
+def test_retired_detectors_absent(pipeline):
+    for name in ("SpacyRecognizer", "Gliner2Recognizer", "DateRecognizer"):
+        assert _rule(pipeline, name) is None, name
 
 
 def test_no_model_driven_semantic_detection(pipeline):
-    """Stronger than the name check: nothing in layer 1 claims the classes
-    only a model can decide.
+    """Stronger than a name check: nothing in layer 1 claims a class only a
+    model can decide.
 
-    ADDRESS and DATE_OF_BIRTH are layer-0's outright. PERSON has exactly one
-    layer-1 source, and it is a *mechanical* one — `JointNameRecognizer`, the
-    initials form 'E & J Moore' that a lexical rule can own (ARCHITECTURE,
-    "Mechanical joint-name forms are layer-1 patterns"). Any other PERSON
-    source appearing here means an NER model crept back in."""
-    for recognizer in pipeline.analyzer.registry.recognizers:
-        supported = set(recognizer.supported_entities)
-        assert not {"ADDRESS", "DATE_OF_BIRTH"} & supported, recognizer.name
-        if "PERSON" in supported:
-            assert recognizer.name == "JointNameRecognizer"
+    ADDRESS and DATE_OF_BIRTH are layer 0's outright. PERSON has exactly one
+    layer-1 source and it is *mechanical* — `JointNameRule`, the initials form
+    'E & J Moore' that a lexical rule can own. Any other PERSON source here
+    means an NER model crept back in."""
+    for rule in pipeline.analyzer.rules:
+        claimed = set(rule.entities)
+        assert not {"ADDRESS", "DATE_OF_BIRTH"} & claimed, rule.name
+        if "PERSON" in claimed:
+            assert rule.name == "JointNameRule"
 
 
-def test_layer1_recognizers_still_registered(pipeline):
-    """The deletion must not have taken layer 1 with it."""
+def test_layer1_rules_all_registered(pipeline):
     for name in (
-        "AuTfnRecognizer",
-        "AuMedicareRecognizer",
-        "AuAbnRecognizer",
-        "AuAcnRecognizer",
-        "AuBsbRecognizer",
-        "AuAccountNumberRecognizer",
-        "PayIdRecognizer",
-        "JointNameRecognizer",
-        "AtfTailRecognizer",
+        "AuTfnRule", "AuMedicareRule", "AuMedicareMalformedRule",
+        "AuAbnRule", "AuAcnRule", "CreditCardRule",
+        "AuBsbRule", "AuAccountNumberRule", "PayIdRule",
+        "AuAfslRule", "AuCreditLicenceRule",
+        "JointNameRule", "AtfTailRule",
+        "EmailRule", "IbanRule", "PhoneRule",
     ):
-        assert _recognizer(pipeline, name) is not None, name
+        assert _rule(pipeline, name) is not None, name
 
 
-def test_url_ip_recognizers_removed(pipeline):
-    # URL/IP dropped 2026-07-23: not relevant to financial documents. The
-    # predefined recognizers are removed from the registry (not merely
-    # unstripped), so they never detect and never clutter analyze()/reports.
-    assert _recognizer(pipeline, "UrlRecognizer") is None
-    assert _recognizer(pipeline, "IpRecognizer") is None
+def test_every_rule_declares_what_it_emits(pipeline):
+    for rule in pipeline.analyzer.rules:
+        assert isinstance(rule, Rule), rule
+        assert rule.entities, rule.name
+        assert rule.name
 
 
-def test_url_ip_not_in_default_strip():
+def test_no_url_ip_or_us_specific_classes(pipeline):
+    """Presidio's default registry shipped ten recognizers we never stripped
+    on. Nothing may claim their classes now."""
+    unwanted = {
+        "URL", "IP_ADDRESS", "US_SSN", "US_BANK_NUMBER", "US_PASSPORT",
+        "US_DRIVER_LICENSE", "US_ITIN", "UK_NHS", "CRYPTO", "MEDICAL_LICENSE",
+        "MAC_ADDRESS", "DATE_TIME",
+    }
+    claimed = {e for rule in pipeline.analyzer.rules for e in rule.entities}
+    assert not unwanted & claimed
+
+
+@pytest.mark.parametrize("entity", ["URL", "IP_ADDRESS", "LOCATION"])
+def test_not_in_default_strip(entity):
     from pii.core import DEFAULT_STRIP_ENTITIES
 
-    assert "URL" not in DEFAULT_STRIP_ENTITIES
-    assert "IP_ADDRESS" not in DEFAULT_STRIP_ENTITIES
-
-
-def test_location_not_in_default_strip():
-    from pii.core import DEFAULT_STRIP_ENTITIES
-
-    assert "LOCATION" not in DEFAULT_STRIP_ENTITIES
+    assert entity not in DEFAULT_STRIP_ENTITIES
 
 
 def test_layer1_still_detects_its_own_classes(pipeline):
-    """The registry composition above is only meaningful if layer 1 works."""
+    """The composition above is only meaningful if layer 1 works."""
     spans, _ = pipeline.detect("TFN 123 456 782 and olga@example.com")
     assert {s.entity_type for s in spans} == {"AU_TFN", "EMAIL_ADDRESS"}

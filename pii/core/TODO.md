@@ -37,15 +37,11 @@ deleted, so no input mode is ever without a semantic detector:
    entry points *require* one, because a patterns-only strip is the `--no-ner` regime retired
    2026-07-15 as unsafe. Consequence accepted knowingly: **every** input mode now needs a
    llama-server, including the tier-1 gate.
-3. **Replace the Presidio chassis** with our own engine + recognizers, spaCy going with it.
-   This *closes* the "Stop duplicating Presidio's checksum arithmetic" item below by deletion:
-   one rule per identifier class owns one pattern set and one checksum call and emits the valid
-   class, the `*_INVALID` shadow or the `*_MALFORMED` shadow, so the two halves can no longer
-   desync. It also fixes a live leak found 2026-08-09 while scoping this: Presidio's AU
-   patterns only accept SPACE-grouped digits, while our shadows accept `[- ]`, so a
-   **hyphen-grouped VALID** TFN/ABN/ACN/Medicare (`123-456-782`) is detected by nothing at layer
-   1 — only the invalid one is caught. The eval corpus is blind to it (`pii_eval/au.py` emits
-   space-grouped forms only), so the fix needs a probe as well as a test.
+3. **Replace the Presidio chassis** — DONE 2026-08-09 (`engine.py`, `detection.py`, a rewritten
+   `recognizers.py`; spaCy went with it). One rule per identifier class owns one pattern set and
+   one checksum call, which closed the "stop duplicating Presidio's checksum arithmetic" item by
+   deletion and fixed the hyphen-grouped-valid-identifier leak found while scoping it. It also
+   made the process torch-free, which retired `ocr_worker.py` the same day.
 
 **Now the top open risk: throughput.** ~3 min/page is a research profile, so the serving /
 quantization item below is what stands between this and a usable product.
@@ -332,59 +328,14 @@ quantization item below is what stands between this and a usable product.
       engine. Must never feed the strip decision (we deliberately distrust the text layer).
 ## Detection pipeline
 
-- [ ] **Retire `ocr_worker.py` once the pipeline is genuinely torch-free — BLOCKED on the
-      Presidio/spaCy retirement** (2026-08-09; the check that was going to justify deleting it
-      instead saved it). The worker subprocess and the "routing is by wheel" rule in
-      `ocr_paddle.py` exist for ONE reason: on Windows the GPU paddle wheel and torch cannot
-      share a process (bundled-cudnn mutual exclusion, ARCHITECTURE "Paddle worker-process
-      isolation").
-      **Measured 2026-08-09, and it contradicts the assumption the GLiNER2 deletion was written
-      under:** GLiNER2 was the only *direct* torch consumer, not the only one. `import spacy`,
-      `import thinc` and `import presidio_analyzer` each pull in **real torch with
-      `cuda.is_available() == True`** — thinc ships a PyTorch shim and loads it eagerly — so
-      `PiiPipeline()` still puts torch in `sys.modules` and the DLL conflict is untouched. The
-      worker stays.
-      This makes the retirement **downstream of step 3**: dropping presidio and spaCy drops
-      thinc, and only then is the strip path actually torch-free. Re-run the check then
-      (`python -c "from pii.core import PiiPipeline; PiiPipeline(); import sys;
-      print('torch' in sys.modules)"`), and if it prints False, verify GPU paddle in-process in
-      a fresh interpreter before deleting anything — it must neither crash nor silently fall
-      back to CPU. Payoff when it lands: `ocr_worker.py` (253 lines), its framed stdio protocol,
-      the torch stub in the paddle adapter, and a per-call PNG encode + pipe + pickle. The eval
-      harness and `pii debug ocr` share the seam, so the change is one function
-      (`get_ocr_page`). Keep the worker in git history regardless — anything that reintroduces
-      torch brings the conflict back.
-
-
-- [x] ~~**Measure text layer 0 against GLiNER2 on the tier-1 corpus**~~ — **DONE 2026-08-09**,
-      seeds 42/123/7, record in
-      [reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md).
-      Layer 0 equals or beats GLiNER2 on every semantic class and seed (PERSON_REVERSED 100%
-      across all three, closing the residual below), over-strips *less*, and flips s42's gate to
-      PASS. Two things it does not fix: CONTEXTUAL_ID (0% either way) and the colliding-surname
-      case that fails s7 in both arms. One regression needs a decision before the deletion — the
-      invalid-identifier feature loses its context-tier coverage (GLiNER2's demotion path) and
-      its report/mask separation (layer 0 strips invalid identifiers as IDENTIFIER_GENERIC).
-      Original scope, kept for the record:
-      `python -m pii_eval score --detector vlm` against `--detector layers`, same corpus, same
-      layer 1, the semantic detector as the only variable. What the numbers have to answer:
-      (a) per-class recall on PERSON/ADDRESS/ORGANIZATION/DATE_OF_BIRTH — the four classes
-      GLiNER2 owns and the only ones that can regress; (b) whether the known GLiNER2 residuals
-      close, specifically `PERSON_REVERSED` ('REID THOMAS', 70/72 across seeds 42+123) and the
-      `CONTEXTUAL_ID` probe that sits at 0% at every seed; (c) the over-strip axis, since the
-      prompt carries no institutional carve-outs and the keep-list does not exist yet;
-      (d) throughput per document, which is a new cost on a path that had none.
-      **Score several seeds, not one.** The tier-1 gate already fails at seeds 2, 3 and 7 on
-      unmodified code — always a residual GLiNER2 PERSON miss (the de-flake item below) — so a
-      single-seed comparison would measure the draw as much as the detector. If layer 0 closes
-      those residuals, that item closes with it and `PERSON_REVERSED` can finally be promoted
-      into `build.CRITICAL`.
-      Note the corpus is text-shaped, not statement-shaped: it will not exercise the windowing,
-      so a long-document check (window boundaries, a value repeated across windows) belongs in
-      the same session.
-      The text scorer suppresses layer 2 under `--detector vlm` (`PiiPipeline(ner=False)`) so
-      the arms differ by the semantic detector alone — see the discrepancy note below, which
-      this A/B would otherwise have measured straight past.
+- [x] ~~**Retire `ocr_worker.py`**~~ — **DONE 2026-08-09.** The check this item demanded
+      ("verify, do not assume") is what caught the wrong assumption: GLiNER2 was the only
+      *direct* torch consumer, but spaCy/thinc import real torch eagerly, so the pipeline was
+      still holding it after the layer-2 retirement. Retiring Presidio and spaCy finished the
+      job. Verified before deleting: the full analysis stack plus in-process GPU paddle in one
+      interpreter, on the 2080 Ti, correct output. `get_ocr_page` returns the in-process
+      callable on either wheel; the torch guard in `ocr_paddle._engine` and the modelscope torch
+      stub both stay, and the worker is one revert away in git history.
 
 - [ ] **Decide whether production `--detector vlm` should stop running GLiNER2** (found
       2026-08-09 while wiring the A/B above). ARCHITECTURE says layer 0 replaces layer 2, but
@@ -598,15 +549,13 @@ text tier's record is in [DONE.md](DONE.md).)
       disagreement). Local side-by-side review UI so manual acceptance checks are a quick
       click-through; only declassified findings are reported back.
 
-- [ ] **Stop duplicating Presidio's checksum arithmetic** (2026-08-08, from the 2.2.364 ABN
-      re-sync — record in [DONE.md](DONE.md)). `pii/core/checksums.py` re-implements the AU
-      TFN/Medicare/ABN/ACN rules that Presidio already owns, so every upgrade can silently
-      desync a valid/invalid pair and drop values through both sides. `abn_checksum` is now
-      version-coupled to Presidio ≥ 2.2.364 and *wrong* against 2.2.363. Options: delegate to
-      the recognizers' `validate_result` (they take the matched text, so a thin digits→text
-      adapter is needed, and the GLiNER2 post-validation path wants a plain digit-string API),
-      or keep the copies but generate the coupling test for *all four* types rather than ABN
-      alone. The ABN coupling test is the pattern to extend.
+- [x] ~~**Stop duplicating Presidio's checksum arithmetic**~~ — **DONE 2026-08-09**, by
+      removing Presidio. `pii/core/checksums.py` is now the single source of truth: each
+      `ChecksumRule` calls its function once per match and branches on the result, so the valid
+      class and its `*_INVALID` shadow cannot desync — there is no second implementation to
+      desync *with*. The proposed fix (delegate to presidio's `validate_result`) was inverted by
+      the retirement, exactly as the 2026-08-09 direction note predicted. `pii_eval/au.py` still
+      mirrors the arithmetic, and its coupling test still guards that one seam.
 
 - [ ] **De-flake the tier-1 gate / revisit `build.CRITICAL`** (2026-08-08, incidental finding
       above). The gate passes at seeds 42 and 1 but fails at 2, 3 and 7 on unmodified code —

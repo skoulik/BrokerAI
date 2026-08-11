@@ -65,33 +65,19 @@ class TestGetOcrPage:
         ("paddle:v6_medium", "v6_medium"),
         ("paddle:v5_server", "v5_server"),
     ])
-    def test_gpu_wheel_routes_to_the_right_worker_spec(
-        self, backend, spec, monkeypatch
-    ):
-        """The spec strings are a stringly-typed contract between
-        get_ocr_page and the worker's _resolve — a typo would surface only
-        under a real engine, so pin them here."""
-        from pii.core import ocr_paddle, ocr_worker
+    def test_tier_binds_in_process_on_either_wheel(self, backend, spec,
+                                                   monkeypatch):
+        """`get_ocr_page` binds the tier and runs in-process — on the GPU
+        wheel too, since the worker subprocess was retired 2026-08-09 (the
+        pipeline no longer imports torch, so there is nothing to isolate).
+        The tier strings are the contract; a typo would surface only under a
+        real engine, so pin them here."""
+        from pii.core import ocr_paddle
 
         monkeypatch.setattr(ocr_paddle, "_gpu_wheel", lambda: True)
-        seen = []
-        monkeypatch.setattr(ocr_worker, "worker_page",
-                            lambda spec, image: seen.append(spec))
-        get_ocr_page(backend)(object())
-        assert seen == [spec]
-
-    def test_worker_resolve_binds_and_warms_the_tier(self, monkeypatch):
-        """The other side of that contract: _resolve binds the right callable
-        AND warms the engine (so a load failure surfaces before READY, not on
-        the first page)."""
-        from pii.core import ocr_paddle, ocr_worker
-
-        warmed = []
-        monkeypatch.setattr(ocr_paddle, "_engine", warmed.append)
-        ocr_fn = ocr_worker._resolve("v6_medium")
-        assert warmed == ["v6_medium"]
-        assert ocr_fn.func is ocr_paddle.ocr_page_paddle
-        assert ocr_fn.keywords == {"tier": "v6_medium"}
+        bound = get_ocr_page(backend)
+        assert bound.func is ocr_paddle.ocr_page_paddle
+        assert bound.keywords == {"tier": spec}
 
 
 class TestRowBanding:

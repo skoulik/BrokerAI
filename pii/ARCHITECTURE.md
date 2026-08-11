@@ -9,7 +9,7 @@ the **component boundary and dependency rules**; each component's own design liv
 
 | Component | Package | Role | Docs |
 |---|---|---|---|
-| **Core** (engine) | `pii.core` | Detection + pseudonymization pipeline: the layer-0 LLM detectors (page image / document text), Presidio + custom AU recognizers, text/CSV/image/PDF modes, OCR geometry, pseudonym mapping. The whole detection stack and every engine design decision. | [core/ARCHITECTURE.md](core/ARCHITECTURE.md) · [ROADMAP](core/ROADMAP.md) · [TODO](core/TODO.md) · [DONE](core/DONE.md) |
+| **Core** (engine) | `pii.core` | Detection + pseudonymization pipeline: the layer-0 LLM detectors (page image / document text), our own pattern/checksum engine and AU rules, text/CSV/image/PDF modes, OCR geometry, pseudonym mapping. The whole detection stack and every engine design decision. | [core/ARCHITECTURE.md](core/ARCHITECTURE.md) · [ROADMAP](core/ROADMAP.md) · [TODO](core/TODO.md) · [DONE](core/DONE.md) |
 | **CLI** | `pii.cli` | Command-line front-end: `strip` / `analyze` / `rehydrate` and all flags. | [cli/ARCHITECTURE.md](cli/ARCHITECTURE.md) · [ROADMAP](cli/ROADMAP.md) · [TODO](cli/TODO.md) · [DONE](cli/DONE.md) |
 | **GUI** | `pii.gui` | Local interactive front-end. **Planned — new direction, requirements not yet finalized.** Stubs only. | [gui/ARCHITECTURE.md](gui/ARCHITECTURE.md) · [ROADMAP](gui/ROADMAP.md) · [TODO](gui/TODO.md) · [DONE](gui/DONE.md) |
 

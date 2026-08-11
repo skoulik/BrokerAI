@@ -109,6 +109,11 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
         else:
             doc.pii(au.medicare(rng), "AU_MEDICARE")
         doc.nl()
+        doc.raw("  ABN:             ")
+        # Hyphen-grouped on purpose (2026-08-09): the space-only surface forms
+        # hid a leak where a VALID hyphenated identifier matched no rule at
+        # all. See au.hyphenate.
+        doc.pii(au.hyphenate(au.abn(rng)), "AU_ABN").nl()
         doc.raw("  Driver licence:  ").pii(au.drivers_licence(rng), "AU_DRIVERS_LICENCE").nl()
         doc.raw("  Mobile:          ").pii(person.mobile, "PHONE_NUMBER").nl()
         doc.raw("  Email:           ").pii(person.email, "EMAIL_ADDRESS").nl()

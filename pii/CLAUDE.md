@@ -44,32 +44,37 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   entry.
 - **Standalone from the RAG app.** Nothing here may import `rag_tools`, `app.py`, `ingest.py`,
   or other RAG-pipeline code; the PII tool only shares the local model server. Keep it that way.
-- **presidio must be ≥ 2.2.364, and `abn_checksum` is version-coupled to it.** 2.2.362's ACN
-  validator rejects every ACN with check digit 0; 2.2.364 changed the ABN validator's
-  leading-zero handling. `pii/core/checksums.py:abn_checksum` and its `pii_eval/au.py:abn_valid`
-  mirror must match presidio's ABN arithmetic exactly — `AU_ABN` and the `AU_ABN_INVALID` shadow
-  partition the 11-digit space, and a mismatch silently drops values from both. Re-check both
-  copies on every presidio upgrade.
-- **AU recognizers need explicit registration.** Presidio ships its Australian entities
-  (`AU_TFN`, `AU_MEDICARE`, `AU_ABN`, `AU_ACN`) disabled/absent from the default registry —
-  they must be registered explicitly, alongside the custom BSB/account/PayID recognizers in
-  `pii/core/recognizers.py`.
+- **One rule owns a checksummed identifier, both halves of it.** `ChecksumRule` matches once,
+  calls the checksum once, and emits either the valid class or its `*_INVALID` shadow. Never
+  split them again: they are supposed to *partition* the digit space, and when Presidio owned
+  one half and our shadows the other they silently disagreed — a hyphen-grouped VALID
+  TFN/ABN/ACN/Medicare matched neither and was detected by nothing (2026-08-09).
+  `pii/core/checksums.py` is the single source of truth; `pii_eval/au.py` mirrors it so the
+  corpus generator and the detector agree.
+- **The context boost's constants are load-bearing.** +0.35, floored to 0.4, capped at 1.0,
+  from a window BEFORE the match only. Every sub-threshold pattern (bare account numbers, PayID
+  digit runs, the `context` invalid tier) exists only because that promotion exists, so changing
+  a constant silently re-tunes all of them. Pinned in `tests/pii/core/test_engine.py`.
+- **A label is evidence, not part of the value.** Labeled identifier patterns match the label
+  as a LOOKBEHIND. A span covering "TFN: 123 456 782" keys the pseudonym map on a different
+  string than a bare occurrence of the same TFN, forking one identifier into TFN_1 and TFN_2.
+- **Layer 1 must not import torch — nor anything that does.** Nothing in the strip path may
+  pull in spaCy/thinc/presidio (thinc imports real torch eagerly). This is not hygiene: the
+  paddle-GPU wheel cannot share a Windows process with torch, and OCR runs in-process now that
+  it does not have to. `ocr_paddle._engine` raises if torch is present, and
+  `test_registry_policy.py` checks the import graph in a subprocess.
 - **There is no layer 2, and no detector switch.** GLiNER2 was retired 2026-08-09 (GLiNER v1
   before it, 2026-07-13); both are in git history. Layer 0 — a local LLM over HTTP — is the
   only semantic detector, in every input mode. Do not re-add an NER model to the registry:
   `tests/pii/core/test_registry_policy.py` fails if anything there claims ADDRESS or
-  DATE_OF_BIRTH, or claims PERSON without being the mechanical `JointNameRecognizer`.
+  DATE_OF_BIRTH, or claims PERSON without being the mechanical `JointNameRule`.
 - **A strip entry point always takes a detector.** `strip_text` / `strip_csv` / `strip_image` /
   `strip_pdf` require one — layer 1 alone is the `--no-ner` regime retired 2026-07-15 as unsafe
   (its name leaks), and it must not be reachable by omitting an argument. `PiiPipeline.detect`
   stays public as a *layer*, which is what `merge_detections` consumes.
-- **spaCy is the NLP engine only, not a detector.** `SpacyRecognizer` is not in the registry;
-  spaCy stays loaded solely for Presidio's context enhancer (tokens/lemmas). Regression-tested
-  in `tests/pii/core/test_registry_policy.py`; rationale in
-  [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 - **No standalone place-name detection.** A lone city/town name passes verbatim; `LOCATION` is
-  not in `DEFAULT_STRIP_ENTITIES`, the placeholder map, or the recognizer's supported entities.
-  The ADDRESS passes still strip full addresses and suburb-postcode lines. Rationale in
+  not in `DEFAULT_STRIP_ENTITIES` or the placeholder map. Full addresses and suburb-postcode
+  lines still strip, as layer-0 ADDRESS. Rationale in
   [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 - **Detection and grounding are two model passes, never one.** `detect` names the values,
   `localize` asks where they are. Asking for both at once costs 7.4% recall (measured, 31

@@ -1,12 +1,12 @@
 """Layer 1 — pattern/checksum detection — and the pseudonymization pipeline.
 
-`PiiPipeline` is layer 1: Presidio pattern/checksum recognizers (built-in
-AU_TFN, AU_ABN, AU_ACN, AU_MEDICARE, credit cards, emails), the custom
-recognizers in pii.core.recognizers (BSB, account, PayID, joint-account
-name forms, ATF trustee clauses), an AU-region phone recognizer, and the
-invalid-candidate shadows. URL/IP detection is deliberately dropped (not
-relevant to financial documents): the predefined UrlRecognizer and
-IpRecognizer are removed from the registry.
+`PiiPipeline` is layer 1: the pattern/checksum rules in
+pii.core.recognizers, run by pii.core.engine. AU_TFN / AU_MEDICARE /
+AU_ABN / AU_ACN and payment cards each come from ONE rule that emits the
+valid class or its `*_INVALID` shadow from a single checksum call; plus
+BSB, account numbers, PayID, joint-account initials, ATF trustee clauses,
+email, IBAN and AU-region phones. URL/IP detection is deliberately absent
+(not relevant to financial documents), as is anything US-specific.
 
 The SEMANTIC detector is layer 0 and lives outside this module — a local
 LLM reading the page image (pii.core.vlm) or the document text
@@ -18,16 +18,15 @@ composition; a front-end never strips a document without a layer-0
 detector.
 
 There is no layer 2. GLiNER2 was retired 2026-08-09 after layer 0 beat it
-on every semantic class and seed (ARCHITECTURE "Layer 0"). spaCy remains
-Presidio's NLP engine only (tokens/lemmas → context enhancer), never a
-detector.
+on every semantic class and seed (ARCHITECTURE "Layer 0"), and Presidio
+and spaCy went the same day — the engine is ours (pii.core.engine).
 
 Detected spans are resolved for overlaps and replaced with consistent
 placeholders from a PseudonymMap.
 
 Checksum-invalid identifier candidates (a value shaped like a TFN whose
 mod-11 arithmetic fails — a typo, bad OCR, or forgery) are collected by
-the shadow recognizers in pii.core.invalid_recognizers, controlled by the
+the same rules that detect the valid classes, controlled by the
 `invalid_identifiers` tier, and returned by detect()/strip() as
 InvalidFinding records. They are only *masked* when mask_invalid=True
 adds the invalid classes to strip_entities — note layer 0 strips such a
@@ -38,36 +37,15 @@ treat any log of them as a local-only artifact, like the pseudonym map.
 
 from dataclasses import dataclass
 
-from presidio_analyzer import (
-    AnalyzerEngine,
-    RecognizerRegistry,
-    RecognizerResult,
-)
-from presidio_analyzer.nlp_engine import NlpEngineProvider
-from presidio_analyzer.predefined_recognizers import (
-    AuAbnRecognizer,
-    AuAcnRecognizer,
-    AuMedicareRecognizer,
-    AuTfnRecognizer,
-    PhoneRecognizer,
-)
-
-from pii.core.invalid_recognizers import (
-    INVALID_ENTITY_TYPES,
-    INVALID_RULES,
-    VALIDATED_RECOGNIZERS,
-    make_invalid_recognizers,
-)
+from pii.core.detection import Detection
+from pii.core.engine import Analyzer
 from pii.core.mapping import PseudonymMap
 from pii.core.org_policy import is_private_entity
 from pii.core.recognizers import (
-    AtfTailRecognizer,
-    AuAccountNumberRecognizer,
-    AuAfslRecognizer,
-    AuBsbRecognizer,
-    AuCreditLicenceRecognizer,
-    JointNameRecognizer,
-    PayIdRecognizer,
+    INVALID_ENTITY_TYPES,
+    INVALID_RULES,
+    VALIDATED_RULES,
+    build_rules,
 )
 
 # Entities replaced by default. Detected-but-kept by default: ORGANIZATION
@@ -101,12 +79,6 @@ DEFAULT_STRIP_ENTITIES = {
     "IDENTIFIER_GENERIC",
 }
 
-NLP_CONFIG = {
-    "nlp_engine_name": "spacy",
-    "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
-}
-
-
 @dataclass
 class InvalidFinding:
     """A collected checksum-invalid identifier candidate. Near-PII —
@@ -135,85 +107,24 @@ class PiiPipeline:
         if mask_invalid:
             # masking is nothing more than stripping the invalid classes
             self.strip_entities |= INVALID_ENTITY_TYPES
-        nlp_engine = NlpEngineProvider(nlp_configuration=NLP_CONFIG).create_engine()
-        registry = RecognizerRegistry(supported_languages=["en"])
-        registry.load_predefined_recognizers(nlp_engine=nlp_engine)
-        # spaCy stays as Presidio's NLP engine (tokens/lemmas feed the context
-        # enhancer) but is not a detector: layer 0 owns PERSON/ORG/dates and
-        # spaCy's own emissions only added glue spans (PERSON crossing OCR line
-        # breaks) and date-as-PERSON false positives. See ARCHITECTURE.md.
-        registry.remove_recognizer("SpacyRecognizer")
-        # URL/IP are not relevant to financial documents: drop the predefined
-        # recognizers so they never detect — leaving them loaded but merely
-        # unstripped would still clutter analyze()/reports.
-        registry.remove_recognizer("UrlRecognizer")
-        registry.remove_recognizer("IpRecognizer")
-        # Default phone regions don't include AU. AU-only on purpose
-        # (issue #11): with US in the region list, libphonenumber read
-        # account+amount digit runs
-        # ('A/C 30-743-3257 1.50' -> '3074332571') as valid US numbers, and
-        # _merge_overlaps draped the phone span over the account, eating the
-        # amount's integer part. International '+'-prefixed numbers are
-        # parsed region-independently, so '+1 305 555 0123' still strips —
-        # the only sacrifice is bare US/GB-domestic-format numbers, which
-        # don't occur on AU statements.
-        registry.remove_recognizer("PhoneRecognizer")
-        registry.add_recognizer(PhoneRecognizer(supported_regions=("AU",)))
-        # The AU checksum recognizers aren't part of the default registry load.
-        for recognizer_cls in (
-            AuTfnRecognizer,
-            AuMedicareRecognizer,
-            AuAbnRecognizer,
-            AuAcnRecognizer,
-        ):
-            registry.add_recognizer(recognizer_cls())
-        registry.add_recognizer(AuBsbRecognizer())
-        registry.add_recognizer(AuAccountNumberRecognizer())
-        registry.add_recognizer(PayIdRecognizer())
-        # KEPT classes (not in DEFAULT_STRIP_ENTITIES): public corporate
-        # licence numbers, detected so reports discriminate them from
-        # AU_DRIVERS_LICENCE (issue #8c / review other-finding #1).
-        registry.add_recognizer(AuAfslRecognizer())
-        registry.add_recognizer(AuCreditLicenceRecognizer())
-        # Joint-account initials forms ('E & J Moore') — mechanical enough
-        # for layer 1, and a deterministic floor under a stochastic detector
-        # (2026-07-15, DONE.md).
-        registry.add_recognizer(JointNameRecognizer())
-        # '<company> ATF <trust>' trustee clauses — mechanical legal form
-        # owned at layer 1 (issue #9): doc-truncated trust names defeat both
-        # model confidence and marker matching, the connector never does.
-        registry.add_recognizer(AtfTailRecognizer())
-        for recognizer in make_invalid_recognizers(invalid_identifiers):
-            registry.add_recognizer(recognizer)
-        # There is no layer 2 any more: GLiNER2 was retired 2026-08-09 after
-        # layer 0 beat it on every semantic class (ARCHITECTURE "Layer 0").
-        # This registry IS layer 1 — patterns, checksums and the shadows.
-        self.analyzer = AnalyzerEngine(
-            nlp_engine=nlp_engine, registry=registry, supported_languages=["en"]
-        )
+        self.analyzer = Analyzer(build_rules(invalid_identifiers))
 
     def analyze(self, text: str):
         """All detections above threshold, overlap-resolved, sorted by
         position — including entity types that strip() would keep."""
-        results = self.analyzer.analyze(
-            text=text, language="en", score_threshold=self.threshold
-        )
-        return _resolve_overlaps(results)
+        return _resolve_overlaps(self.analyzer.analyze(text, self.threshold))
 
     def detect(self, text: str) -> tuple[list, list[InvalidFinding]]:
         """One analyzer pass -> (strip plan, checksum-invalid findings).
 
         The plan is what strip() replaces: strip-listed entities only,
         overlaps merged. Filter to strip-listed entities BEFORE overlap
-        handling: a kept-type span (e.g. a bogus high-score DATE_TIME from
-        spacy) must never shadow an overlapping PII span, or the PII
-        leaks. Then MERGE overlapping spans rather than picking a winner —
+        handling: a kept-type span must never shadow an overlapping PII
+        span, or the PII leaks. Then MERGE overlapping spans rather than picking a winner —
         a small high-score span (BSB, 0.55) must not evict a wider
         covering span (account number, 0.52) and expose the rest of it.
         """
-        results = self.analyzer.analyze(
-            text=text, language="en", score_threshold=self.threshold
-        )
+        results = self.analyzer.analyze(text, self.threshold)
         plan = _merge_overlaps(
             [r for r in results if self._in_strip_plan(r, text)]
         )
@@ -268,7 +179,7 @@ class PiiPipeline:
         reach them and a boxed merchant logo would be painted over.
         """
         return self._in_strip_plan(
-            RecognizerResult(
+            Detection(
                 entity_type=entity_type, start=0, end=len(value), score=1.0
             ),
             value,
@@ -394,7 +305,7 @@ def _merge_overlaps(results):
         ] or members
         best = max(candidates, key=_rank)
         merged.append(
-            RecognizerResult(
+            Detection(
                 entity_type=best.entity_type,
                 start=start,
                 end=end,
@@ -424,10 +335,8 @@ def _collect_invalid(results, text: str) -> list[InvalidFinding]:
     validated = [
         r
         for r in results
-        if (r.recognition_metadata or {}).get(
-            RecognizerResult.RECOGNIZER_NAME_KEY
-        )
-        in VALIDATED_RECOGNIZERS
+        if r.recognizer in VALIDATED_RULES
+        and r.entity_type not in INVALID_ENTITY_TYPES
     ]
     inv = [
         r

@@ -10,7 +10,7 @@ The project is being revived in phases (see `ROADMAP.md`; design decisions in `A
 
 ## Commands
 
-There is no requirements.txt or lint. Key deps: quart, chromadb, pymupdf, anytree, httpx, python-box, transformers, langchain-text-splitters, aiofiles, aiopath.
+There is no requirements.txt or lint at the repo root (the PII tool has its own, `pii/requirements.txt`). Key RAG deps: quart, chromadb, pymupdf, anytree, httpx, python-box, transformers, langchain-text-splitters, aiofiles, aiopath.
 
 - `pytest` — run the testbench (`tests/`, mirrors the package layout; config in `pyproject.toml`). The default run is fast and model-free; `pytest -m "slow or model"` adds the heavyweight tests (the tier-1 eval gate, which needs a llama-server — see `$PII_VLM_URL`), `pytest -m ""` runs everything. A JUnit XML report lands in `test-results/junit.xml` on every run.
 

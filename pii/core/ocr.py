@@ -37,25 +37,27 @@ OCR_PAGE_BACKENDS = ("paddle", "paddle:v5_server", "paddle:v6_medium")
 
 
 def get_ocr_page(backend: str = "paddle"):
-    """Resolve a backend name to an `(image, lang=...) -> OcrPage` callable,
-    worker vs in-process by paddle wheel (see ocr_paddle's DLL rules).
+    """Resolve a backend name to an `(image, lang=...) -> OcrPage` callable.
+
+    In-process, always, on either paddle wheel. The GPU wheel used to be
+    routed through a worker subprocess because paddle-GPU and torch cannot
+    share a Windows process and the pipeline held torch — but no part of the
+    strip path imports torch since Presidio and spaCy went (2026-08-09), so
+    the subprocess had nothing left to isolate and was retired with them.
+    `ocr_paddle._engine` still refuses to run if torch IS present, which is
+    what turns a future re-introduction into an error instead of a crash.
+
     Imports are deferred so the engine loads only when used."""
     family, _, selector = backend.partition(":")
     if family != "paddle":
         raise ValueError(f"unknown OCR page backend: {backend!r}")
-    from pii.core.ocr_paddle import DEFAULT_TIER, MODEL_TIERS, _gpu_wheel
+    from functools import partial
+
+    from pii.core.ocr_paddle import DEFAULT_TIER, MODEL_TIERS, ocr_page_paddle
 
     tier = selector or DEFAULT_TIER
     if tier not in MODEL_TIERS:
         raise ValueError(f"unknown paddle model tier: {selector!r}")
-    if _gpu_wheel():
-        from pii.core.ocr_worker import worker_page
-
-        return lambda image, lang="eng": worker_page(tier, image)
-    from functools import partial
-
-    from pii.core.ocr_paddle import ocr_page_paddle
-
     return partial(ocr_page_paddle, tier=tier)
 
 

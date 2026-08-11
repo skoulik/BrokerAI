@@ -88,7 +88,7 @@ def test_lowercase_prose_untouched(pipeline):
 
 
 def test_lowercase_nonvocab_prose_not_joint_name(pipeline):
-    # Issue #4: presidio's default IGNORECASE turned the [A-Z] name-word class
+    # Issue #4: a default IGNORECASE turns the [A-Z] name-word class
     # into "any letter", so lowercase prose with NO statement-vocabulary word
     # (the guard can't catch it) matched the joint pattern. The recognizer
     # drops IGNORECASE, so these stay put.

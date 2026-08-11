@@ -1,7 +1,7 @@
 """PDF page rendering and reassembly.
 
 Rendering tests are pure geometry (no OCR). The strip_pdf tests are
-model-free like the image-mode suite: real presidio pipeline (stubbed
+model-free like the image-mode suite: the real layer-1 pipeline (stubbed
 NER) + a fake OCR engine injected at the pii.core.pdf_mode.get_ocr_page
 seam, so what is asserted is the reassembly contract — page count/size, no
 text layer, painted pixels, clean metadata, per-page results — and, for the

@@ -23,10 +23,10 @@ or the web app; the only planned shared infrastructure is the local llama-server
 
 | Module | Role |
 |---|---|
-| `presidio-analyzer` ≥ 2.2.364 | The orchestrator and layer 1: recognizer registry, pattern/checksum recognizers (including the built-in AU ones), scoring, and the lemma-based context enhancer. **Not** `presidio-image-redactor` — see the orthogonality decision below. |
-| spaCy (`en_core_web_sm`) | Presidio's mandatory **NLP engine** — tokenization and lemmas that feed the context enhancer. Not a detector: `SpacyRecognizer` was retired 2026-07-15 (decision below); spaCy stays loaded solely for the NLP engine. |
+| `regex` | The regex engine layer 1 compiles with — stdlib `re` cannot do the variable-length lookbehind the account-after-BSB and labeled-identifier patterns need. |
+| `tldextract`, `phonenumbers` | The two validators worth not writing: public-suffix check for emails, libphonenumber for AU phone numbers. |
 | llama-server (llama.cpp), Qwen3.6-27B | **Layer 0**, the semantic detector — reached over HTTP, never imported. Not a dependency of `pii.core` (stdlib `urllib` transport) but a hard runtime requirement of every strip mode. |
-| PaddleOCR (`paddleocr` + a `paddlepaddle` wheel) | The OCR engine behind the image path — **geometry only, never detection** (Tesseract was the first backend, retired 2026-07-17 — decision below). GPU wheel runs in a worker subprocess, historically for torch coexistence. |
+| PaddleOCR (`paddleocr` + a `paddlepaddle` wheel) | The OCR engine behind the image path — **geometry only, never detection** (Tesseract was the first backend, retired 2026-07-17 — decision below). Runs in-process on either wheel since the torch conflict went (2026-08-09). |
 | Pillow | Pixel painting for image output. |
 
 ### Our modules
@@ -39,8 +39,9 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 |---|---|
 | `__init__.py`, `constants.py` | Public API surface (`PiiPipeline`, `PseudonymMap`, `RECORD_SEPARATOR`, `DEFAULT_STRIP_ENTITIES`, `InvalidFinding`, `INVALID_ENTITY_TYPES`); `RECORD_SEPARATOR` lives in `constants.py` (zero-import, cycle-free) |
 | `pipeline.py` | `PiiPipeline` — **layer 1**: builds the Presidio registry, runs one analyzer pass, filters to the strip list, union-merges overlaps, collects checksum-invalid findings. `merge_detections` folds layer 0 in on top |
-| `recognizers.py` | Custom AU pattern recognizers: BSB, bank account (context-boosted), PayID |
-| `invalid_recognizers.py` | Shadow recognizers with inverted validation — collect checksum-fail candidates (`*_INVALID` / `*_MALFORMED`) |
+| `detection.py` | `Detection` — the record every layer emits and every consumer reads |
+| `engine.py` | `Rule` / `PatternRule` / `Analyzer` — the regex loop, the validation hook, the char-level context boost, thresholding and deduplication |
+| `recognizers.py` | **Every** layer-1 rule: the checksummed identifiers (each emitting its valid class OR its `*_INVALID` shadow from one checksum call), BSB, account, PayID, licences, joint names, ATF tails, email, IBAN, phone |
 | `mapping.py` | `PseudonymMap` — placeholder allocation, JSON persistence, rehydration |
 | `csv_mode.py` | Per-cell transaction-CSV processing |
 | `vlm.py` | **Layer 0, pixels** — a local vision LLM reads the page image and names the PII; transport, both prompts (detect / localize), parsing |
@@ -52,7 +53,6 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `ocr_page.py` | Perception: `OcrPage` → `OcrLine` → `OcrWord` + `OcrFrame`. Geometry only, no character offsets |
 | `linearization.py` | `OcrPage` → `RecognizerInput`: the flat page string plus the source map that turns a span back into pixel boxes |
 | `ocr_paddle.py` | PaddleOCR adapter: line-oriented det/rec → per-word `OcrPage`; picks worker vs in-process by wheel |
-| `ocr_worker.py` | Persistent PaddleOCR worker subprocess (GPU paddle can't share a process with torch) — framed PNG-in / `OcrPage`-out |
 | `ocr_debug.py` | `pii debug ocr` renderers over an `OcrPage`: JSON, text summary, annotated overlay |
 | `paint.py` | The drawing toolkit (`Segment`, `paint_segments`, fill/frame styles), shared by strip and the debug overlay |
 | `image_mode.py` | Image front/back-end: layer-0 detect, locate in the OCR text, paint placeholders onto the original pixels |
@@ -69,7 +69,7 @@ flowchart TB
 
     PDF -- "pdf_mode.py: render pages<br>(300 DPI, streamed)" --> IMG
     IMG --> VLM["vlm.py — Layer 0<br>pass 1: read the pixels, name the values<br>pass 2: box those values"]
-    IMG --> OCRPY["ocr.py seam → ocr_paddle.py (PaddleOCR)<br>GPU: ocr_worker.py subprocess<br>OcrPage → linearize:<br>page string + word-box source map"]
+    IMG --> OCRPY["ocr.py seam → ocr_paddle.py (PaddleOCR)<br>in-process, either wheel<br>OcrPage → linearize:<br>page string + word-box source map"]
     CSV --> CSVM["csv_mode.py<br>per-cell, sentinel-joined batches"]
 
     TXT --> TLLM["text_llm.py — Layer 0<br>windowed read, name the values"]
@@ -184,32 +184,55 @@ the tier-1 acceptance gate. There is no offline path.
 Standalone `LOCATION` detection was retired 2026-07-23 (decision below) — bare place names
 pass verbatim.
 
-### Do we still need Presidio and spaCy? For now.
+### Presidio and spaCy retired; the engine is ours (2026-08-09)
 
-*(Being reconsidered: retiring Presidio and spaCy is the next step of the 2026-08-09
-programme — see [TODO.md](TODO.md)'s direction note. The reasons below are why they survived
-the GLiNER2 retirement, not a permanent answer.)*
+`pii/core/engine.py` (~190 lines) replaces `AnalyzerEngine`, `RecognizerRegistry`,
+`PatternRecognizer` and `LemmaContextAwareEnhancer`. What we actually used of Presidio was a
+regex loop, a three-way validation hook, a context boost and a threshold; what it cost was a
+mandatory spaCy NLP engine, ten recognizers we never stripped on (US SSN/bank/passport/ITIN,
+NHS, crypto, MAC, medical licence, DATE_TIME) running on every call, and — the reason this
+became urgent — a **split ownership of every checksummed identifier**.
 
-- **Checksum validation is Presidio's, not ours.** The AU TFN/Medicare/ABN/ACN validators and
-  Luhn are Presidio's own code (verified working); our custom recognizers add BSB, account
-  numbers and PayID, and our shadow recognizers invert those validators for the
-  invalid-identifier feature. Layer 0 names identifiers but cannot verify them — it reads a
-  TFN, it cannot check mod-11 — so layer 1 is what makes an identifier trustworthy and what
-  types it at all (the layer-0 class vocabulary is deliberately coarse). The shadows
-  *re-implement* rather than call that arithmetic
-  (`pii/core/checksums.py`), so each copy must track Presidio exactly: a valid/invalid pair
-  partitions its digit space, and any disagreement drops values through both sides
-  unreported. Presidio 2.2.364's ABN change proved the risk — see [DONE.md](DONE.md).
-- **The context enhancer needs the NLP engine.** Presidio's lemma-based context boost powers
-  the account-number recognizer and the `context` invalid-collection tier; it consumes
-  spaCy's tokens/lemmas, so spaCy stays loaded even if every spaCy detector is removed.
-- **Presidio is the chassis.** The registry, scoring, and result model are what all three
-  layers (and the CSV/image wrappers) plug into; our pipeline-level value-add (recall-first
-  merging, invalid findings, pseudonym planning) sits on top of it.
-- **spaCy is the NLP engine, not a detector (since 2026-07-15).** The lemma-based context
-  enhancer consumes spaCy's tokens/lemmas, so spaCy stays loaded — but `SpacyRecognizer` is
-  removed (decision below). Note this is now spaCy's *only* remaining job, which is what makes
-  it a retirement candidate alongside Presidio.
+**The split was a live leak, not a tidiness problem.** Presidio owned the valid classes and our
+shadows owned the invalid ones, each with its own pattern set and its own copy of the
+arithmetic. Presidio's AU patterns accept SPACE-grouped digits only; the shadows accept `[- ]`.
+So a hyphen-grouped **valid** TFN/ABN/ACN/Medicare (`123-456-782`) matched Presidio not at all
+and was dropped by the shadow *for passing its checksum* — detected by nothing, in all four
+classes. The corpus could not see it: `pii_eval/au.py` only ever emitted space-grouped forms.
+`ChecksumRule` now matches once, extracts digits once, calls the checksum once and branches, so
+the two halves cannot disagree — and `pii/core/checksums.py` becomes the single source of truth
+rather than a mirror that had to stay bit-identical to a dependency (the 2.2.364 ABN change had
+already proved that hazard). This closes the standing "stop duplicating Presidio's checksum
+arithmetic" item by deletion.
+
+Three scoring behaviours are reproduced exactly, because every score in `recognizers.py` was
+tuned against them: validation overrides the pattern score (True → 1.0, False → drop, None →
+keep), the context boost is +0.35 floored to 0.4 and capped at 1.0, and duplicate spans collapse
+to the highest score. Pinned in `tests/pii/core/test_engine.py`.
+
+**The context match moved from spaCy lemmas to characters, and that is an upgrade.** The
+2026-07-15 spaCy source review found the lemma path actively broken on this text: `a/c` splits
+into three tokens while `TFN:123456782` stays one, so the label word never surfaced as a token
+either way, and the rule lemmatizer left HEADER-CASE labels unlemmatized on top. Its conclusion
+was "keep label/context matching char-level"; `AuAccountNumberRule` had already worked around
+the gap by matching `a/c` inside its own pattern. A 60-character window before the match,
+searched case-insensitively for the context term as a substring, is what that review asked for
+and needs no NLP engine.
+
+**One label change came out of the merge**: a label is matched as a LOOKBEHIND, so it stays
+outside the span. The old shadows matched labels in-span and got away with it (an invalid
+candidate is reported, not aliased), but for a *valid* identifier a span covering "TFN: 123 456
+782" keys the pseudonym map on a different string than a bare occurrence — one identifier
+forking into TFN_1 and TFN_2 inside a document. Caught by the placeholder-consistency test.
+
+**What it bought beyond correctness**: no spaCy, no thinc, no torch. That is what let the paddle
+worker subprocess be retired the same day (decision below) — the DLL conflict it isolated only
+existed because the analysis stack dragged torch in transitively.
+
+**Layer 1 is what makes an identifier trustworthy.** Layer 0 names identifiers but structurally
+cannot verify them — it reads a TFN, it cannot check mod-11 — and its class vocabulary is coarse
+on purpose, so layer 1 is what *types* a digit run at all and what validates it. That is why the
+chassis swap did not shrink layer 1's role: it only changed who runs it.
 
 ## Design decisions
 
@@ -295,12 +318,12 @@ One consequence beyond detection: the `csv_mode` sentinel keeps only one of its 
 still stops pattern recognizers matching across cells, but it is no longer an attention-window
 boundary.
 
-**A consequence that was expected and did not materialise:** the pipeline is *not* torch-free.
-GLiNER2 was the only thing that imported torch directly, but spaCy's `thinc` ships a PyTorch
-shim and loads real torch eagerly, so `import presidio_analyzer` alone still puts it in
-`sys.modules` with CUDA live (measured 2026-08-09). The paddle worker subprocess therefore
-stays exactly as it is; its retirement is downstream of the Presidio/spaCy retirement, and is
-recorded that way in [TODO.md](TODO.md).
+**A consequence that took one more step than expected:** removing GLiNER2 did NOT make the
+pipeline torch-free. It was the only *direct* consumer, but spaCy's `thinc` ships a PyTorch shim
+and loads real torch eagerly, so `import presidio_analyzer` alone still pulled it in with CUDA
+live (measured 2026-08-09, when the paddle-worker retirement was attempted on the strength of
+the wrong assumption). Retiring the chassis the same day is what finished the job — see the
+paddle worker decision below.
 
 One layer-1 rule outlived the retirement and should not be mistaken for NER leftovers:
 `AuAccountNumberRecognizer`'s >=5-digit floor (`validate_result`). It was introduced alongside
@@ -499,10 +522,8 @@ adapter (`ocr_paddle.py`) established two structural rules the seam now carries:
 - **Process rules are part of a backend's contract.** On Windows, paddlepaddle-gpu and torch
   cannot share a process (bundled-cudnn mutual exclusion; full story in the adapter docstring
   and the 2026-07-17 DONE record). GPU paddle therefore serves torch-free OCR-only processes
-  (the pii_eval fidelity sweep) directly; the full pipeline reaches it through the worker
-  subprocess below. Still true after the 2026-08-09 layer-2 retirement: GLiNER2 was the only
-  *direct* torch consumer, but spaCy/thinc load real torch transitively, so the pipeline process
-  still holds it (measured — see the layer-2 decision above). The adapter installs a torch *stub* to satisfy
+  (the pii_eval fidelity sweep) directly. Since 2026-08-09 *every* path is torch-free, so the
+  GPU wheel serves all of them in-process — see the paddle worker decision below. The adapter installs a torch *stub* to satisfy
   paddleocr's modelscope import chain in GPU processes.
 - **Package inits stay lazy (PEP 562) — load-bearing.** `pii/__init__` and
   `pii/core/__init__` resolve their public names lazily so `import pii.core.ocr` never drags
@@ -511,44 +532,36 @@ adapter (`ocr_paddle.py`) established two structural rules the seam now carries:
 - Backend model caches follow the repo convention: `models/paddlex` (PADDLE_PDX_CACHE_HOME,
   set by the adapter).
 
-### Paddle worker-process isolation (2026-07-17)
+### Paddle worker-process isolation — built 2026-07-17, RETIRED 2026-08-09
 
-The GPU paddle wheel and torch cannot share a Windows process (the cudnn mutual exclusion
-above). With Tesseract retired, the image pipeline had to run both — GLiNER2 on torch for
-detection, paddle for OCR — so paddle moved into its own interpreter: a **persistent worker
-subprocess** (`ocr_worker.py`), spawned lazily and kept alive for the run. The engine loads
-once per worker; PNG bytes go in and a pickled `OcrPage` comes back over a framed
-stdio protocol. Design decisions and their rationale:
+The GPU paddle wheel and torch cannot share a Windows process: both bundle
+`cudnn_cnn64_9.dll` from different CUDA families and the second loader gets WinError 127,
+whichever the order. With Tesseract retired, the image pipeline had to run both — GLiNER2 on
+torch for detection, paddle for OCR — so paddle moved into its own interpreter: a persistent
+worker subprocess (`ocr_worker.py`) spawned lazily, PNG bytes in and a pickled `OcrPage` back
+over a framed stdio protocol.
 
-- **Routing is by wheel, not by torch-load timing.** `ocr.get_ocr_page(backend)`
-  returns the worker-backed callable on the GPU wheel and the in-process partial on the CPU
-  wheel. Choosing by wheel (not "is torch imported yet") makes the decision independent of
-  call ordering — the image pipeline OCRs *before* it runs NER, so a torch-presence check
-  would wrongly pick in-process and then break when the torch model loaded. The CPU wheel coexists
-  with torch (torch just has to import first, which the pipeline already does) and stays
-  in-process, so the torch-free fidelity sweep keeps its fast direct path.
-- **fd 1 is the protocol; paddle noise is redirected.** The worker dups stdout to a private
-  fd and points fd 1 (Python and C) at stderr *before* importing paddle, and forces both
-  protocol fds to binary on Windows — paddle's chatty logging can never corrupt the stream.
-- **Crash surfacing over hanging.** A dead child closes the pipe, so a short read raises
-  `EOFError` → the client raises a `RuntimeError` carrying the exit code. A startup handshake
-  (the child sends `READY` once its engine loads) turns an engine-load failure into an error
-  at spawn time. A per-image exception is returned as an error frame and the worker keeps
-  serving — one bad page must not kill the engine; only a real crash (segfault/OOM) ends it,
-  and that surfaces on the next call. Known limitation: a *wedged* child — alive but never
-  answering — blocks the caller indefinitely; there is deliberately no read timeout, because
-  paddle's legitimate stalls (first-call D3D12 fallback ~13 s, cold model load) make any
-  static deadline false-kill-prone. Revisit with a watchdog only if a real hang is observed.
-- **The client side stays torch-safe.** `ocr_worker.py`'s module level imports only stdlib +
-  the neutral `OcrPage`; the paddle import lives inside `main()`, reached only as
-  `python -m pii.core.ocr_worker <tier>`. So the torch-holding parent can `import
-  pii.core.ocr_worker` without tainting itself (regression-tested).
-- **Cost accepted.** Both models hold VRAM at once during pipeline runs (worker paddle +
-  parent NER model on one GPU); on the 11 GB 2080 Ti this was fine for page-sized renders but is
-  the first place to watch for OOM on very large images (`text_det_limit_side_len` is the
-  lever). Per-call IPC is a PNG encode + pipe transfer + pickle — negligible next to GPU
-  inference. `worker_page` replaces a worker that died between documents (fresh attempt) while
-  a mid-call death still raises.
+**It is gone, because its premise is.** Nothing in the strip path imports torch any more.
+GLiNER2 was the only *direct* consumer, but removing it was not enough — spaCy's `thinc` ships
+a PyTorch shim and imports real torch eagerly, so `import presidio_analyzer` alone kept torch
+in `sys.modules` (measured 2026-08-09, and it is why the worker survived the layer-2
+retirement by a few hours). Retiring Presidio and spaCy the same day is what actually made the
+process torch-free. Verified before deleting anything: the full analysis stack plus in-process
+GPU paddle in one interpreter, on the 2080 Ti, correct OCR output.
+
+`get_ocr_page` now returns the in-process callable on either wheel. What remains, and must:
+
+- **The torch guard in `ocr_paddle._engine`.** It refuses to start when a real torch is in
+  `sys.modules`, which turns a future re-introduction into a clear error instead of a DLL
+  crash. It is now the only thing standing between the two libraries.
+- **The torch stub (`_stub_torch`).** paddlex hard-imports modelscope, which hard-imports
+  torch at import time; the stub satisfies that without loading the real DLLs.
+- **Lazy package inits (PEP 562).** `pii/__init__` and `pii/core/__init__` still resolve their
+  public names lazily. The reason is weaker than it was — the analysis stack is light now —
+  but `import pii.core.ocr` still must not drag in the pipeline.
+
+The worker and its protocol tests are one revert away in git history, the same disposition as
+Tesseract, Surya and the layout backends.
 
 ### OCR perception layer: OcrPage / linearization (2026-07-24, narrowed 2026-08-09)
 
@@ -857,11 +870,9 @@ filter — useful framing when we define our merge algebra.
 
 - `pii/` keeps its own `requirements.txt`; repo-wide `pyproject.toml` + uv is a Phase 2 item
   (root ROADMAP).
-- presidio ≥ 2.2.364 (see the AU-recognizers decision above).
 - **A llama-server is required by every strip mode** (`--vlm-url` / `$PII_VLM_URL`): layer 0
   is reached over HTTP, so it is a runtime dependency rather than a package one. Nothing in
   this repo starts it.
 - No torch, and no local NER weights, since the 2026-08-09 layer-2 retirement.
-- spaCy model: `python -m spacy download en_core_web_sm`.
-- OCR: `paddleocr` + a `paddlepaddle` wheel (GPU `paddlepaddle-gpu` here; the image pipeline
-  drives it via the worker subprocess). Tesseract + `pytesseract` retired 2026-07-17.
+- OCR: `paddleocr` + a `paddlepaddle` wheel (GPU `paddlepaddle-gpu` here), driven in-process.
+  Tesseract + `pytesseract` retired 2026-07-17.

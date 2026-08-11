@@ -1,10 +1,10 @@
 """Pattern-layer pipeline behaviour and overlap merging (no NER)."""
 
-from presidio_analyzer import RecognizerResult
+from pii.core.detection import Detection
 
 from pii.core.mapping import PseudonymMap
 from pii.core.pipeline import _merge_overlaps
-from pii.core.recognizers import AuAccountNumberRecognizer
+from pii.core.recognizers import AuAccountNumberRule
 
 # Checksum-valid literals (pii_eval.au generators, fixed seeds).
 VALID_TFN = "291 417 774"
@@ -12,7 +12,7 @@ VALID_CARD = "4783 5337 4068 1247"
 
 
 def _rr(etype, start, end, score):
-    return RecognizerResult(entity_type=etype, start=start, end=end, score=score)
+    return Detection(entity_type=etype, start=start, end=end, score=score)
 
 
 def test_strip_valid_tfn(pipeline):
@@ -94,10 +94,10 @@ def test_labeled_account_pattern_releases_trailing_amount():
     # amount ('A/C 30-743-3257 148.74CR' -> 'A/C 30-743-3257 148',
     # 'A/C ... 1.50' -> 'A/C ... 1'). Recognizer-level: no emitted span may
     # reach past the account itself.
-    rec = AuAccountNumberRecognizer()
+    rule = AuAccountNumberRule()
     for amount in ("148.74CR", "1.50"):
         text = f"A/C 32-151-6825 {amount}"
-        spans = rec.analyze(text, ["AU_BANK_ACCOUNT"])
+        spans = rule.detect(text)
         assert spans, text
         assert max(r.end for r in spans) <= len("A/C 32-151-6825"), (
             [text[r.start:r.end] for r in spans]
@@ -110,7 +110,7 @@ def test_labeled_account_releases_trailing_amount_e2e(pipeline):
     # '1.50' additionally exercises the issue-#11 follow-up — with US phone
     # regions libphonenumber read '32-151-6825 1' as a valid US number
     # (3215168251) and _merge_overlaps draped that span over the amount;
-    # AU-only regions keep PhoneRecognizer silent here.
+    # AU-only regions keep the phone rule silent here.
     for amount in ("148.74CR", "1.50"):
         text = f"Interest Charged From A/C 32-151-6825 {amount}"
         out, _, _ = pipeline.strip(text, PseudonymMap())
@@ -218,7 +218,7 @@ def test_kept_org_does_not_shield_nested_address(pipeline, monkeypatch):
         _rr("ORGANIZATION", 7, 25, 0.95),  # WOOLWORTHS NEWTOWN (kept type)
         _rr("ADDRESS", 18, 25, 0.6),       # NEWTOWN
     ]
-    monkeypatch.setattr(pipeline.analyzer, "analyze", lambda **kw: results)
+    monkeypatch.setattr(pipeline.analyzer, "analyze", lambda *a, **kw: results)
     out, _, _ = pipeline.strip(text, PseudonymMap())
     assert out == "EFTPOS WOOLWORTHS ADDRESS_1 4821 AU"
 
@@ -233,7 +233,7 @@ def test_private_org_stripped_institution_and_merchant_kept(pipeline, monkeypatc
         _rr("ORGANIZATION", 32, 35, 0.97),  # ANZ (keep-listed) -> keep
         _rr("ORGANIZATION", 41, 51, 0.95),  # WOOLWORTHS (no marker) -> keep
     ]
-    monkeypatch.setattr(pipeline.analyzer, "analyze", lambda **kw: results)
+    monkeypatch.setattr(pipeline.analyzer, "analyze", lambda *a, **kw: results)
     out, _, _ = pipeline.strip(text, PseudonymMap())
     assert "SK BUSINESS TRUST" not in out
     assert "ORG_1" in out
@@ -253,7 +253,7 @@ def test_strip_orgs_forces_all_including_institutions(make_pipeline, monkeypatch
         _rr("ORGANIZATION", 5, 8, 0.97),    # ANZ
         _rr("ORGANIZATION", 13, 23, 0.95),  # WOOLWORTHS
     ]
-    monkeypatch.setattr(pipeline.analyzer, "analyze", lambda **kw: results)
+    monkeypatch.setattr(pipeline.analyzer, "analyze", lambda *a, **kw: results)
     out, _, _ = pipeline.strip(text, PseudonymMap())
     assert "ANZ" not in out and "WOOLWORTHS" not in out
 

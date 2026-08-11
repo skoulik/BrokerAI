@@ -33,7 +33,7 @@ import warnings
 from dataclasses import dataclass, field
 
 from PIL import Image
-from presidio_analyzer import RecognizerResult
+from pii.core.detection import Detection
 
 from pii.core.linearization import RecognizerInput, linearize
 from pii.core.locator import locate_findings
@@ -172,7 +172,7 @@ def strip_from_vlm(
 
     placed = locate_findings(findings, ocr, image.size)
     detected = [
-        RecognizerResult(
+        Detection(
             entity_type=p.finding.entity_type,
             start=p.start,
             end=p.end,

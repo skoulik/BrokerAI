@@ -51,8 +51,8 @@ collections, jQuery frontend) are scheduled for replacement — see ROADMAP Phas
 
 Strips PII from documents locally so the stripped versions can be shared with cloud models —
 **pseudonymization with a consistent, rehydratable local mapping** (`John Smith → PERSON_1`
-everywhere), not blank redaction. Layered detection (Presidio patterns/checksums with custom
-AU recognizers, GLiNER2 zero-shot NER, a planned local-LLM audit pass) over text, CSV, image
+everywhere), not blank redaction. Layered detection (a local LLM naming the values, our own
+pattern/checksum rules typing and validating them, a planned local-LLM audit pass) over text, CSV, image
 and (planned) PDF inputs, with a recall-first scoring philosophy: every ambiguity resolves
 toward stripping.
 
@@ -67,5 +67,5 @@ Fully documented in its own directory (moved out of this file 2026-07-14):
 ## Dependency/runtime notes
 
 - The `pii/` tool keeps its own `requirements.txt`; repo-wide `pyproject.toml` + uv is a
-  Phase 2 item. PII-specific runtime notes (CUDA torch, model caches, PaddleOCR) live in
+  Phase 2 item. PII-specific runtime notes (the model server, model caches, PaddleOCR) live in
   [pii/ARCHITECTURE.md](pii/ARCHITECTURE.md).
