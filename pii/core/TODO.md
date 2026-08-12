@@ -430,6 +430,136 @@ quantization item below is what stands between this and a usable product.
       engine. Must never feed the strip decision (we deliberately distrust the text layer).
 ## Detection pipeline
 
+- [ ] **A layer-0 repetition loop is silently indistinguishable from a clean page — LEAK**
+      *(found 2026-08-12 while benchmarking; three reproductions in one session, plus one in
+      the live server's own log)*. This is a correctness bug, not a performance note.
+
+      **The failure.** Under greedy decode (`temperature 0, top_k 1`, both required for the
+      gate) the model can enter a repeating state it cannot escape, and emits the same entry
+      until `max_tokens`:
+
+          ..."AT06667873802666"..."AT06667873802666"..."AT06667873802666"... (to 4096)
+
+      The JSON array never closes, `_extract_array` fails, and `parse_findings` returns `[]`.
+
+      **Why that leaks.** `image_mode.read_page` does `findings = detector.detect(image)` with
+      no check (`image_mode.py:181`), so `[]` means "clean page". Layer 0 is the ONLY detector
+      for PERSON / ADDRESS / ORGANIZATION — `test_registry_policy.py` enforces that no layer-1
+      recognizer may claim them — so a looped page emits **no name, address or company
+      redaction whatsoever**, while layer 1 still finds checksummed identifiers and makes the
+      output look plausibly redacted. `vlm.py`'s module docstring already states the contract
+      ("the caller is expected to treat that as a failure rather than an empty page"); the
+      caller does not implement it.
+
+      Grouping is a partial mitigation and NOT a fix: "a page is not the unit of truth" means a
+      value the loop lost is recovered if some other page carries it. A single-page document,
+      or a value unique to the looped page, has nothing to borrow from.
+
+      **Rate.** ~1 in 70 on real pages — the `n_tokens = 8518` entry in the 8B `serve.log`
+      (2026-08-11) is one, a 4099-token decode on a real statement. Higher on dense synthetic
+      transaction tables, which is exactly the shape real bank statements have.
+
+      **The cheap correct fix is already on the wire.** llama-server returns
+      `choices[0].finish_reason`, which is `"length"` when the generation was truncated and
+      `"stop"` otherwise. `VlmDetector._ask` currently reads only `.message.content` and
+      discards it. Checking it separates the three cases the code currently conflates —
+      genuinely empty page, malformed-but-complete output, and truncated output — and only the
+      first may be treated as "no findings". The other two must warn loudly and be counted
+      (same rule as `unlocated`: a warning alone is deduplicated by Python's default filter).
+
+      Note this is NOT fixed by [the grammar item below](#): a grammar constrains FORM, not
+      LENGTH, so a grammar-guided loop truncates just as unparseably.
+
+      **Suppressing the loop itself — a second, independent fix** *(Sergei, 2026-08-12: "there
+      is a command line option that will fine repetitions")*. llama.cpp exposes all nine
+      penalty knobs as PER-REQUEST fields, not just server flags, so they belong on the payload
+      in `vlm._ask` where they are versioned with the code — the same reasoning that makes
+      `--image-max-tokens` living only in a shell script a liability.
+
+      Not all of them are admissible here, and the obvious one is the wrong one:
+
+      - `repeat_penalty`/`repeat_last_n`, `presence_penalty`, `frequency_penalty` — **avoid.**
+        All are TOKEN-level. A page of account numbers repeats digit tokens constantly, and the
+        prompt requires *"Transcribe each value EXACTLY as printed"*; biasing against a repeated
+        digit corrupts the transcription, which is the one output that must be verbatim.
+      - `dry_*` — **the candidate.** DRY penalises repeated SEQUENCES. Two defaults make it fit:
+        `dry_sequence_breakers = ["\n", ":", "\"", "*"]` are all frequent in JSON, so the match
+        resets across our scaffolding and effectively only sees the bare value between quotes;
+        and `dry_penalty_last_n` (default 64) is a SCAN WINDOW, which is what resolves the
+        tension with "report every occurrence" — a runaway repeats within a few tokens, while a
+        legitimate duplicate of the same value sits rows apart. Keeping that window short
+        catches loops and ignores honest duplicates.
+
+      Deterministic under greedy decode either way, so the gate is unaffected. There is a
+      reproducible specimen to test against: `bench_p0_ov10_s0.png` (a horizontal half-page
+      slice) loops on `AT06667873802666` every time at seed 42. Any candidate setting must be
+      checked on BOTH that and a normal page — the failure to avoid is a penalty that stops the
+      loop and quietly drops a legitimately repeated account number.
+
+      **MEASURED 2026-08-12: DRY does not work here, and the reason is structural.** Four
+      settings (multiplier 0.8/1.5, `dry_penalty_last_n` 64/128, `dry_allowed_length` 4), each
+      on the looping specimen and a known-good page:
+
+      - **None of them stopped the loop.** Every one still hit `max_tokens` with zero parseable
+        findings.
+      - **Two of them BROKE the good page**, turning a clean 666-token answer into a 4096-token
+        runaway of its own (`dry_penalty_last_n 128`, and `dry_allowed_length 4`).
+      - The two that survived still **lost real values** against the no-penalty baseline —
+        `EFTPOS COLES EXPRESS`, `R & E ROCHA RENT`, `SALARY PARKER MANAGEMENT PTY LTD`,
+        `NETFLIX.COM AU` — which is the exact failure this item warned about.
+
+      The mechanism is the default `dry_sequence_breakers = ["\n", ":", "\"", "*"]`. The
+      repeating unit is `{"text": "<value>", "type": "PII_IDENTIFIER"}, ` — full of `"` and
+      `:` — so DRY's match restarts every few tokens and never accumulates repetition signal.
+      **The breakers that stop DRY fighting our JSON scaffolding also blind it to a loop
+      expressed in JSON.** Clearing them would expose the loop but would then penalise the
+      per-entry scaffolding every valid response depends on. Do not re-litigate this without a
+      different mechanism.
+
+      Consequence for the fix above: **detection is the primary mitigation, not a fallback.**
+      If the loop cannot be reliably prevented, `finish_reason` must reliably catch it. That
+      signal is confirmed working — the specimen reports `"length"`, the good page `"stop"`.
+
+- [ ] **Constrain layer-0 output with a grammar instead of parsing whatever comes back**
+      *(Sergei, 2026-08-12: "I was thinking about adding a BNF grammar to the requests,
+      llama.cpp support them")*. Written down, not designed.
+
+      Both layer-0 prompts end with *"Output a JSON array only, no prose, no markdown fence"*,
+      and `parse_findings` then defends against the model ignoring that — `_extract_array`
+      tolerates a code fence, `strip_thinking` drops `<think>` blocks, and a body that parses as
+      nothing yields no findings. llama-server can enforce the shape at the sampler instead: a
+      GBNF `grammar` field, or `response_format: {"type": "json_schema", ...}`, on the same
+      `/v1/chat/completions` call the transport already makes.
+
+      **Three things it buys.** *(a)* The unparseable-body path stops being reachable by
+      malformed output — today an empty result is ambiguous, because a genuinely clean page and
+      a model that wrapped its answer in prose are indistinguishable to the caller, which the
+      `vlm` docstring flags ("the caller is expected to treat that as a failure rather than an
+      empty page") without giving it any way to tell them apart. *(b)* The class vocabulary
+      becomes enforced rather than mapped: `TYPE_MAP.get(..., "IDENTIFIER_GENERIC")` silently
+      collapses a class the model invents, and an enum in the grammar makes that unrepresentable
+      — which is the same drift `test_text_llm.py` pins the vocabulary to catch. *(c)* It should
+      shorten output slightly: no fence, no preamble.
+
+      **What it does NOT fix, and this is the trap worth recording.** A grammar constrains FORM,
+      not LENGTH. Measured on the bench page 2026-08-12: a dense synthetic statement made the 8B
+      emit 250+ findings and hit `max_tokens=4096` mid-array. Grammar-guided output truncates
+      exactly as unparseably — the array simply never closes. Whatever fixes *that* is a
+      different mechanism (a smaller unit of work, or an incremental parse that keeps the
+      elements already completed).
+
+      **It is a detection-quality change, not a serialization change.** Constrained decoding
+      alters the sampled distribution, so it needs the same A/B any prompt edit needs, against
+      the 445-findings / 350-distinct-values baseline in
+      [reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md). It
+      also costs per-token sampler work, which is cheap to fold into a serving sweep as an
+      on/off axis.
+
+      **Where it plugs in:** one field on the payload built in `vlm.VlmDetector._ask` and its
+      `text_llm` twin, in three shapes matching the three prompts (values, values + `bbox_2d`,
+      `bbox_2d` only). Keep `parse_findings`'s defences either way — a grammar is a property of
+      one server's sampler, and `Transport` is deliberately injectable.
+
 - [ ] **A span the keep list splits produces fragments that never rejoin the group they came
       from** *(Sergei, 2026-08-11, on seeing `FROM SK BUSINESS TRUS ANZ HIGHETT LOAN` strip to
       `FROM ORG_5 ANZ ORG_6`: "I think we should run re-grouping after splits. Highett is not an
