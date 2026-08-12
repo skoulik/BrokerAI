@@ -75,8 +75,9 @@ DEFAULT_PAD = 8  # px, at the analysis DPI
 GEOMETRIES = ("hybrid", "ocr", "vlm")
 DEFAULT_GEOMETRY = "hybrid"
 
-# Kept verbatim from the tuned probe prompt. Three properties are load-bearing
-# and should not be edited casually - each was established by measurement:
+# The tuned probe prompt, plus the value-not-label sentence added 2026-08-12.
+# Four properties are load-bearing and should not be edited casually - each was
+# established by measurement:
 #  - coarse classes: collapsing 14 -> 5 cost no recall and GAINED generalization
 #    (a vehicle registration was caught with no mention of vehicles);
 #  - no institutional carve-outs: over-strip is recoverable by the keep-list,
@@ -84,7 +85,18 @@ DEFAULT_GEOMETRY = "hybrid"
 #    per-page, unauditable keep decision;
 #  - identifiers-live-in-headings + naming "policy, reference and claim numbers":
 #    a policy number rendered as a bold heading was missed until BOTH were
-#    present. The structural hint alone was not enough.
+#    present. The structural hint alone was not enough;
+#  - value-not-label: the sentence states an invariant the tool already holds
+#    ("a label is evidence, not part of the value") and that layer 0 was
+#    breaking on every page, keying the map on "Account number 6874-72521".
+#    Its SCOPE is what matters, not its phrasing. Three phrasings that named
+#    only the label produced byte-identical findings; widening it by one phrase
+#    ("never the label, heading or caption") left two pages untouched and made
+#    the model grab whole transaction-narrative rows on the third
+#    ("FROM THE TRUSTEE FOR TO ANZ ACCT LN"). Keep it narrow, and do not try to
+#    aim its large precision side-effect by rewording - per-value keep
+#    decisions belong in entity_keep.txt where they are auditable.
+#    Measurements in DONE.md.
 PROMPT = """You are auditing a scanned Australian financial document for personally \
 identifying information, so that it can be pseudonymized before leaving a secure network.
 
@@ -111,6 +123,9 @@ not report them.
 Identifiers appear anywhere on the page, not only as the value of a labelled field. A \
 heading, title, footer, prose sentence or table cell may itself contain an identifier, with \
 no separate label next to it - read those as carefully as you read labelled fields.
+
+Report the VALUE, never the label that introduces it: in "Account number 1234-5678" the \
+identifier is "1234-5678", not "Account number".
 
 Transcribe each value EXACTLY as printed, preserving spacing, hyphens and punctuation. Do \
 not normalize, reformat or correct it."""
