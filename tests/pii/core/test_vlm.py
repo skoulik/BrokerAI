@@ -16,18 +16,28 @@ from PIL import Image
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box
 from pii.core.vlm import (
+    GRAMMAR_LOCATE,
+    GRAMMAR_VALUES,
+    GRAMMAR_VALUES_BOXES,
     TYPE_MAP,
+    DetectorResult,
+    Incomplete,
     VlmDetector,
     VlmError,
     VlmFinding,
     attach_boxes,
     fold_digits,
     parse_findings,
+    read_response,
 )
 
 
-def _reply(content: str) -> dict:
-    return {"choices": [{"message": {"content": content}}]}
+def _reply(content: str, finish_reason: str = "stop") -> dict:
+    return {
+        "choices": [
+            {"message": {"content": content}, "finish_reason": finish_reason}
+        ]
+    }
 
 
 def _transport(content: str):
@@ -111,13 +121,199 @@ def test_every_mapped_type_is_a_real_placeholder_prefix():
         assert entity in PLACEHOLDER_PREFIXES, entity
 
 
+# ---------------------------------------------- truncation, and its salvage
+#
+# A repetition loop under greedy decode emits the same entry until the token
+# budget runs out. The array never closes, so before finish_reason was read the
+# result was an empty finding list — indistinguishable from a clean page, on a
+# layer that is the ONLY detector for PERSON/ADDRESS/ORGANIZATION.
+
+
+def test_a_clean_page_is_not_an_incomplete_one():
+    result = read_response(_reply("[]"))
+    assert result.findings == []
+    assert not result.incomplete
+    assert result.incomplete.truncated == 0
+
+
+def test_a_cut_off_array_is_counted_as_truncated_not_read_as_empty():
+    body = (
+        '[{"text": "A", "type": "PII_NAME"}, '
+        '{"text": "B", "type": "PII_NAME"}, {"text": "C'
+    )
+    result = read_response(_reply(body, finish_reason="length"))
+    assert result.incomplete == Incomplete(truncated=1)
+
+
+def test_a_cut_off_array_keeps_the_entries_that_completed():
+    # The whole point of salvaging: a dense page that hit the budget after N
+    # findings used to contribute none of them.
+    body = (
+        '[{"text": "A", "type": "PII_NAME"}, '
+        '{"text": "B", "type": "PII_COMPANY"}, {"text": "C'
+    )
+    result = read_response(_reply(body, finish_reason="length"))
+    assert [(f.text, f.entity_type) for f in result.findings] == [
+        ("A", "PERSON"),
+        ("B", "ORGANIZATION"),
+    ]
+
+
+def test_a_repetition_loop_collapses_to_one_finding():
+    # Hundreds of copies of one value would otherwise arrive as hundreds of
+    # separate "unredacted detection" warnings and bury the report.
+    entry = '{"text": "AT06667873802666", "type": "PII_IDENTIFIER"}'
+    body = "[" + ", ".join([entry] * 200) + ', {"text": "AT066'
+    result = read_response(_reply(body, finish_reason="length"))
+    assert [f.text for f in result.findings] == ["AT06667873802666"]
+    assert result.incomplete.truncated == 1
+
+
+def test_repeats_that_differ_by_box_are_kept_apart_when_salvaging():
+    # Two printings of one value are two occurrences, not a loop; only
+    # byte-identical entries collapse.
+    body = (
+        '[{"text": "A", "bbox_2d": [1, 2, 3, 4]}, '
+        '{"text": "A", "bbox_2d": [5, 6, 7, 8]}, {"text": "A'
+    )
+    result = read_response(_reply(body, finish_reason="length"))
+    assert [f.box for f in result.findings] == [(1, 2, 3, 4), (5, 6, 7, 8)]
+
+
+def test_commas_inside_an_entry_are_not_salvage_cut_points():
+    # Cutting at the comma before "type" would truncate the object itself.
+    body = '[{"text": "A", "type": "PII_NAME"}, {"text": "B", "type'
+    result = read_response(_reply(body, finish_reason="length"))
+    assert [f.text for f in result.findings] == ["A"]
+
+
+def test_a_single_incomplete_entry_salvages_nothing_but_still_counts():
+    result = read_response(_reply('[{"text": "A", "ty', finish_reason="length"))
+    assert result.findings == []
+    assert result.incomplete.truncated == 1
+
+
+def test_a_complete_answer_at_the_budget_is_not_called_truncated():
+    # The array closed, so everything meaningful arrived; whatever the budget
+    # cut was trailing.
+    result = read_response(
+        _reply('[{"text": "A", "type": "PII_NAME"}]', finish_reason="length")
+    )
+    assert not result.incomplete
+    assert len(result.findings) == 1
+
+
+def test_a_finished_answer_that_is_not_json_is_counted_as_malformed():
+    result = read_response(_reply("I could not read this page."))
+    assert result.incomplete == Incomplete(malformed=1)
+
+
+def test_truncated_and_malformed_are_different_counters():
+    # They have different causes and only one has an operator-actionable fix,
+    # so the report must not merge them.
+    assert Incomplete(truncated=1) != Incomplete(malformed=1)
+    assert (Incomplete(truncated=1) + Incomplete(malformed=2)) == Incomplete(1, 2)
+    assert sum([Incomplete(truncated=1)] * 3) == Incomplete(truncated=3)
+
+
+# ----------------------------------------------------------------- grammar
+#
+# The output shape is enforced at the sampler rather than parsed out of
+# whatever comes back. It constrains FORM, not LENGTH — the truncation tests
+# above stay relevant with it on.
+
+
+def _rule(grammar: str, name: str) -> str:
+    return [
+        line for line in grammar.splitlines()
+        if line.startswith(f"{name} ::=")
+    ][0]
+
+
+def test_the_class_enum_is_exactly_the_mapped_vocabulary():
+    # Derived from TYPE_MAP, so a class the model could name and TYPE_MAP does
+    # not know is unrepresentable rather than silently IDENTIFIER_GENERIC.
+    quoted = _rule(GRAMMAR_VALUES, "type").split("::=", 1)[1]
+    assert [alt.strip() for alt in quoted.split("|")] == [
+        f'"\\"{name}\\""' for name in TYPE_MAP
+    ]
+
+
+def test_each_prompt_shape_gets_the_matching_grammar():
+    values = _transport("[]")
+    VlmDetector(transport=values).detect(Image.new("RGB", (4, 4), "white"))
+    assert values.seen["payload"]["grammar"] == GRAMMAR_VALUES
+
+    boxes = _transport("[]")
+    VlmDetector(transport=boxes, want_boxes=True).detect(
+        Image.new("RGB", (4, 4), "white")
+    )
+    assert boxes.seen["payload"]["grammar"] == GRAMMAR_VALUES_BOXES
+
+    locate = _transport('[{"text": "A", "bbox_2d": [1, 2, 3, 4]}]')
+    VlmDetector(transport=locate).localize(
+        Image.new("RGB", (4, 4), "white"),
+        [VlmFinding(text="A", entity_type="PERSON")],
+    )
+    assert locate.seen["payload"]["grammar"] == GRAMMAR_LOCATE
+
+
+def test_only_the_boxes_grammar_admits_a_bbox():
+    assert "bbox_2d" not in GRAMMAR_VALUES
+    assert "bbox_2d" in GRAMMAR_VALUES_BOXES
+    assert "bbox_2d" in GRAMMAR_LOCATE
+    # Pass 2 is told the values, so it must not re-type them.
+    assert "type" not in GRAMMAR_LOCATE
+
+
+def test_the_grammar_field_is_absent_when_switched_off():
+    # Not empty — absent, so the A/B is exactly grammar on vs off.
+    send = _transport("[]")
+    VlmDetector(transport=send, grammar=False).detect(
+        Image.new("RGB", (4, 4), "white")
+    )
+    assert "grammar" not in send.seen["payload"]
+
+
+def test_the_only_unbounded_repetitions_carry_content():
+    # An unbounded repetition that emits nothing meaningful — free whitespace,
+    # an open-ended digit run — is a legal place for a greedy decode to spin
+    # forever. The two that ARE unbounded have to be: the entry list is the
+    # answer's length, and the value is transcribed verbatim.
+    for grammar in (GRAMMAR_VALUES, GRAMMAR_VALUES_BOXES, GRAMMAR_LOCATE):
+        repeated = [
+            line for line in grammar.splitlines()
+            if "*" in line or "+" in line
+        ]
+        assert [line.split(" ::=")[0] for line in repeated] == [
+            "root", "string"
+        ], grammar
+        # Whitespace is pinned into the literals rather than given a rule.
+        assert "ws" not in grammar
+
+
+def test_a_bbox_integer_cannot_run_away_and_is_not_clamped():
+    # Bounded so a digit run cannot spin; NOT range-checked to 0..1000, because
+    # clamping turns a visibly off-page box into a plausible wrong one.
+    rule = _rule(GRAMMAR_VALUES_BOXES, "int")
+    assert rule.count("[0-9]?") == 4  # at most five digits
+    assert "1000" not in rule
+
+
+def test_grammar_writes_a_backslash_as_a_hex_escape():
+    # llama.cpp b10326 rejects `\\` inside a character class ("failed to parse
+    # grammar") but accepts \x5C. Do not restore json.gbnf's spelling.
+    assert "\\x5C" in GRAMMAR_VALUES
+    assert "[^\"\\x5C" in _rule(GRAMMAR_VALUES, "char")
+
+
 # --------------------------------------------------------------- transport
 
 
 def test_detector_sends_image_and_prompt():
     send = _transport('[{"text": "A", "type": "PII_NAME"}]')
     det = VlmDetector(url="http://x:1", transport=send)
-    found = det.detect(Image.new("RGB", (8, 8), "white"))
+    found = det.detect(Image.new("RGB", (8, 8), "white")).findings
 
     assert [f.text for f in found] == ["A"]
     content = send.seen["payload"]["messages"][0]["content"]
@@ -171,7 +367,9 @@ def test_localize_asks_only_where_and_lists_the_values():
     det = VlmDetector(transport=send)
     findings = [VlmFinding(text="A. Person", entity_type="PERSON")]
 
-    (out,) = det.localize(Image.new("RGB", (8, 8), "white"), findings)
+    (out,) = det.localize(
+        Image.new("RGB", (8, 8), "white"), findings
+    ).findings
 
     assert out.box == (10, 20, 30, 40)
     prompt = send.seen["payload"]["messages"][0]["content"][1]["text"]
@@ -189,7 +387,7 @@ def test_localize_makes_no_call_for_an_empty_page():
     def explode(*a, **kw):  # pragma: no cover - must not run
         raise AssertionError("no second pass without findings")
 
-    assert VlmDetector(transport=explode).localize(None, []) == []
+    assert VlmDetector(transport=explode).localize(None, []).findings == []
 
 
 def test_attach_boxes_pairs_repeats_in_order():
@@ -238,17 +436,23 @@ def test_attach_boxes_matches_through_reformatting():
 # --------------------------------------------------------------- geometry
 
 
-def _ocr(text: str):
-    """One word per token, laid out left to right on a single line, through
-    the real perception -> linearization seam."""
-    from pii.core.linearization import linearize
+def _ocr_page(text: str):
+    """One word per token, laid out left to right on a single line — what an
+    OCR engine returns, before linearization."""
     from pii.core.ocr_page import OcrFrame, build_page
 
     row, x = [], 0
     for token in text.split(" "):
         row.append((token, Box(x, 0, 10 * len(token), 12), 99.0))
         x += 10 * len(token) + 10
-    return linearize(build_page([row], OcrFrame(width=x, height=12, page=1)))
+    return build_page([row], OcrFrame(width=x, height=12, page=1))
+
+
+def _ocr(text: str):
+    """The same page through the real perception -> linearization seam."""
+    from pii.core.linearization import linearize
+
+    return linearize(_ocr_page(text))
 
 
 def _has_non_background(image, box) -> bool:
@@ -295,6 +499,110 @@ def test_unlocatable_value_warns_and_is_not_silently_dropped(pipeline):
     # A count that reaches the caller, not only a warning that may be
     # deduplicated by the default filter on the next page.
     assert [f.text for f in result.unlocated] == ["NOT ON THE PAGE"]
+
+
+def test_a_truncated_read_warns_and_reaches_the_result(pipeline):
+    # The leak this closes: layer 0 is the only detector for PERSON / ADDRESS /
+    # ORGANIZATION, so a page whose answer was cut off gets none of them while
+    # layer 1 still redacts the checksummed identifiers — plausible-looking
+    # output over a page nobody finished reading.
+    from pii.core.image_mode import read_page, strip_from_vlm
+
+    class CutOff:
+        def detect(self, image):
+            return DetectorResult(
+                [VlmFinding(text="SERGEI KULIK", entity_type="PERSON")],
+                Incomplete(truncated=1),
+            )
+
+        def localize(self, image, findings):
+            return DetectorResult(list(findings))
+
+    with pytest.warns(RuntimeWarning, match="cut off at the token budget"):
+        read = read_page(
+            Image.new("RGB", (200, 40), "white"),
+            lambda im: _ocr_page("SERGEI KULIK"),
+            detector=CutOff(),
+            geometry="hybrid",
+        )
+    assert read.incomplete == Incomplete(truncated=1)
+    # Carried to the caller, not only warned about: the default warning filter
+    # shows one instance per location, so page 2 of the same run is silent.
+    result = strip_from_vlm(
+        Image.new("RGB", (200, 40), "white"), read.findings, pipeline,
+        PseudonymMap(), ocr=_ocr("SERGEI KULIK"),
+        incomplete=read.incomplete,
+    )
+    assert result.incomplete == Incomplete(truncated=1)
+    # What DID arrive is still stripped — salvage is not quarantine.
+    assert result.spans
+
+
+def test_a_malformed_read_is_reported_as_its_own_kind(pipeline):
+    from pii.core.image_mode import read_page
+
+    class Garbage:
+        def detect(self, image):
+            return DetectorResult([], Incomplete(malformed=1))
+
+        def localize(self, image, findings):  # pragma: no cover - no findings
+            return DetectorResult(list(findings))
+
+    with pytest.warns(RuntimeWarning, match="no usable JSON array"):
+        read = read_page(
+            Image.new("RGB", (200, 40), "white"),
+            lambda im: _ocr_page("nothing here"),
+            detector=Garbage(),
+            geometry="hybrid",
+        )
+    assert read.incomplete == Incomplete(malformed=1)
+
+
+def test_a_truncated_second_pass_is_counted_too(pipeline):
+    # Milder — the values are known and only lose their search constraint —
+    # but nothing downstream can tell a box the model declined to give from
+    # one it never got to.
+    from pii.core.image_mode import read_page
+
+    class CutOffBoxes:
+        def detect(self, image):
+            return DetectorResult(
+                [VlmFinding(text="SERGEI KULIK", entity_type="PERSON")]
+            )
+
+        def localize(self, image, findings):
+            return DetectorResult(list(findings), Incomplete(truncated=1))
+
+    with pytest.warns(RuntimeWarning, match="cut off"):
+        read = read_page(
+            Image.new("RGB", (200, 40), "white"),
+            lambda im: _ocr_page("SERGEI KULIK"),
+            detector=CutOffBoxes(),
+            geometry="hybrid",
+        )
+    assert read.incomplete == Incomplete(truncated=1)
+
+
+def test_a_clean_read_carries_no_incomplete_count(pipeline):
+    from pii.core.image_mode import strip_rendered_page
+
+    class Fine:
+        def detect(self, image):
+            return DetectorResult(
+                [VlmFinding(text="SERGEI KULIK", entity_type="PERSON")]
+            )
+
+        def localize(self, image, findings):
+            return DetectorResult(list(findings))
+
+    result = strip_rendered_page(
+        Image.new("RGB", (200, 40), "white"),
+        pipeline,
+        PseudonymMap(),
+        ocr_engine=lambda im: _ocr_page("SERGEI KULIK"),
+        detector=Fine(),
+    )
+    assert not result.incomplete
 
 
 def test_value_with_no_ocr_text_is_painted_from_the_model_box(pipeline):
@@ -348,11 +656,13 @@ def test_hybrid_geometry_runs_a_second_pass_and_uses_it(pipeline):
     class FakeDetector:
         def detect(self, image):
             calls.append("detect")
-            return [VlmFinding("SERGEI KULIK", "PERSON")]
+            return DetectorResult([VlmFinding("SERGEI KULIK", "PERSON")])
 
         def localize(self, image, findings):
             calls.append("localize")
-            return [VlmFinding("SERGEI KULIK", "PERSON", box=(0, 0, 300, 100))]
+            return DetectorResult(
+                [VlmFinding("SERGEI KULIK", "PERSON", box=(0, 0, 300, 100))]
+            )
 
     def fake_ocr(image):
         # Two identical values, one inside the box and one outside it.
@@ -396,7 +706,7 @@ def test_ocr_geometry_skips_the_second_pass(pipeline):
     class FakeDetector:
         def detect(self, image):
             calls.append("detect")
-            return []
+            return DetectorResult([])
 
         def localize(self, image, findings):  # pragma: no cover - must not run
             raise AssertionError("--geometry ocr must not run pass 2")
@@ -419,7 +729,7 @@ def test_unknown_geometry_is_rejected(pipeline):
 
     class FakeDetector:
         def detect(self, image):  # pragma: no cover - never reached
-            return []
+            return DetectorResult([])
 
     with pytest.raises(ValueError, match="unknown geometry"):
         strip_rendered_page(

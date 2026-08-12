@@ -13,7 +13,7 @@ and its `stub_ner` switch are gone with it.
 
 import pytest
 
-from pii.core.vlm import VlmFinding
+from pii.core.vlm import DetectorResult, VlmFinding
 
 
 @pytest.fixture(scope="session")
@@ -56,10 +56,10 @@ class StubDetector:
 
     def detect(self, text):
         self.seen.append(text)
-        return list(self.findings)
+        return DetectorResult(list(self.findings))
 
     def localize(self, image, findings):
-        return findings
+        return DetectorResult(list(findings))
 
 
 @pytest.fixture

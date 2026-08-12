@@ -32,6 +32,7 @@ from pii.core.constants import RECORD_SEPARATOR
 from pii.core.mapping import PseudonymMap
 from pii.core.pipeline import PiiPipeline
 from pii.core.text_mode import TextStripResult, detect_text
+from pii.core.vlm import Incomplete
 
 # Never appears in bank data; blocks patterns from spanning two cells (see
 # module docstring).
@@ -75,16 +76,22 @@ def strip_csv(
     all_spans = []
     all_invalid = []
     all_unlocated = []
+    # Summed over columns: each is its own detection pass, so a column whose
+    # answer was cut off is a column that may be under-redacted.
+    all_incomplete = Incomplete()
     for col in sorted(wanted):
         # Data rows only — the header row is column names, not PII.
         cells = [row[col] if col < len(row) else "" for row in rows[1:]]
         if not any(c.strip() for c in cells):
             continue
         joined = _SENTINEL.join(cells)
-        spans, invalid, unlocated = detect_text(joined, pipeline, detector)
+        spans, invalid, unlocated, incomplete = detect_text(
+            joined, pipeline, detector
+        )
         all_spans.extend(spans)
         all_invalid.extend(invalid)
         all_unlocated.extend(unlocated)
+        all_incomplete += incomplete
 
         # Cell offset ranges within `joined`.
         bounds = []
@@ -124,4 +131,5 @@ def strip_csv(
         spans=all_spans,
         invalid=all_invalid,
         unlocated=all_unlocated,
+        incomplete=all_incomplete,
     )

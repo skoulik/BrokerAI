@@ -25,7 +25,13 @@ from pii.core.debug_overlay import DEBUG_LAYERS, parse_layers
 from pii.core.entity_keep import load_keep
 from pii.core.ocr import OCR_PAGE_BACKENDS
 # stdlib-only module, so importing it here costs nothing on the default path
-from pii.core.vlm import DEFAULT_GEOMETRY, DEFAULT_URL, GEOMETRIES, VlmError
+from pii.core.vlm import (
+    DEFAULT_GEOMETRY,
+    DEFAULT_URL,
+    GEOMETRIES,
+    Incomplete,
+    VlmError,
+)
 
 
 def _read(source: str) -> str:
@@ -74,6 +80,7 @@ def _build_detector(args):
     media = getattr(args, "image", False) or getattr(args, "pdf", False)
     geometry = getattr(args, "geometry", DEFAULT_GEOMETRY)
     url = getattr(args, "vlm_url", None) or DEFAULT_URL
+    grammar = getattr(args, "grammar", True)
 
     if not media:
         # Text and CSV have no page, so there is nothing for --geometry to
@@ -85,7 +92,7 @@ def _build_detector(args):
             )
         from pii.core.text_llm import TextDetector
 
-        return TextDetector(url=url)
+        return TextDetector(url=url, grammar=grammar)
 
     from pii.core.vlm import VlmDetector
 
@@ -95,6 +102,7 @@ def _build_detector(args):
         # directly. Everywhere else geometry comes from the second pass
         # (VlmDetector.localize), which costs no recall.
         want_boxes=geometry == "vlm",
+        grammar=grammar,
     )
 
 
@@ -141,6 +149,37 @@ def _report_geometry(box_geometry, unlocated, file=None, prefix: str = "",
             f"could not be placed, but an identical value WAS painted "
             f"elsewhere on the page — check whether these are the same "
             f"printing or a second, still legible one",
+            file=file,
+        )
+
+
+def _report_incomplete(incomplete, file=None, prefix: str = "") -> None:
+    """Report reads where the model's answer did not finish.
+
+    Always printed when non-zero, independently of --report, and worded
+    differently from every other warning here on purpose: the others name a
+    value that was not redacted, and this one cannot. What a cut-off answer
+    would have gone on to say is unknowable, so the only honest report is that
+    this run has a hole in it and where.
+
+    Layer 0 is the sole detector for PERSON / ADDRESS / ORGANIZATION, so an
+    affected page keeps its checksummed identifiers redacted by layer 1 and
+    looks plausible while missing exactly the classes a reader notices."""
+    file = file if file is not None else sys.stderr
+    if incomplete.truncated:
+        print(
+            f"{prefix}WARNING: {incomplete.truncated} model response(s) were "
+            f"cut off at the token budget. What had been reported by then was "
+            f"kept, but names, addresses or organizations may be MISSING and "
+            f"cannot be listed — re-run, or split the affected input",
+            file=file,
+        )
+    if incomplete.malformed:
+        print(
+            f"{prefix}WARNING: {incomplete.malformed} model response(s) "
+            f"carried no usable JSON array — same consequence as being cut "
+            f"off. Unless --no-grammar was passed, this means the server "
+            f"ignored the grammar; check that it is llama.cpp",
             file=file,
         )
 
@@ -265,6 +304,7 @@ def _strip_media(args, pipeline, detector):
             result.box_geometry, result.unlocated,
             painted_elsewhere=result.unlocated_painted_elsewhere,
         )
+        _report_incomplete(result.incomplete)
         _report_borrowed(len(result.borrowed))
         if args.log_invalid_identifiers == "yes" and result.invalid:
             _report_invalid(result.invalid)
@@ -315,6 +355,19 @@ def _strip_media(args, pipeline, detector):
                 f for p in result.pages
                 for f in p.unlocated_painted_elsewhere
             ],
+        )
+        # Per page as well as in total: the count says how much is missing,
+        # the page numbers say where to look.
+        affected = [p.number for p in result.pages if p.incomplete]
+        if affected:
+            print(
+                f"pages with an unfinished model response: "
+                f"{', '.join(str(n) for n in affected)}",
+                file=sys.stderr,
+            )
+        # start= matters: an empty document would otherwise sum to the int 0.
+        _report_incomplete(
+            sum((p.incomplete for p in result.pages), Incomplete())
         )
         _report_borrowed(sum(len(p.borrowed) for p in result.pages))
         invalid = [f for p in result.pages for f in p.invalid]
@@ -406,6 +459,15 @@ def main(argv=None) -> int:
              "the detector",
     )
     p_strip.add_argument(
+        "--no-grammar", dest="grammar", action="store_false",
+        help="do not constrain the model's output shape with a GBNF grammar. "
+             "The grammar is on by default: it makes a markdown fence, a "
+             "preamble or an invented entity class unrepresentable rather "
+             "than something to parse around. Turn it off to compare "
+             "detection quality, or for a server that does not support the "
+             "grammar field",
+    )
+    p_strip.add_argument(
         "--debug", metavar="LAYERS", default=None,
         help="also write ANNOTATED copies of the page(s) beside the output, "
              "ONE FILE PER LAYER (--image/--pdf only): a comma-separated list "
@@ -465,6 +527,11 @@ def main(argv=None) -> int:
         "--vlm-url", default=None,
         help="llama-server base URL (default http://localhost:8080, or "
              "$PII_VLM_URL)",
+    )
+    p_analyze.add_argument(
+        "--no-grammar", dest="grammar", action="store_false",
+        help="do not constrain the model's output shape with a GBNF grammar "
+             "(see `strip --no-grammar`)",
     )
 
     p_rehyd = sub.add_parser(
@@ -570,7 +637,9 @@ def main(argv=None) -> int:
         from pii.core.text_mode import detect_text
 
         try:
-            spans, invalid, unlocated = detect_text(text, pipeline, detector)
+            spans, invalid, unlocated, incomplete = detect_text(
+                text, pipeline, detector
+            )
         except VlmError as exc:
             raise SystemExit(f"pii: {exc}") from None
         print(f"{len(spans)} entities would be replaced:")
@@ -580,6 +649,7 @@ def main(argv=None) -> int:
                 f"WARNING: {len(unlocated)} detected value(s) were not found "
                 f"in the text and could NOT be redacted", file=sys.stderr,
             )
+        _report_incomplete(incomplete)
         # analyze has no --log-invalid-identifiers of its own; the findings
         # are the point of the command, so they always print.
         if invalid:
@@ -616,6 +686,7 @@ def main(argv=None) -> int:
             f"found in the text and were NOT redacted",
             file=sys.stderr,
         )
+    _report_incomplete(result.incomplete)
     if args.log_invalid_identifiers == "yes" and result.invalid:
         _report_invalid(result.invalid)
     _write(args.output, result.text)

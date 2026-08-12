@@ -133,6 +133,22 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   delete plus an insert for exactly 2.0 — so the prohibition only bites if no budget can pay
   the detour. Raise `_BORROWED_FUZZY_IDENTIFIER_CAP` and one account number starts matching
   another that differs by a single digit.
+- **An empty layer-0 answer is three situations, and only one is a clean page.** Every reply
+  goes through `vlm.read_response`, which reads `finish_reason`: a closed array is clean, an
+  open one is `truncated` or `malformed`, and both are carried to the caller on `Incomplete`
+  (never merged — with a grammar on, `malformed` means the server ignored it). Do not restore
+  a `detect()` that returns a bare list: layer 0 is the only detector for PERSON / ADDRESS /
+  ORGANIZATION, so a page read from a cut-off answer loses exactly those and still looks
+  plausibly redacted.
+- **A truncated answer is salvaged, and only there do identical entries collapse.** The
+  elements before the cut are real detections — 38 of them on the specimen, against 0 before.
+  The collapse is confined to that path because a loop's occurrence counts are worthless while
+  a normal page's are how repeats get boxed; genuine repeats survive anywhere because
+  `locate_borrowed` finds them mechanically.
+- **A grammar constrains FORM, not LENGTH.** Do not close the truncation path on the grounds
+  that output is now grammar-guided: measured, the loop specimen still hits `max_tokens` with
+  the grammar on. And write a literal backslash in a GBNF character class as `\x5C` —
+  llama.cpp b10326 rejects `\\` there, so json.gbnf's `string` rule cannot be pasted verbatim.
 - **A detected value that cannot be located is a leak.** Unlocatable findings must keep
   warning loudly AND stay counted on `ImageStripResult.unlocated` / `PdfPageResult.unlocated`
   / `TextStripResult.unlocated` — a warning alone is deduplicated by Python's default filter

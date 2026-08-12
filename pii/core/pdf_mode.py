@@ -55,6 +55,7 @@ from PIL import Image
 from pii.core.debug_overlay import DebugSpec, draw_layers, page_debug
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import get_ocr_page
+from pii.core.vlm import Incomplete
 
 # 300 DPI is the scanning-industry default for OCR of small print;
 # statements ship 7-9pt body text, which at the synthetic tier's 150 DPI
@@ -113,6 +114,10 @@ class PdfPageResult:
     # Spans this page owes to detections made on OTHER pages — the values that
     # used to leak here. Counted per page for the same reason as the two above.
     borrowed: list = dataclasses.field(default_factory=list)
+    # Layer-0 responses for this page that were cut off or unparseable
+    # (vlm.Incomplete). Per page rather than per document, because the page is
+    # what is under-redacted and the operator has to know which one to re-run.
+    incomplete: Incomplete = Incomplete()
 
 
 @dataclass
@@ -223,6 +228,7 @@ def strip_pdf(
             result = strip_from_vlm(
                 image, read.findings, pipeline, pmap,
                 ocr=read.ocr, grouping=grouping,
+                incomplete=read.incomplete,
             )
             cached.unlink()
             width, height = sizes[index]
@@ -252,6 +258,7 @@ def strip_pdf(
                         result.unlocated_painted_elsewhere
                     ),
                     borrowed=result.borrowed,
+                    incomplete=result.incomplete,
                 )
             )
         # A fresh document carries nothing from the source; empty the

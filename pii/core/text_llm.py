@@ -30,10 +30,12 @@ from __future__ import annotations
 
 from pii.core.vlm import (
     DEFAULT_URL,
+    DetectorResult,
+    GRAMMAR_VALUES,
+    Incomplete,
     Transport,
     http_transport,
-    parse_findings,
-    VlmError,
+    read_response,
     VlmFinding,
 )
 
@@ -149,8 +151,11 @@ class TextDetector:
     """Detects PII directly from document text.
 
     Mirrors `vlm.VlmDetector`'s contract minus geometry: `detect(text)` returns
-    findings whose `box` is always None. The transport is injectable for the
-    same reason it is there — so the testbench never needs a model server.
+    a `DetectorResult` whose findings all have `box=None`, and it shares the
+    values grammar and the `finish_reason` handling with the vision path — the
+    same class vocabulary enforced the same way. The transport is injectable
+    for the same reason it is there — so the testbench never needs a model
+    server.
     """
 
     def __init__(
@@ -159,29 +164,41 @@ class TextDetector:
         *,
         transport: Transport | None = None,
         timeout: int = DEFAULT_TIMEOUT,
+        grammar: bool = True,
     ) -> None:
         self.url = url
         self.transport = transport or http_transport
         self.timeout = timeout
+        self.grammar = grammar
 
-    def detect(self, text: str) -> list[VlmFinding]:
+    def detect(self, text: str) -> DetectorResult:
         """Findings over the whole text, deduplicated by (value, type).
 
         Windows overlap, so the same value is normally reported several times;
         only distinct (text, type) pairs survive. Deduplication keeps the FIRST
         type seen for a value — the alternative, letting a later window
         re-type it, would make the result depend on window boundaries.
+
+        The failure counters are summed over the windows, not reset per window:
+        one truncated window out of six is one part of the document the model
+        never finished reporting on, and the overlap is a recall backstop, not
+        a second reading.
         """
         seen: dict[tuple[str, str], VlmFinding] = {}
+        incomplete = Incomplete()
         for window in windows(text):
-            for finding in self._detect_window(window):
+            result = read_response(
+                self._ask(
+                    build_prompt(window),
+                    GRAMMAR_VALUES if self.grammar else None,
+                )
+            )
+            incomplete += result.incomplete
+            for finding in result.findings:
                 seen.setdefault((finding.text, finding.entity_type), finding)
-        return list(seen.values())
+        return DetectorResult(list(seen.values()), incomplete)
 
-    def _detect_window(self, window: str) -> list[VlmFinding]:
-        return parse_findings(self._ask(build_prompt(window)))
-
-    def _ask(self, prompt: str) -> str:
+    def _ask(self, prompt: str, grammar: str | None = None) -> dict:
         payload = {
             # Hybrid-thinking models honour this via the chat template; it
             # needs llama-server --jinja to take effect.
@@ -197,8 +214,6 @@ class TextDetector:
             "max_tokens": MAX_TOKENS,
             "stream": False,
         }
-        response = self.transport(self.url, payload, self.timeout)
-        try:
-            return response["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise VlmError(f"unexpected response shape: {response!r}") from exc
+        if grammar:
+            payload["grammar"] = grammar
+        return self.transport(self.url, payload, self.timeout)

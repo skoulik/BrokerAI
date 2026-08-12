@@ -35,7 +35,7 @@ from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
 from pii.core.image_mode import strip_image
 from pii.core.linearization import linearize
 from pii.core.ocr import get_ocr_page
-from pii.core.vlm import DEFAULT_GEOMETRY
+from pii.core.vlm import DEFAULT_GEOMETRY, Incomplete
 from pii_eval.build import CORPUS_KEEP_FILE
 from pii_eval.score import _norm
 
@@ -240,12 +240,14 @@ def score_image(corpus: str, threshold: float = 0.4,
         pmap = PseudonymMap()
         rereads = []
         invalid = []
+        incomplete = Incomplete()
         for name in doc["pages"]:
             result = strip_image(Image.open(corpus_path / name), pipeline,
                                  pmap, ocr_backend=ocr_backend, detector=vlm,
                                  geometry=geometry)
             rereads.append(ocr(result.image).text)
             invalid.extend(result.invalid)
+            incomplete += result.incomplete
         reread = "\n".join(rereads)
         inv_ents = [e for e in entities if e["type"] in INVALID_ENTITY_TYPES]
         reg_ents = [e for e in entities if e["type"] not in INVALID_ENTITY_TYPES]
@@ -256,7 +258,14 @@ def score_image(corpus: str, threshold: float = 0.4,
         all_entities.extend(reg_ents)
         all_invalid.extend(inv_ents)
         noise.extend((doc["source"], f) for f in _noise(invalid, inv_ents))
+        # Printed beside the score because it CHANGES WHAT THE SCORE MEANS: a
+        # miss on a page whose model answer never finished measures the token
+        # budget, not detection quality.
+        note = ""
+        if incomplete:
+            note = (f"  !! {incomplete.truncated} cut-off / "
+                    f"{incomplete.malformed} unparseable model response(s)")
         print(f"  scored {doc['source']} ({len(doc['pages'])} pages) "
-              f"[{doc['font']} {doc['size']}px]", file=sys.stderr)
+              f"[{doc['font']} {doc['size']}px]{note}", file=sys.stderr)
 
     return summarize(all_entities, all_invalid, noise, invalid_identifiers)

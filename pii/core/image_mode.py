@@ -54,6 +54,7 @@ from pii.core.vlm import (
     DEFAULT_GEOMETRY,
     DEFAULT_PAD,
     GEOMETRIES,
+    Incomplete,
     VlmFinding,
 )
 
@@ -116,6 +117,11 @@ class ImageStripResult:
     # question a debug overlay answers is per-finding: this value, this class,
     # placed THIS way. The lists remain the reporting path.
     placements: list = field(default_factory=list)
+    # Layer-0 responses for this page that came back unusable (vlm.Incomplete).
+    # Unlike every other field here this is not about a value we know of: it
+    # counts the reads where we cannot know what was missed, which is why it is
+    # carried rather than only warned about.
+    incomplete: Incomplete = Incomplete()
 
 
 @dataclass
@@ -128,6 +134,10 @@ class PageRead:
 
     findings: list
     ocr: RecognizerInput | None = None
+    # Layer-0 responses for this page that were cut off or unparseable. Carried
+    # out of sweep 1 because that is where it is known and sweep 2 is where it
+    # has to be reported.
+    incomplete: Incomplete = Incomplete()
 
 
 def strip_image(
@@ -178,14 +188,45 @@ def read_page(
     about what runs."""
     if geometry not in GEOMETRIES:
         raise ValueError(f"unknown geometry: {geometry!r}")
-    findings = detector.detect(image)
+    read = detector.detect(image)
+    findings, incomplete = read.findings, read.incomplete
     if geometry == "hybrid":
         # Pass 2: the boxes are a search constraint for the locator, not
         # paint geometry. Kept a separate call from detect() so pass 1
         # stays byte-identical to the measured recall baseline.
-        findings = detector.localize(image, findings)
+        located = detector.localize(image, findings)
+        findings = located.findings
+        incomplete += located.incomplete
+    _warn_incomplete(incomplete)
     ocr = None if geometry == "vlm" else linearize(ocr_engine(image))
-    return PageRead(findings=findings, ocr=ocr)
+    return PageRead(findings=findings, ocr=ocr, incomplete=incomplete)
+
+
+def _warn_incomplete(incomplete: Incomplete) -> None:
+    """Say loudly that a page was read from an answer that did not finish.
+
+    Separate warnings because the two have different causes and only one of
+    them has a fix an operator can act on. Both mean the same thing for the
+    page: layer 0 is the only detector for PERSON / ADDRESS / ORGANIZATION, so
+    what it did not report, nothing else will."""
+    if incomplete.truncated:
+        warnings.warn(
+            f"{incomplete.truncated} layer-0 response(s) for this page were "
+            f"cut off at the token budget — the completed part was kept, but "
+            f"this page may carry names, addresses or organizations that were "
+            f"never reported. Not a clean page.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    if incomplete.malformed:
+        warnings.warn(
+            f"{incomplete.malformed} layer-0 response(s) for this page ended "
+            f"normally but carried no usable JSON array — same consequence as "
+            f"a truncated one. With a grammar in force this means the server "
+            f"ignored it.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
 
 def strip_rendered_page(
@@ -209,6 +250,7 @@ def strip_rendered_page(
     return strip_from_vlm(
         image, read.findings, pipeline, pmap, ocr=read.ocr, pad=pad,
         grouping=group_findings([read.findings]),
+        incomplete=read.incomplete,
     )
 
 
@@ -220,8 +262,14 @@ def strip_from_vlm(
     ocr: RecognizerInput | None = None,
     pad: int = DEFAULT_PAD,
     grouping: Grouping | None = None,
+    incomplete: Incomplete = Incomplete(),
 ) -> ImageStripResult:
     """Strip against layer-0 findings — the VLM detector seam.
+
+    `incomplete` is what sweep 1 recorded about the read that produced
+    `findings` (see `read_page`); it is passed through rather than re-derived,
+    because by the time a finding list is here there is nothing in it that says
+    whether it is all of them.
 
     `grouping` is what the whole document knows (`pii.core.grouping`); with
     none given this page is treated as the whole document. It does two things
@@ -263,7 +311,9 @@ def strip_from_vlm(
         for f in findings
     ]
     if ocr is None:
-        return _paint_vlm_boxes(image, findings, pmap, pad, grouping)
+        return _paint_vlm_boxes(
+            image, findings, pmap, pad, grouping, incomplete
+        )
 
     placed = locate_findings(findings, ocr, image.size)
     detected = [
@@ -388,10 +438,13 @@ def strip_from_vlm(
         groups=grouping.groups,
         placements=placed.placements,
         skipped=skipped,
+        incomplete=incomplete,
     )
 
 
-def _paint_vlm_boxes(image, findings, pmap, pad, grouping) -> ImageStripResult:
+def _paint_vlm_boxes(
+    image, findings, pmap, pad, grouping, incomplete
+) -> ImageStripResult:
     """Paint the model's own boxes. No OCR, so no text and no offsets — and
     no borrowing either: there is no page text to search."""
     width, height = image.size
@@ -424,13 +477,14 @@ def _paint_vlm_boxes(image, findings, pmap, pad, grouping) -> ImageStripResult:
     return ImageStripResult(
         image=paint_segments(image, segments), ocr=None, spans=[], invalid=[],
         segments=segments, groups=grouping.groups, placements=placements,
+        incomplete=incomplete,
     )
 
 
 def _paint_plan(
     image, ocr, spans, invalid, pmap, extra=(), box_geometry=(), unlocated=(),
     unlocated_painted_elsewhere=(), borrowed=(), groups=(), placements=(),
-    skipped=(),
+    skipped=(), incomplete=Incomplete(),
 ) -> ImageStripResult:
     """Allocate a placeholder per span and paint it over the span's pixels.
     Spans arrive in document order, which is the numbering order. `extra`
@@ -450,4 +504,5 @@ def _paint_plan(
         unlocated_painted_elsewhere=list(unlocated_painted_elsewhere),
         borrowed=list(borrowed), groups=tuple(groups),
         placements=list(placements), skipped=list(skipped),
+        incomplete=incomplete,
     )

@@ -29,7 +29,13 @@ Three geometry regimes exist, and all three are deliberately kept:
   the next), so no padding or calibration fixes it. A comparison instrument,
   never a production option.
 
-The transport is injectable so the testbench never needs a model server.
+Output is constrained at the sampler by a GBNF grammar (see the grammars below)
+and every reply goes through `read_response`, which reads `finish_reason` — an
+empty result must never be confused with a clean page.
+
+The transport is injectable so the testbench never needs a model server, which
+also means the grammar can be ignored by whatever is on the other end: the
+defences in `parse_findings` stay regardless.
 """
 
 from __future__ import annotations
@@ -149,6 +155,70 @@ bbox_2d is the tight box around that text: (x1,y1) top-left, (x2,y2) bottom-righ
 normalized relative coordinates scaled to 1000. Make the box enclose the whole string \
 including its first and last characters."""
 
+# GBNF grammars — the output SHAPE, enforced at the sampler instead of parsed
+# out of whatever comes back. One per prompt, and the prompts are unchanged:
+# they still describe the shape in words, which costs nothing and keeps the
+# model's intent aligned with the constraint.
+#
+# Two things this buys beyond dropping fences and preambles. The class
+# vocabulary becomes ENFORCED rather than mapped — `TYPE_MAP.get(...,
+# "IDENTIFIER_GENERIC")` silently collapses a class the model invents, and the
+# enum below is DERIVED from TYPE_MAP so it cannot drift from it. And an
+# unparseable body stops being reachable by malformed output, which is what
+# makes `Incomplete.malformed` meaningful as a signal rather than noise.
+#
+# It constrains FORM, not LENGTH: a grammar-guided answer truncates exactly as
+# unparseably as a free one. That is `read_response`'s job, not this one.
+#
+# Three notes for anyone editing these:
+#  - `\\` inside a character class is REJECTED by llama.cpp b10326 ("failed to
+#    parse grammar"), so a literal backslash is written `\x5C`. Do not
+#    "restore" json.gbnf's spelling; hex escapes work on every build that
+#    accepts character classes at all.
+#  - EVERY repetition is bounded except the transcribed value itself.
+#    Whitespace is pinned rather than given a `ws ::= [ \t\n]*` rule, and an
+#    integer is capped at five digits, because an unbounded repetition is a
+#    legal place for a greedy decode to spin forever — and the one thing that
+#    cannot be bounded is the one thing that must stay verbatim.
+#  - the integers are deliberately NOT range-checked to 0..1000. Clamping would
+#    turn a model emitting pixel coordinates from a visibly off-page box into a
+#    silently plausible wrong one; a grammar should remove ambiguity, not
+#    evidence.
+_G_ROOT = 'root ::= "[" (item (", " item)*)? "]"'
+
+_G_ITEM_VALUES = r'''item ::= "{\"text\": " string ", \"type\": " type "}"'''
+_G_ITEM_VALUES_BOXES = (
+    r'''item ::= "{\"text\": " string ", \"type\": " type '''
+    r'''", \"bbox_2d\": " bbox "}"'''
+)
+_G_ITEM_BOXES = r'''item ::= "{\"text\": " string ", \"bbox_2d\": " bbox "}"'''
+
+_G_BBOX = r'''bbox ::= "[" int ", " int ", " int ", " int "]"
+int ::= "0" | [1-9] [0-9]? [0-9]? [0-9]? [0-9]?'''
+
+# JSON's string production, transcribed from llama.cpp's json.gbnf with the
+# backslash spelled \x5C (see above). The only unbounded repetition here.
+_G_STRING = r'''string ::= "\"" char* "\""
+char ::= [^"\x5C\x7F\x00-\x1F] | "\\" (["\x5Cbfnrt/] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]'''
+
+
+def _type_rule() -> str:
+    """The class enum, derived from TYPE_MAP so the two cannot drift.
+
+    Double-encoded on purpose: the inner dump quotes the class name as JSON,
+    the outer one wraps it as a GBNF string literal."""
+    return "type ::= " + " | ".join(
+        json.dumps(json.dumps(name)) for name in TYPE_MAP
+    )
+
+
+GRAMMAR_VALUES = "\n".join((_G_ROOT, _G_ITEM_VALUES, _type_rule(), _G_STRING))
+GRAMMAR_VALUES_BOXES = "\n".join(
+    (_G_ROOT, _G_ITEM_VALUES_BOXES, _type_rule(), _G_BBOX, _G_STRING)
+)
+GRAMMAR_LOCATE = "\n".join((_G_ROOT, _G_ITEM_BOXES, _G_BBOX, _G_STRING))
+
 
 @dataclass(frozen=True)
 class VlmFinding:
@@ -158,6 +228,64 @@ class VlmFinding:
     text: str
     entity_type: str
     box: tuple[int, int, int, int] | None = None
+
+
+@dataclass(frozen=True)
+class Incomplete:
+    """How many model responses in one unit of work came back unusable.
+
+    COUNTED, not merely warned about, for the same reason as
+    `ImageStripResult.unlocated`: Python's default warning filter shows one
+    instance per code location, so the second looped page of a run is silent.
+
+    - `truncated` — the generation ran into the token budget mid-array
+      (`finish_reason == "length"`, and the array never closed). Layer 0 is the
+      only detector for PERSON / ADDRESS / ORGANIZATION, so a page read this
+      way carries no name, address or company redaction at all, while layer 1
+      still finds the checksummed identifiers and makes the output look
+      plausibly redacted. Measured at ~1 in 70 real pages
+      ([reports/2026-08-12-mac-inference-speed.md](reports/2026-08-12-mac-inference-speed.md)).
+    - `malformed` — the generation ENDED normally but carried no usable JSON
+      array. With a grammar in force this is unreachable, which is what makes
+      it worth counting separately: it is the canary that the server ignored
+      the grammar field.
+    """
+
+    truncated: int = 0
+    malformed: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.truncated + self.malformed
+
+    def __bool__(self) -> bool:
+        return bool(self.total)
+
+    def __add__(self, other: "Incomplete") -> "Incomplete":
+        return Incomplete(
+            self.truncated + other.truncated,
+            self.malformed + other.malformed,
+        )
+
+    def __radd__(self, other):
+        # So sum() over pages/windows works without a start= value.
+        return self if other == 0 else self.__add__(other)
+
+
+@dataclass(frozen=True)
+class DetectorResult:
+    """What one detection pass produced, and what went wrong producing it.
+
+    `detect` returns this rather than a bare list because an empty list is
+    THREE situations — a genuinely clean page, an answer that was cut off, and
+    an answer that was never JSON — and only the first may be redacted against.
+    The `vlm` contract used to say so in prose ("the caller is expected to treat
+    that as a failure rather than an empty page") while giving the caller
+    nothing to tell them apart with.
+    """
+
+    findings: list[VlmFinding]
+    incomplete: Incomplete = Incomplete()
 
 
 class Transport(Protocol):
@@ -216,10 +344,52 @@ def strip_thinking(raw: str) -> str:
     return re.sub(r"<think>.*?</think>", "", raw, flags=re.S).strip()
 
 
+def read_response(response: dict) -> DetectorResult:
+    """One server reply -> findings plus the failure counters.
+
+    Shared by both layer-0 detectors, so the three-way split (clean page / cut
+    off / not JSON) is decided in exactly one place.
+
+    `finish_reason` is the whole point of this function. llama-server reports
+    `"length"` when the generation was truncated, and reading it is what
+    separates an empty page from an answer that never finished — without it a
+    repetition loop, where the model emits the same entry until the budget runs
+    out, is indistinguishable from a clean page. An array that DID close is
+    complete regardless of why generation stopped: everything meaningful
+    arrived, and whatever was cut was trailing.
+    """
+    try:
+        choice = response["choices"][0]
+        raw = choice["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise VlmError(f"unexpected response shape: {response!r}") from exc
+    payload, complete = _extract_array(strip_thinking(fold_digits(raw)))
+    findings = _findings_from(payload)
+    if complete:
+        return DetectorResult(findings)
+    # The completed elements are kept either way (see _extract_array); which
+    # counter this lands in is decided by WHY the array is still open — a
+    # budget the generation ran into, or a body that was never JSON at all.
+    if choice.get("finish_reason") == "length":
+        return DetectorResult(findings, Incomplete(truncated=1))
+    return DetectorResult(findings, Incomplete(malformed=1))
+
+
 def parse_findings(raw: str) -> list[VlmFinding]:
-    """Parse the model's JSON array. Unparseable output yields no findings, and
-    the caller is expected to treat that as a failure rather than an empty page."""
-    payload = _extract_array(strip_thinking(fold_digits(raw)))
+    """Parse a response BODY into findings, ignoring completeness.
+
+    The body-level seam: it shares every defence with `read_response` (fence,
+    `<think>` block, folded digits, salvage) but has no envelope to read
+    `finish_reason` from, so it cannot tell an empty page from an answer that
+    never finished. Detectors therefore go through `read_response`; this stays
+    as the entry point for anything holding only the text — the testbench, and
+    a caller parsing a body it did not fetch itself."""
+    payload, _ = _extract_array(strip_thinking(fold_digits(raw)))
+    return _findings_from(payload)
+
+
+def _findings_from(payload) -> list[VlmFinding]:
+    """Turn parsed JSON items into findings, skipping what makes no sense."""
     if payload is None:
         return []
     out = []
@@ -243,17 +413,26 @@ def parse_findings(raw: str) -> list[VlmFinding]:
     return out
 
 
-def _extract_array(body: str):
-    """Find the first balanced top-level JSON array, tolerating a code fence."""
+def _extract_array(body: str) -> tuple[list | None, bool]:
+    """Find the first top-level JSON array, tolerating a code fence.
+
+    Returns `(payload, complete)`. An array that never closes is SALVAGED: the
+    elements that did complete come back with `complete=False`. A truncated
+    answer is mostly a good answer — a dense page that hit the token budget
+    after 250 findings used to contribute none of them — and the caller learns
+    from `complete` that it must not treat what it got as the whole page.
+    """
     fenced = re.search(r"```(?:json)?\s*(.+?)```", body, re.S)
     if fenced:
         body = fenced.group(1)
     start = body.find("[")
     if start == -1:
-        return None
-    depth = 0
+        return None, False
+    depth = 0  # bracket nesting; braces are tracked apart, see `cut`
+    braces = 0
     in_str = False
     esc = False
+    cut = None  # the last comma SEPARATING two top-level elements
     for i, ch in enumerate(body[start:], start):
         if in_str:
             if esc:
@@ -265,16 +444,48 @@ def _extract_array(body: str):
             continue
         if ch == '"':
             in_str = True
+        elif ch == "{":
+            braces += 1
+        elif ch == "}":
+            braces -= 1
+        elif ch == "," and depth == 1 and braces == 0:
+            # Braces matter here and nowhere else: the commas inside an entry
+            # sit at bracket depth 1 too, and cutting at one would truncate an
+            # object rather than the array.
+            cut = i
         elif ch == "[":
             depth += 1
         elif ch == "]":
             depth -= 1
             if depth == 0:
                 try:
-                    return json.loads(body[start : i + 1])
+                    return json.loads(body[start : i + 1]), True
                 except json.JSONDecodeError:
-                    return None
-    return None
+                    return None, False
+    return _salvage(body, start, cut), False
+
+
+def _salvage(body: str, start: int, cut: int | None) -> list | None:
+    """The completed elements of an array that never closed, deduplicated.
+
+    Identical entries are collapsed HERE and nowhere else. An unterminated
+    array is the signature of a repetition loop, so its occurrence counts
+    cannot be trusted — and they no longer need to be: `locator.locate_borrowed`
+    finds every occurrence of a known value mechanically. Without the collapse,
+    one looped value that is not on the page arrives as hundreds of separate
+    "unredacted detection" warnings and buries the report it should be raising.
+    Entries that differ in ANY field, a box included, are separate occurrences
+    and survive.
+    """
+    if cut is None:
+        return None
+    try:
+        payload = json.loads(body[start:cut] + "]")
+    except json.JSONDecodeError:
+        return None
+    return list(
+        {json.dumps(item, sort_keys=True): item for item in payload}.values()
+    )
 
 
 class VlmDetector:
@@ -285,6 +496,10 @@ class VlmDetector:
     measurably costs recall — 350 -> 324 distinct values over 31 pages. The
     production route to geometry is `localize`, a second pass, which pays no
     such price.
+
+    `grammar` constrains the output shape at the sampler. It is on by default
+    and exists as a switch because constrained decoding alters the sampled
+    distribution, so it is an A/B axis rather than a serialization detail.
     """
 
     def __init__(
@@ -295,23 +510,29 @@ class VlmDetector:
         timeout: int = 1800,
         want_boxes: bool = False,
         encode_image: Callable[[object], str] | None = None,
+        grammar: bool = True,
     ) -> None:
         self.url = url
         self.transport = transport or http_transport
         self.timeout = timeout
         self.want_boxes = want_boxes
         self._encode = encode_image or _encode_png
+        self.grammar = grammar
 
     @property
     def prompt(self) -> str:
         return PROMPT + (_OUTPUT_BOXES if self.want_boxes else _OUTPUT_VALUES)
 
-    def detect(self, image) -> list[VlmFinding]:
-        return parse_findings(self._ask(image, self.prompt))
+    @property
+    def _detect_grammar(self) -> str | None:
+        if not self.grammar:
+            return None
+        return GRAMMAR_VALUES_BOXES if self.want_boxes else GRAMMAR_VALUES
 
-    def localize(
-        self, image, findings: list[VlmFinding]
-    ) -> list[VlmFinding]:
+    def detect(self, image) -> DetectorResult:
+        return read_response(self._ask(image, self.prompt, self._detect_grammar))
+
+    def localize(self, image, findings: list[VlmFinding]) -> DetectorResult:
         """Pass 2: hand the already-detected values back and ask only where
         they are, returning the findings with `box` filled in where the model
         placed them.
@@ -322,16 +543,30 @@ class VlmDetector:
         to place), and pairing by position would then silently attach one
         value's box to another. Matching is by squashed text, assigned in
         order, and a finding that draws no hint simply keeps `box=None` and
-        falls back to unconstrained search."""
+        falls back to unconstrained search.
+
+        A truncated pass 2 is a milder failure than a truncated pass 1 — the
+        values are already known and simply lose their search constraint, which
+        is the `--geometry ocr` baseline — but it is still counted, because
+        nothing downstream can tell a box the model declined to give from one
+        it never got to."""
         if not findings:
-            return findings
+            return DetectorResult(list(findings))
         listing = "\n".join(
             f"- {value}" for value in dict.fromkeys(f.text for f in findings)
         )
-        raw = self._ask(image, _LOCATE_PROMPT.format(values=listing))
-        return attach_boxes(findings, parse_findings(raw))
+        hints = read_response(
+            self._ask(
+                image,
+                _LOCATE_PROMPT.format(values=listing),
+                GRAMMAR_LOCATE if self.grammar else None,
+            )
+        )
+        return replace(
+            hints, findings=attach_boxes(findings, hints.findings)
+        )
 
-    def _ask(self, image, prompt: str) -> str:
+    def _ask(self, image, prompt: str, grammar: str | None = None) -> dict:
         payload = {
             # Hybrid-thinking models honour this via the chat template; it needs
             # llama-server --jinja to take effect.
@@ -360,11 +595,12 @@ class VlmDetector:
             "max_tokens": 4096,
             "stream": False,
         }
-        response = self.transport(self.url, payload, self.timeout)
-        try:
-            return response["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise VlmError(f"unexpected response shape: {response!r}") from exc
+        if grammar:
+            # Per-request rather than a server flag, so the shape we enforce is
+            # versioned with the code that parses it — the same reasoning that
+            # keeps the sampling parameters above out of a launch script.
+            payload["grammar"] = grammar
+        return self.transport(self.url, payload, self.timeout)
 
 
 def attach_boxes(

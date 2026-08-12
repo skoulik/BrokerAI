@@ -836,6 +836,55 @@ the testbench never needs a model server. Determinism requires single-slot servi
 llama.cpp's parallel batching makes greedy decode non-reproducible, and a gate that can be
 passed by re-rolling is not a gate.
 
+#### The output shape is constrained, and an empty answer is three situations (2026-08-12)
+
+**A GBNF grammar enforces the reply shape at the sampler** — one per prompt
+(`GRAMMAR_VALUES`, `GRAMMAR_VALUES_BOXES`, `GRAMMAR_LOCATE`), sent as a per-request `grammar`
+field so the enforced shape is versioned with the code that parses it. Three things it buys,
+beyond making a fence or a preamble unrepresentable: the class vocabulary becomes *enforced*
+rather than mapped (the enum is DERIVED from `TYPE_MAP`, so a class the model invents cannot
+silently collapse to `IDENTIFIER_GENERIC`); an unparseable body stops being reachable by
+malformed output, which is what makes the `malformed` counter below a *signal* rather than
+noise; and every repetition in the grammar is bounded except the transcribed value itself,
+since an unbounded whitespace or digit run is a legal place for a greedy decode to spin.
+Boxes are deliberately **not** range-checked to 0..1000 — clamping would turn a visibly
+off-page box into a plausible wrong one. Measured no-op on detection: identical findings and
+identical token counts, grammar on vs off (see DONE.md). It is a property of one server's
+sampler, so `parse_findings`' defences stay.
+
+**A grammar constrains FORM, not LENGTH,** which is a different failure and needs a different
+mechanism. Under greedy decode the model can enter a repeating state and emit the same entry
+until `max_tokens` — ~1 in 70 real pages. The array never closes, and *before this was
+handled the page came back as zero findings, indistinguishable from a clean page*: layer 0 is
+the only detector for PERSON / ADDRESS / ORGANIZATION, so such a page carried no name, address
+or organization redaction at all while layer 1 still redacted the checksummed identifiers and
+made the output look plausible. `read_response` therefore splits every reply three ways using
+`finish_reason`, and only the first may be treated as a clean page:
+
+| | signal | treatment |
+|---|---|---|
+| clean | array closed | no findings, nothing counted |
+| truncated | `finish_reason == "length"`, array still open | salvage + `Incomplete.truncated` |
+| malformed | generation ended, no usable array | salvage + `Incomplete.malformed` |
+
+The two counters stay apart because they have different causes and only one has a fix an
+operator can act on; with a grammar in force, `malformed` means the server ignored it.
+`Incomplete` is carried to the caller on every result object (`ImageStripResult`,
+`PdfPageResult` per page, `TextStripResult`) under the same rule as `unlocated` — a warning
+alone is deduplicated by Python's default filter, so the second looped page of a run would be
+silent. It is worded differently from every other warning in the CLI on purpose: the others
+name a value that was not redacted, and this one *cannot*.
+
+**A truncated answer is salvaged, not discarded.** The elements that completed before the cut
+are real detections, and a dense page that hit the budget after 250 findings used to
+contribute none of them; on the reproducible loop specimen salvage recovers 38 findings —
+3 PERSON, 3 ADDRESS, 2 ORGANIZATION among them — where the previous code kept zero. Identical
+entries collapse on that path *only*: an unterminated array is a loop's signature, so its
+occurrence counts cannot be trusted, and they no longer need to be because `locate_borrowed`
+finds every occurrence of a known value mechanically. Suppressing the loop at the sampler was
+tried and does not work — see the DRY measurement in DONE.md; detection is the primary
+mitigation, not a fallback.
+
 ### A page is not the unit of truth — document-wide entity grouping (2026-08-11)
 
 Layer 0 reads one page at a time, so its findings are per-page opinions. A value it named on

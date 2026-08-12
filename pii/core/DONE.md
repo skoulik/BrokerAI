@@ -1475,6 +1475,74 @@ the move; new completed tasks append to the matching section with their records.
       are layer-0's own findings (it types phrases like 'issued by' as organizations), not split
       residue.
 
+- [x] **A layer-0 repetition loop is silently indistinguishable from a clean page — LEAK**
+      *(found 2026-08-12 while benchmarking; fixed 2026-08-12)*. Under greedy decode the model
+      can enter a repeating state and emit the same entry until `max_tokens`; the array never
+      closed, `parse_findings` returned `[]`, and `image_mode.read_page` treated that as "no
+      findings on this page". Layer 0 is the ONLY detector for PERSON / ADDRESS / ORGANIZATION,
+      so such a page emitted no name, address or organization redaction at all while layer 1
+      still found the checksummed identifiers — output that looks plausibly redacted. Rate
+      ~1 in 70 real pages. Full write-up of the discovery in
+      [reports/2026-08-12-mac-inference-speed.md](reports/2026-08-12-mac-inference-speed.md);
+      the design that resulted is in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+      **The fix was already on the wire.** `choices[0].finish_reason` is `"length"` on
+      truncation and `VlmDetector._ask` discarded it. `read_response` now splits every reply
+      three ways (clean / truncated / malformed) and only a closed array counts as a clean
+      page. The counters ride to the caller on `Incomplete`, under the same rule as
+      `unlocated`: a warning alone is deduplicated by Python's default filter, so the second
+      looped page of a run was silent.
+
+      **Refinement over the original plan: the truncated output is SALVAGED.** The plan filed
+      in TODO recorded only detection, on the grounds that a grammar-guided loop truncates just
+      as unparseably. But the elements *before* the cut are real detections, and discarding
+      them is the larger half of the loss on a dense page — the model emitting 250 findings and
+      running out of budget mid-array contributed zero. `_extract_array` now cuts at the last
+      top-level comma and returns what completed, with `complete=False`. Identical entries
+      collapse on that path only, because a loop's occurrence counts are worthless and
+      `locate_borrowed` recovers genuine repeats mechanically — without the collapse one
+      hallucinated looped value arrives as hundreds of separate "unredacted detection"
+      warnings and buries the report it should be raising.
+
+      **Measured on the reproducible specimen** (`bench_p0_ov10_s0.png`, Qwen3-VL-8B-Q8_0,
+      b10326, seed 42): the loop reproduces exactly as recorded — 4096 output tokens,
+      `finish_reason='length'` — both with the grammar and without it, confirming the
+      form-vs-length note. Salvage recovers **38 distinct findings (3 PERSON, 3 ADDRESS,
+      2 ORGANIZATION, 30 identifiers) where the previous code kept 0**, and the dedup collapses
+      the loop's repeats (38 findings, 38 distinct). One reservation worth recording: what the
+      run would have gone on to report after the cut is unknowable, so a salvaged page is still
+      reported as a hole, not as a success.
+
+- [x] **Constrain layer-0 output with a grammar instead of parsing whatever comes back**
+      *(Sergei, 2026-08-12: "I was thinking about adding a BNF grammar to the requests,
+      llama.cpp support them"; shipped 2026-08-12)*. Three GBNF grammars matching the three
+      prompts, on the per-request `grammar` field of `/v1/chat/completions`. Design and
+      rationale in [ARCHITECTURE.md](ARCHITECTURE.md); what the build taught us:
+
+      - **`grammar` IS honoured on the OAI-compatible chat endpoint** (llama.cpp b10326) — it
+        falls through the "copy remaining properties" path in the params parser. Verified, not
+        assumed: a trivial `root ::= "yes" | "no"` forces "yes" out of "Say hi.", and each of
+        the three real grammars turns a prompt explicitly demanding prose plus a markdown fence
+        into a parseable JSON array.
+      - **`\\` inside a GBNF character class is REJECTED by this build** ("failed to parse
+        grammar"), so json.gbnf's `string` rule cannot be transcribed verbatim. Bisected to the
+        character: `[\\]`, `[a\\]`, `[^\\]` all fail while `[\x5C]`, `[\x5Cbfnrt/"]` and
+        `[^"\x5C\x7F\x00-\x1F]` all parse. The grammars therefore spell a literal backslash
+        `\x5C`, which is also the more portable choice. A test pins it so nobody "restores"
+        json.gbnf's spelling from upstream.
+      - **A/B on a clean page: an exact no-op.** Same synthetic page, grammar on vs off — 29
+        findings both, identical type histogram (6 ADDRESS / 2 DOB / 16 identifiers / 3 ORG /
+        2 PERSON), and **652 output tokens to the token**, i.e. a byte-identical sampled
+        sequence. Pass 2 likewise: 1170 tokens, 29/29 boxed, both ways. So on well-behaved
+        output the model was already producing exactly this shape and the constraint changes
+        nothing; the wall-clock difference between the two runs (26.8s vs 18.3s) is llama.cpp's
+        per-image prefill cache warming on the second call, not a sampler cost. The full
+        corpus-wide A/B against the 445-findings / 350-distinct baseline was therefore judged
+        not to be needed to ship, and remains available if the picture changes.
+      - One-pass boxes shape checked separately on a real page (35 findings, 1735 tokens,
+        `finish_reason='stop'`), which is what exercises the bounded-integer rule against real
+        coordinates.
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

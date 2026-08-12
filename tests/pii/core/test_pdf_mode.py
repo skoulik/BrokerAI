@@ -11,12 +11,14 @@ detector supplies the values."""
 from pathlib import Path
 
 import pymupdf
+import pytest
 
 import pii.core.pdf_mode as pdf_mode
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box
 from pii.core.ocr_page import OcrFrame, build_page
 from pii.core.pdf_mode import pdf_page_count, pdf_to_images, strip_pdf
+from pii.core.vlm import DetectorResult
 
 A4 = (595, 842)  # points
 
@@ -244,11 +246,11 @@ class _FakeDetector:
 
     def detect(self, image):
         self.calls += 1
-        return list(self.findings)
+        return DetectorResult(list(self.findings))
 
     def localize(self, image, findings):
         self.localize_calls += 1
-        return list(findings)
+        return DetectorResult(list(findings))
 
 
 def test_strip_pdf_vlm_detector_uses_ocr_for_geometry(tmp_path, pipeline,
@@ -314,10 +316,11 @@ class _FirstPageOnlyDetector:
 
     def detect(self, image):
         self.calls += 1
-        return list(self.findings) if self.calls == 1 else []
+        found = list(self.findings) if self.calls == 1 else []
+        return DetectorResult(found)
 
     def localize(self, image, findings):
-        return list(findings)
+        return DetectorResult(list(findings))
 
 
 def _name_ocr(image, lang="eng"):
@@ -362,6 +365,45 @@ def test_a_value_detected_on_one_page_is_redacted_on_all_of_them(
     assert group.entity_type == "PERSON"
     assert group.pages == (1,)
     assert len(pmap) == 1
+
+
+def test_an_unfinished_read_is_recorded_against_its_own_page(
+    tmp_path, pipeline, monkeypatch
+):
+    """Per page, not per document: the count says how much is missing, the
+    page number says where to look. Grouping is a partial mitigation and not a
+    fix — a value unique to the cut-off page has nothing to borrow from."""
+    from pii.core.vlm import Incomplete, VlmFinding
+
+    class _CutOffOnPageTwo:
+        def __init__(self):
+            self.calls = 0
+
+        def detect(self, image):
+            self.calls += 1
+            if self.calls == 2:
+                return DetectorResult([], Incomplete(truncated=1))
+            return DetectorResult(
+                [VlmFinding(text="SERGEI KULIK", entity_type="PERSON")]
+            )
+
+        def localize(self, image, findings):
+            return DetectorResult(list(findings))
+
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _name_ocr)
+    src = tmp_path / "doc.pdf"
+    _make_pdf(src, pages=2)
+    with pytest.warns(RuntimeWarning, match="cut off at the token budget"):
+        result = strip_pdf(src, pipeline, PseudonymMap(),
+                           tmp_path / "out.pdf", dpi=72,
+                           detector=_CutOffOnPageTwo())
+
+    first, second = result.pages
+    assert not first.incomplete
+    assert second.incomplete == Incomplete(truncated=1)
+    # The document-wide sweep still covers this page for what page 1 knew —
+    # mitigation, not repair.
+    assert len(second.borrowed) == 1
 
 
 def test_the_page_cache_does_not_outlive_the_run(tmp_path, pipeline,

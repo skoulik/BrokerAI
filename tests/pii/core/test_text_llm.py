@@ -21,7 +21,7 @@ from pii.core.text_llm import (
     windows,
 )
 from pii.core.vlm import PROMPT as VISION_PROMPT
-from pii.core.vlm import TYPE_MAP, VlmError
+from pii.core.vlm import TYPE_MAP, Incomplete, VlmError
 
 
 def _transport(*contents: str):
@@ -96,7 +96,9 @@ def test_window_without_line_breaks_still_advances():
 
 def test_detect_parses_and_returns_findings():
     send = _transport(_findings(("Sergei Kulik", "PII_NAME")))
-    found = TextDetector(transport=send).detect("Account holder: Sergei Kulik")
+    found = TextDetector(transport=send).detect(
+        "Account holder: Sergei Kulik"
+    ).findings
     assert [(f.text, f.entity_type) for f in found] == [
         ("Sergei Kulik", "PERSON")
     ]
@@ -128,7 +130,7 @@ def test_detect_deduplicates_the_same_value_across_windows():
     several times."""
     text = "".join(f"line {i}\n" for i in range(1000))
     send = _transport(_findings(("Sergei Kulik", "PII_NAME")))
-    found = TextDetector(transport=send).detect(text)
+    found = TextDetector(transport=send).detect(text).findings
     assert len(send.calls) > 1  # genuinely windowed
     assert [(f.text, f.entity_type) for f in found] == [
         ("Sergei Kulik", "PERSON")
@@ -141,13 +143,13 @@ def test_detect_keeps_distinct_values_from_different_windows():
         _findings(("Sergei Kulik", "PII_NAME")),
         _findings(("Olga Kulik", "PII_NAME")),
     )
-    found = TextDetector(transport=send).detect(text)
+    found = TextDetector(transport=send).detect(text).findings
     assert {f.text for f in found} == {"Sergei Kulik", "Olga Kulik"}
 
 
 def test_detect_skips_blank_text_without_calling_the_model():
     send = _transport("[]")
-    assert TextDetector(transport=send).detect("  \n ") == []
+    assert TextDetector(transport=send).detect("  \n ").findings == []
     assert send.calls == []
 
 
@@ -157,6 +159,63 @@ def test_unexpected_response_shape_raises():
 
     with pytest.raises(VlmError):
         TextDetector(transport=send).detect("text")
+
+
+def test_a_cut_off_window_is_counted_and_its_findings_kept():
+    def send(url, payload, timeout):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": '[{"text": "Sergei Kulik", '
+                                   '"type": "PII_NAME"}, {"text": "Olga'
+                    },
+                    "finish_reason": "length",
+                }
+            ]
+        }
+    result = TextDetector(transport=send).detect("Sergei Kulik")
+    assert [f.text for f in result.findings] == ["Sergei Kulik"]
+    assert result.incomplete == Incomplete(truncated=1)
+
+
+def test_incomplete_windows_are_summed_not_reset():
+    """One truncated window out of several is one part of the document the
+    model never finished reporting on; the overlap is a recall backstop, not a
+    second reading."""
+    text = "".join(f"line {i}\n" for i in range(1000))
+    calls = []
+
+    def send(url, payload, timeout):
+        calls.append(payload)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": '[{"text": "A", "type": "PII_NAME"}, {"te'
+                    },
+                    "finish_reason": "length",
+                }
+            ]
+        }
+
+    result = TextDetector(transport=send).detect(text)
+    assert len(calls) > 1  # genuinely windowed
+    assert result.incomplete.truncated == len(calls)
+
+
+def test_the_text_path_shares_the_values_grammar():
+    # Same class vocabulary, enforced the same way — the two prompts are
+    # separate strings but one vocabulary.
+    from pii.core.vlm import GRAMMAR_VALUES
+
+    send = _transport("[]")
+    TextDetector(transport=send).detect("anything")
+    assert send.calls[0]["grammar"] == GRAMMAR_VALUES
+
+    off = _transport("[]")
+    TextDetector(transport=off, grammar=False).detect("anything")
+    assert "grammar" not in off.calls[0]
 
 
 # ------------------------------------------------------- prompt vocabulary

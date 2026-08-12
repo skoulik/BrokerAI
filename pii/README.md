@@ -163,6 +163,19 @@ whether or not you passed `--report`: values painted from the model's own box
 placed at all (**not redacted** — treat as a leak and re-run or handle by
 hand).
 
+A third warning, printed the same way, says a model response was **cut off at
+the token budget** or came back unparseable. Read it differently from the
+other two: those name the value they failed on, and this one cannot. What the
+model would have gone on to report is unknown, so the affected page may be
+missing names, addresses or organizations with nothing to list. Everything the
+answer *did* contain is still used. On a PDF the affected page numbers are
+printed alongside; re-run those pages, or split the input so each request has
+room to finish. Both the strip and analyze commands take `--no-grammar`, which
+turns off the GBNF constraint on the model's reply — for comparing detection
+quality, or for a server that does not support the `grammar` field. If you see
+the "no usable JSON array" warning without having passed it, the server
+ignored the grammar.
+
 The OCR engine is **PaddleOCR**, and it supplies *geometry*, not detection.
 `--ocr-backend` selects the model tier: `paddle` (default, = `paddle:v6_medium`),
 `paddle:v6_medium` or `paddle:v5_server`. Models auto-download to

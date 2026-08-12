@@ -32,6 +32,7 @@ from pii.core.detection import Detection
 from pii.core.locator import locate_in_text
 from pii.core.mapping import PseudonymMap
 from pii.core.pipeline import InvalidFinding, PiiPipeline, apply_plan
+from pii.core.vlm import Incomplete
 
 
 @dataclass
@@ -43,13 +44,36 @@ class TextStripResult:
     # UNREDACTED detections; a count that reaches the caller is the point,
     # because warnings alone are deduplicated by Python's default filter.
     unlocated: list = field(default_factory=list)
+    # Layer-0 responses that were cut off or unparseable (vlm.Incomplete),
+    # summed over the windows a long document is cut into. Unlike `unlocated`
+    # this is not a value we can name: it counts the reads where what was
+    # missed is unknowable.
+    incomplete: Incomplete = Incomplete()
 
 
 def detect_text(
     text: str, pipeline: PiiPipeline, detector
-) -> tuple[list, list[InvalidFinding], list]:
-    """One detection pass -> (strip plan, invalid findings, unlocated)."""
-    placed = locate_in_text(detector.detect(text), text)
+) -> tuple[list, list[InvalidFinding], list, Incomplete]:
+    """One detection pass -> (plan, invalid findings, unlocated, incomplete)."""
+    read = detector.detect(text)
+    if read.incomplete.truncated:
+        warnings.warn(
+            f"{read.incomplete.truncated} layer-0 response(s) were cut off at "
+            f"the token budget — the completed part was kept, but parts of "
+            f"this document may carry names, addresses or organizations that "
+            f"were never reported",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    if read.incomplete.malformed:
+        warnings.warn(
+            f"{read.incomplete.malformed} layer-0 response(s) carried no "
+            f"usable JSON array — same consequence as a truncated one. With a "
+            f"grammar in force this means the server ignored it",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    placed = locate_in_text(read.findings, text)
     detected = [
         Detection(
             entity_type=placement.finding.entity_type,
@@ -72,17 +96,25 @@ def detect_text(
             stacklevel=2,
         )
     spans, invalid = pipeline.merge_detections(detected, text)
-    return spans, invalid, [p.finding for p in placed.unlocated]
+    return (
+        spans,
+        invalid,
+        [p.finding for p in placed.unlocated],
+        read.incomplete,
+    )
 
 
 def strip_text(
     text: str, pipeline: PiiPipeline, pmap: PseudonymMap, detector
 ) -> TextStripResult:
     """Replace detected PII in `text` with consistent placeholders."""
-    spans, invalid, unlocated = detect_text(text, pipeline, detector)
+    spans, invalid, unlocated, incomplete = detect_text(
+        text, pipeline, detector
+    )
     return TextStripResult(
         text=apply_plan(text, spans, pmap),
         spans=spans,
         invalid=invalid,
         unlocated=unlocated,
+        incomplete=incomplete,
     )

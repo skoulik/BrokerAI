@@ -110,7 +110,7 @@ def test_layer1_alone_when_the_detector_finds_nothing(pipeline):
     """Layer 1 is the deterministic floor: with layer 0 silent, the plan is
     still exactly what layer 1 sees."""
     text = f"TFN {VALID_TFN} for Olga"
-    spans, invalid, unlocated = detect_text(text, pipeline, StubDetector())
+    spans, invalid, unlocated, _ = detect_text(text, pipeline, StubDetector())
     plan, plan_invalid = pipeline.detect(text)
     assert [(s.entity_type, s.start, s.end) for s in spans] == [
         (s.entity_type, s.start, s.end) for s in plan
