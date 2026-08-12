@@ -430,6 +430,56 @@ quantization item below is what stands between this and a usable product.
       engine. Must never feed the strip decision (we deliberately distrust the text layer).
 ## Detection pipeline
 
+- [ ] **The corpus cannot see a separator bug, and has now hidden the same one twice**
+      *(2026-08-12)*. `pii_eval/au.py` emits every identifier in ONE canonical form —
+      single-space groups. Both the 2026-08-09 split-ownership leak and the 2026-08-12
+      separator leak (records in [DONE.md](DONE.md)) were invisible to every corpus run ever
+      made, and both were found by hand on a real document. The generator should vary the
+      surface form the way a scanned statement does — single/double space, tab, hyphen and
+      dash variants, NBSP — while keeping the truth value canonical, so a value that survives
+      only in one spelling is a scored miss. Note the eval's `au.py` mirrors the checksum
+      arithmetic and a coupling test pins the two together, so the change has to keep that
+      seam honest.
+
+- [ ] **The ACN inside an ABN can still capture it when OCR damages a DIGIT rather than a
+      separator** *(remainder of the 2026-08-12 separator fix)*. The separator class fixed the
+      spacing cases, but `ABN I1 005 357 522` — the `1`/`I` confusion, which is the single most
+      common OCR error on this corpus — still drops the ABN pattern, leaves `AuAcnRule` matching
+      the 9-digit tail, and **loses the leading two digits from the span**. The remaining fix is
+      the one not taken: have the ACN rule decline a 9-digit run whose two preceding characters
+      complete a valid ABN. `fuzzy.py`'s confusion table already knows `I`/`1`, so the same
+      question applies to the digit patterns generally — deliberately not widened, because a
+      character class that admits letters into a digit run is a much larger change than a
+      separator class and wants its own measurement.
+
+      Also deliberately left on the narrow `[ -]`: `AuAccountNumberRule`'s grouped forms and the
+      IBAN pattern. Neither is checksum-gated the way the identifiers above are (the account
+      rule is *"hopelessly ambiguous without context"* by its own docstring), so widening them
+      buys recall against a much weaker guard. Measure before touching.
+
+- [ ] **A keep entry is filed under a class the pipeline may not settle on** *(found
+      2026-08-12 while looking at the 1.pdf false positives)*. `entity_keep.txt` is sectioned by
+      entity type and the match runs against the class the value ENDS UP with, which need not
+      be the obvious one: on a real statement `13 25 99`, a published bank support line, arrived
+      as `IDENTIFIER_GENERIC` rather than `PHONE_NUMBER`, and an institution's ABN as `AU_ACN`
+      (see the separator bug above, which is most of why). An entry filed under the intuitive
+      class keeps **nothing**, and the failure is invisible — a keep that never fires looks
+      exactly like a value nobody listed.
+
+      No entries were added: institution-specific numbers were tried in the shipped default and
+      REVERTED (Sergei, 2026-08-12) because that file's scope is institution *names* that hold
+      for any Australian financial document, and a value harvested from one statement is a
+      per-document-set decision. `--entity-keep` REPLACES the default rather than composing with
+      it, so "the shipped list plus my institutions" is not currently expressible — which is the
+      real gap, and the reason the wrong place looked attractive.
+
+      Options, none designed: composition (`--entity-keep` extending rather than replacing, or
+      an include directive); a class-independent section for values that are never customer data
+      whatever they are typed as; or matching against the layer-0 class as well as the final one.
+      Whichever is chosen, the silent-failure property is the thing to fix — a keep entry that
+      matches no class in the file should probably be a configuration error, the way a broken
+      pattern already is.
+
 - [ ] **A span the keep list splits produces fragments that never rejoin the group they came
       from** *(Sergei, 2026-08-11, on seeing `FROM SK BUSINESS TRUS ANZ HIGHETT LOAN` strip to
       `FROM ORG_5 ANZ ORG_6`: "I think we should run re-grouping after splits. Highett is not an

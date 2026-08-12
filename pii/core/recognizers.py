@@ -57,6 +57,34 @@ _IN_SPAN_SCORE = 0.5
 # ...and for a bare digit run, per tier (None = not collected at that tier).
 _BARE_SCORE = {"ignore": None, "likely": None, "context": 0.15, "all": 0.5}
 
+# The separator between the groups of a formatted identifier.
+#
+# NOT `[- ]`, which is what these patterns used until 2026-08-12: exactly one
+# space or one hyphen. A scanned statement in fixed-width columns routinely
+# prints two spaces, and OCR emits tabs and non-breaking spaces — at which
+# point a VALID TFN / ABN / ACN / Medicare / BSB matched NOTHING, neither the
+# valid class nor its `*_INVALID` shadow. Same shape as the split-ownership
+# failure narrated in the module docstring, and invisible for the same reason:
+# `pii_eval/au.py` only ever emits single-space forms, so no corpus run could
+# have caught it. Found by Sergei on a real statement.
+#
+# Bounded, and a NEWLINE is deliberately excluded. `{1,3}` of horizontal space
+# keeps a match inside one printed field; an unbounded run or a line break
+# would let two unrelated columns join into a single candidate with nothing
+# but the checksum in the way — and a TFN's mod-11 lets 1 in 11 random runs
+# through.
+#
+# `*` and `+` were both measured against this on the eval corpus (2026-08-12).
+# `*` is the trap: it matches ZERO separators, so "grouped" stops meaning
+# grouped and collapses onto bare digit runs — `\b\d{3}[- ]*\d{3}\b` is just
+# `\b\d{6}\b`, every six-digit number becomes a BSB candidate (30 -> 44), and a
+# bare run inherits the in-span score its shadow is not entitled to
+# (invalid findings 117 -> 201). This class and `+` both cost exactly zero
+# there; this one additionally covers tab, en-dash and NBSP.
+_SEP = r"[-\u2010-\u2015\u00a0\t ]{1,3}"
+# The same, where the separator is optional — a labeled form may be unspaced.
+_SEP_OPT = r"[-\u2010-\u2015\u00a0\t ]{0,3}"
+
 
 # ---------------------------------------------------------------------------
 # Checksummed identifiers: one rule, two outcomes
@@ -128,10 +156,10 @@ class AuTfnRule(ChecksumRule):
     RULE_TEXT = "TFN mod-11 checksum failed"
     DIGIT_COUNTS = (9,)
     IN_SPAN_PATTERNS = (
-        ("tfn grouped", r"\b\d{3}[- ]\d{3}[- ]\d{3}\b"),
+        ("tfn grouped", r"\b\d{3}" + _SEP + r"\d{3}" + _SEP + r"\d{3}\b"),
         ("tfn labeled",
          r"(?<=\b(?:tfn|tax file (?:no\.?|number))\s{0,4}:?\s{0,4}#?\s{0,4})"
-         r"\d{3}[- ]?\d{3}[- ]?\d{3}\b"),
+         r"\d{3}" + _SEP_OPT + r"\d{3}" + _SEP_OPT + r"\d{3}\b"),
     )
     BARE_PATTERNS = (("tfn bare", r"\b\d{9}\b"),)
     context = ("tax file number", "tfn")
@@ -146,10 +174,11 @@ class AuMedicareRule(ChecksumRule):
     RULE_TEXT = "Medicare mod-10 checksum failed"
     DIGIT_COUNTS = (10,)
     IN_SPAN_PATTERNS = (
-        ("medicare grouped", r"\b[2-6]\d{3}[- ]\d{5}[- ]\d\b"),
+        ("medicare grouped",
+         r"\b[2-6]\d{3}" + _SEP + r"\d{5}" + _SEP + r"\d\b"),
         ("medicare labeled",
          r"(?<=\bmedicare\s{0,4}(?:card|no\.?|number)?\s{0,4}:?\s{0,4})"
-         r"[2-6]\d{3}[- ]?\d{5}[- ]?\d\b"),
+         r"[2-6]\d{3}" + _SEP_OPT + r"\d{5}" + _SEP_OPT + r"\d\b"),
     )
     BARE_PATTERNS = (("medicare bare", r"\b[2-6]\d{9}\b"),)
     context = ("medicare",)
@@ -169,10 +198,11 @@ class AuMedicareMalformedRule(ChecksumRule):
     RULE_TEXT = "Medicare first digit outside 2-6 (structurally impossible)"
     DIGIT_COUNTS = (10,)
     IN_SPAN_PATTERNS = (
-        ("medicare malformed grouped", r"\b[017-9]\d{3}[- ]\d{5}[- ]\d\b"),
+        ("medicare malformed grouped",
+         r"\b[017-9]\d{3}" + _SEP + r"\d{5}" + _SEP + r"\d\b"),
         ("medicare malformed labeled",
          r"(?<=\bmedicare\s{0,4}(?:card|no\.?|number)?\s{0,4}:?\s{0,4})"
-         r"[017-9]\d{3}[- ]?\d{5}[- ]?\d\b"),
+         r"[017-9]\d{3}" + _SEP_OPT + r"\d{5}" + _SEP_OPT + r"\d\b"),
     )
     BARE_PATTERNS = (("medicare malformed bare", r"\b[017-9]\d{9}\b"),)
     context = ("medicare",)
@@ -187,10 +217,12 @@ class AuAbnRule(ChecksumRule):
     RULE_TEXT = "ABN mod-89 checksum failed"
     DIGIT_COUNTS = (11,)
     IN_SPAN_PATTERNS = (
-        ("abn grouped", r"\b\d{2}[- ]\d{3}[- ]\d{3}[- ]\d{3}\b"),
+        ("abn grouped",
+         r"\b\d{2}" + _SEP + r"\d{3}" + _SEP + r"\d{3}" + _SEP + r"\d{3}\b"),
         ("abn labeled",
          r"(?<=\babn\s{0,4}(?:no\.?|number)?\s{0,4}:?\s{0,4})"
-         r"\d{2}[- ]?\d{3}[- ]?\d{3}[- ]?\d{3}\b"),
+         r"\d{2}" + _SEP_OPT + r"\d{3}" + _SEP_OPT + r"\d{3}"
+         + _SEP_OPT + r"\d{3}\b"),
     )
     BARE_PATTERNS = (("abn bare", r"\b\d{11}\b"),)
     context = ("australian business number", "abn")
@@ -205,10 +237,10 @@ class AuAcnRule(ChecksumRule):
     RULE_TEXT = "ACN complement checksum failed"
     DIGIT_COUNTS = (9,)
     IN_SPAN_PATTERNS = (
-        ("acn grouped", r"\b\d{3}[- ]\d{3}[- ]\d{3}\b"),
+        ("acn grouped", r"\b\d{3}" + _SEP + r"\d{3}" + _SEP + r"\d{3}\b"),
         ("acn labeled",
          r"(?<=\bacn\s{0,4}(?:no\.?|number)?\s{0,4}:?\s{0,4})"
-         r"\d{3}[- ]?\d{3}[- ]?\d{3}\b"),
+         r"\d{3}" + _SEP_OPT + r"\d{3}" + _SEP_OPT + r"\d{3}\b"),
     )
     BARE_PATTERNS = (("acn bare", r"\b\d{9}\b"),)
     context = ("australian company number", "acn")
@@ -223,8 +255,10 @@ class CreditCardRule(ChecksumRule):
     RULE_TEXT = "Luhn checksum failed"
     DIGIT_COUNTS = tuple(range(12, 20))
     IN_SPAN_PATTERNS = (
-        ("card grouped 4-4-4-4", r"\b\d{4}[- ]\d{4}[- ]\d{4}[- ]\d{4}\b"),
-        ("card grouped amex", r"\b\d{4}[- ]\d{6}[- ]\d{5}\b"),
+        ("card grouped 4-4-4-4",
+         r"\b\d{4}" + _SEP + r"\d{4}" + _SEP + r"\d{4}" + _SEP + r"\d{4}\b"),
+        ("card grouped amex",
+         r"\b\d{4}" + _SEP + r"\d{6}" + _SEP + r"\d{5}\b"),
         ("card labeled",
          r"(?<=\bcard\s{0,4}(?:no\.?|number)?\s{0,4}:?\s{0,4})\d{12,19}\b"),
     )
@@ -255,12 +289,15 @@ class AuBsbRule(PatternRule):
 
     entity = "AU_BSB"
     patterns = (
-        Pattern("bsb before account", r"\b\d{3}[- ]\d{3}(?=[- ]?\s?\d{5,10}\b)", 0.6),
+        Pattern("bsb before account",
+                r"\b\d{3}" + _SEP + r"\d{3}(?=" + _SEP_OPT + r"\d{5,10}\b)",
+                0.6),
         # Transaction-description form: unseparated BSB directly followed by
         # an account number ("from 944600 000731114") — the dominant form
         # inside statement descriptions, where no context words appear.
-        Pattern("bsb bare before account", r"\b\d{6}(?=[ -]\d{5,10}\b)", 0.55),
-        Pattern("bsb", r"\b\d{3}[- ]\d{3}\b", 0.2),
+        Pattern("bsb bare before account",
+                r"\b\d{6}(?=" + _SEP + r"\d{5,10}\b)", 0.55),
+        Pattern("bsb", r"\b\d{3}" + _SEP + r"\d{3}\b", 0.2),
     )
     context = ("bsb", "branch", "bank", "deposit", "transfer")
 
@@ -309,8 +346,14 @@ class AuAccountNumberRule(PatternRule):
         # AuBsbRule): the preceding BSB is the unambiguity signal, carried as
         # a variable-length lookbehind. This is why the engine compiles with
         # `regex` rather than `re`.
-        Pattern("account after bsb", r"(?<=\b\d{3}[- ]\d{3}[- ]?\s?)\d{5,10}\b", 0.55),
-        Pattern("account after bare bsb", r"(?<=\b\d{6}[ -])\d{5,10}\b", 0.55),
+        # Mirror-image of the BSB lookaheads above, so a widened separator on
+        # one side cannot leave the other behind: a double-spaced BSB would
+        # otherwise emit a BSB span with no account span beside it.
+        Pattern("account after bsb",
+                r"(?<=\b\d{3}" + _SEP + r"\d{3}" + _SEP_OPT + r")\d{5,10}\b",
+                0.55),
+        Pattern("account after bare bsb",
+                r"(?<=\b\d{6}" + _SEP + r")\d{5,10}\b", 0.55),
         # "A/C 7412154728", "a/c 1234 5678", "Acct No: 000 731 114": the
         # a/c-family label matched in-span (the label lands inside the
         # placeholder — harmless, recall-first). Contiguous alternative first

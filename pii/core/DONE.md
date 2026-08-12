@@ -1543,6 +1543,42 @@ the move; new completed tasks append to the matching section with their records.
         `finish_reason='stop'`), which is what exercises the bounded-integer rule against real
         coordinates.
 
+- [x] **A checksummed identifier was invisible to layer 1 unless its groups were separated by
+      exactly ONE space or ONE hyphen — LEAK** *(Sergei, 2026-08-12, on a double-spaced ABN
+      coming back as an ACN: "is an outright bug"; fixed same day)*. Every pattern in
+      `recognizers.py` spelled its separator `[- ]`. Measured with a VALID value in every cell:
+      single space, single hyphen and no separator worked; **double space, tab, en-dash, NBSP,
+      dot and newline were detected by NOTHING** — not the valid class, not the `*_INVALID`
+      shadow — across TFN, ACN, ABN, Medicare and BSB alike.
+
+      This is the same shape as the split-ownership failure that retired Presidio on 2026-08-09,
+      arrived at from the other end: not two rules disagreeing, but one separator class narrower
+      than the text OCR produces. A scanned statement in fixed-width columns emits double spaces
+      routinely. Severity in practice is DEGRADED rather than leaked on the image and text paths
+      — layer 0 names the value anyway, so it strips as `IDENTIFIER_GENERIC` with no checksum,
+      no shadow and the wrong placeholder class — but layer 1 is specified as *"a deterministic
+      recall floor under a stochastic detector"*, and this was a hole in exactly that floor.
+
+      **`*` was the obvious fix and is a trap; measured, not argued.** Sergei asked what would
+      break. `[- ]*` matches ZERO separators, so "grouped" stops meaning grouped and collapses
+      onto bare digit runs: `\b\d{3}[- ]*\d{3}\b` is just `\b\d{6}\b`. On the text corpus at the
+      production threshold that turned every six-digit number into a BSB candidate (30 -> 44)
+      and let bare runs inherit the in-span score their `*_INVALID` shadow is not entitled to —
+      the evidence the `likely` tier exists to require — taking invalid findings from 117 to
+      **201**. `[- ]+` and the shipped class both cost **exactly zero** on the same corpus.
+
+      Shipped: `_SEP` / `_SEP_OPT`, `{1,3}` of `[- ‐-― \t NBSP]`, applied to TFN, Medicare (valid
+      and malformed), ABN, ACN, credit card and BSB, plus the mirror-image account-after-BSB
+      lookbehinds so a widened BSB cannot emit a span with no account beside it. **A newline is
+      deliberately excluded**: it would let two columns of an OCR-linearized page join into one
+      candidate with only the checksum in the way, and a TFN's mod-11 passes 1 run in 11. Corpus
+      after the change: 138 valid / 117 invalid, per-class identical to before.
+
+      Two things left open in [TODO.md](TODO.md): the `1`/`I` confusion still lets the ACN
+      capture an ABN and narrow the span, and `pii_eval/au.py` still emits only single-space
+      forms — which is why this bug and its 2026-08-09 twin were both invisible to every corpus
+      run ever made, and both were found by hand on a real document.
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

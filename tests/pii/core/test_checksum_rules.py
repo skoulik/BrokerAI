@@ -52,6 +52,61 @@ def test_space_grouped_and_bare_forms_still_detected(rule_cls, entity, valid, _i
     assert entity in _types(rule_cls(), valid.replace(" ", ""))
 
 
+# The 2026-08-12 recurrence: the patterns spelled their separator `[- ]`,
+# exactly one space or one hyphen. A scanned statement in fixed-width columns
+# prints two spaces and OCR emits tabs and NBSPs, and every such VALID value
+# was matched by nothing — not the class, not the shadow. Same invisibility as
+# the 2026-08-09 leak above, and unseen for the same reason: the corpus only
+# generates single-space forms.
+SEPARATORS = [
+    pytest.param(" ", id="single-space"),
+    pytest.param("  ", id="double-space"),
+    pytest.param("   ", id="triple-space"),
+    pytest.param("\t", id="tab"),
+    pytest.param("-", id="hyphen"),
+    pytest.param("‐", id="unicode-hyphen"),
+    pytest.param("–", id="en-dash"),
+    pytest.param("—", id="em-dash"),
+    pytest.param(" ", id="nbsp"),
+]
+
+
+@pytest.mark.parametrize("sep", SEPARATORS)
+@pytest.mark.parametrize("rule_cls,entity,valid,_invalid", CASES)
+def test_any_plausible_separator_still_finds_a_valid_identifier(
+    rule_cls, entity, valid, _invalid, sep
+):
+    regrouped = valid.replace(" ", sep)
+    assert entity in _types(rule_cls(), regrouped), repr(regrouped)
+
+
+@pytest.mark.parametrize("rule_cls,entity,valid,_invalid", CASES)
+def test_a_newline_does_not_join_groups_into_one_identifier(
+    rule_cls, entity, valid, _invalid
+):
+    """Deliberately NOT in the separator class. A line break would let two
+    unrelated columns of an OCR-linearized page join into one candidate with
+    nothing but the checksum in the way — and a TFN's mod-11 passes 1 run in
+    11. What a wrapped identifier costs in recall is bounded; a cross-column
+    false match is a wrong redaction."""
+    assert entity not in _types(rule_cls(), valid.replace(" ", "\n"))
+
+
+def test_a_mixed_separator_abn_does_not_narrow_to_its_acn():
+    """The 11 digits of an ABN contain a valid 9-digit ACN, so both rules have
+    a real claim. While the ABN pattern accepted only one space, a double space
+    dropped it, the ACN matched the tail, and the span LOST its leading two
+    digits — a partial redaction, not merely a mislabel (Sergei, 2026-08-12)."""
+    from pii.core import PiiPipeline
+    from pii.core.entity_keep import EntityKeep
+
+    text = "ABN 11  005 357 522"
+    pipeline = PiiPipeline(entity_keep=EntityKeep({}))
+    (span,) = pipeline.detect(text)[0]
+    assert span.entity_type == "AU_ABN"
+    assert text[span.start : span.end] == "11  005 357 522"
+
+
 @pytest.mark.parametrize("rule_cls,entity,_valid,invalid", CASES)
 def test_checksum_failure_emits_the_shadow_not_the_class(
     rule_cls, entity, _valid, invalid
