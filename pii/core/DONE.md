@@ -706,8 +706,11 @@ the move; new completed tasks append to the matching section with their records.
       Consequences pinned for the OCR-fidelity sweep: analysis axis = *measured x-height*
       per (font, size), not em size; size grid extended past 32 px em toward the realistic
       300-dpi regime (~40–48 px em); no `--dpi`; PSM/OEM at pipeline defaults (3 / LSTM);
-      per-word conf recorded per error. Distilled into ARCHITECTURE.md ("Tesseract
-      operational profile") and the `ocr.py` docstring.)*
+      per-word conf recorded per error. Was distilled into an ARCHITECTURE.md section
+      ("Tesseract operational profile"); that distillation was removed 2026-08-12 — the backend
+      went 2026-07-17 and ARCHITECTURE carries current design, not retired engines. **This
+      record is the only home for these facts now.** They are engine-specific and do not
+      transfer to PaddleOCR.)*
 
 - [x] OCR-fidelity factor sweep — glyph size × font face, Tesseract findings
       *(2026-07-17; design agreed 2026-07-16, spec preserved in git history of TODO.md.
@@ -2038,6 +2041,17 @@ the move; new completed tasks append to the matching section with their records.
       is now a direct dependency instead of reaching it through Presidio. `regex` stays, and is
       load-bearing: the account-after-BSB and labeled-identifier patterns use variable-length
       lookbehind that stdlib `re` cannot compile.
+
+      **Two operational facts about the dependency, moved here because ARCHITECTURE no longer
+      has a home for them.** Presidio *shipped* AU_TFN/AU_MEDICARE/AU_ABN/AU_ACN (MIT, no paid
+      tier involved), but its default registry config
+      (`presidio_analyzer/conf/default_recognizers.yaml`) listed every country-specific
+      recognizer with `enabled: false` — only generic + US recognizers ran, so the four AU
+      classes silently never fired unless registered explicitly, which `pipeline.py` did from
+      2026-07-12. And the version floor was real: 2.2.362's ACN validator rejected every ACN
+      with check digit 0, and 2.2.364 changed the ABN validator's leading-zero handling (record
+      above). Both pins die with the dependency — `checksums.py` owns that arithmetic outright
+      now, and its only remaining mirror is `pii_eval/au.py` under a coupling test.
 
       **Then the paddle worker went too.** Making the process torch-free is what finally
       satisfied the precondition recorded that morning — see the next record.

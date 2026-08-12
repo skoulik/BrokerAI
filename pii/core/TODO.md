@@ -6,76 +6,40 @@ plan are in [ROADMAP.md](ROADMAP.md); completed tasks and their engineering reco
 Front-end tasks live with their component: [../cli/TODO.md](../cli/TODO.md),
 [../gui/TODO.md](../gui/TODO.md).
 
-Grouped by theme. Read the direction note below first — the 2026-08-09 segmenter retirement
-closed a whole section of this file, and the ordering that preceded it is history (records in
-DONE.md and reports/).
+Grouped by theme, not by priority — with one exception: **throughput is the top open risk.**
+At ~3 min/page the image/PDF path is a research profile rather than a product one, so the
+serving/quantization item below is what stands between this tool and something usable on a real
+submission bundle.
 
-## Direction — 2026-08-09, read before picking anything up below
+## What the 2026-08-09 rebuild settled — standing facts
 
-The segmenter is retired and layer 0 is the default detector (record in
-[DONE.md](DONE.md), design in [ARCHITECTURE.md](ARCHITECTURE.md)). What that settled:
+Four retirements landed that day and they close off whole classes of work. Records in
+[DONE.md](DONE.md), designs in [ARCHITECTURE.md](ARCHITECTURE.md); this list exists so nothing
+below gets picked up against the old shape of the tool.
 
-- **The layout/perception layer is gone** — with it, the whole "OCR perception / linearization"
-  programme (orphan clustering, trial linearizations, table-cell structure, layout thresholds,
-  region detection) and the layout half of issue #8a. The VLM reads spatial structure natively.
+- **Layer 0 — a local LLM — is the only semantic detector**, in every input mode. GLiNER2,
+  spaCy's NER and the `--detector` flag are all gone, so there is nothing left to choose
+  between, and a strip entry point always *requires* a detector — patterns-only is the
+  `--no-ner` regime retired 2026-07-15 as unsafe. Accepted knowingly: every input mode now
+  needs a llama-server, including the tier-1 gate. There is no offline path.
+- **The engine is ours** — no Presidio, no spaCy, no torch — and one rule owns both halves of
+  each checksummed identifier class.
+- **The layout/segmenter layer is gone**, and with it the whole OCR perception programme
+  (orphan clustering, trial linearizations, table-cell structure, layout thresholds, region
+  detection) and the layout half of issue #8a. The VLM reads spatial structure natively.
 - **Layer 1 stays**, in the narrowed role it now actually has: classifier, checksum validator,
-  and deterministic recall floor over layer 0's findings (`merge_detections`).
-- **PaddleOCR stays** and supplies paint geometry: VLM boxes are stochastically unreliable to
-  paint, so `--geometry vlm` is a comparison instrument only. They *are* used in production
-  (`--geometry hybrid`, the default) as a search constraint, which tolerates the error they
-  actually have — see [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0".
-
-**Decision taken 2026-08-09 (Sergei): GLiNER2, spaCy and Presidio are all being retired.** In
-this order, and the order is deliberate — the replacement is built before the incumbent is
-deleted, so no input mode is ever without a semantic detector:
-
-1. **Text/CSV layer 0** — DONE 2026-08-09 (`text_llm.py`, `text_mode.py`). Same model, text
-   modality.
-2. **Delete GLiNER2 and the `--detector` flag** — DONE 2026-08-09 on the A/B numbers
-   ([reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md)).
-   The layers path went with it in every mode: layer 0 is now the only detector and the mode
-   entry points *require* one, because a patterns-only strip is the `--no-ner` regime retired
-   2026-07-15 as unsafe. Consequence accepted knowingly: **every** input mode now needs a
-   llama-server, including the tier-1 gate.
-3. **Replace the Presidio chassis** — DONE 2026-08-09 (`engine.py`, `detection.py`, a rewritten
-   `recognizers.py`; spaCy went with it). One rule per identifier class owns one pattern set and
-   one checksum call, which closed the "stop duplicating Presidio's checksum arithmetic" item by
-   deletion and fixed the hyphen-grouped-valid-identifier leak found while scoping it. It also
-   made the process torch-free, which retired `ocr_worker.py` the same day.
-
-**Now the top open risk: throughput.** ~3 min/page is a research profile, so the serving /
-quantization item below is what stands between this and a usable product.
+  and deterministic recall floor under a stochastic detector (`merge_detections`).
+- **PaddleOCR stays** and supplies paint geometry. VLM boxes are stochastically unsafe to
+  paint, so they serve as a *search constraint* instead (`--geometry hybrid`, the default);
+  `--geometry vlm` is a comparison instrument only.
 
 ## Next up — image/PDF path
 
-- [x] ~~**Hybrids that deliberately use the VLM's own boxes**~~ — **DONE 2026-08-09** as
-      `--geometry hybrid` (the new default): two-pass detect-then-localize, `locator.py`
-      candidate scoring with the box as a search constraint, `fuzzy.py` confusion-weighted
-      edit distance, and the padded model box as tier 3. It landed larger than the sketch
-      because the box turned out to be worth more as a *disambiguator* than as a fallback.
-      Record in [DONE.md](DONE.md), design in [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0".
-
-- [x] ~~**A tier-3 paint does not suppress a later identical finding, so the "NOT redacted"
-      line can cry wolf**~~ — **DONE 2026-08-11**, as the reporting fix this item already
-      preferred (Sergei: "why exactly cannot we change the message?"). `Placement` gained
-      `value_painted_elsewhere`, set by `locator._mark_painted_elsewhere` for an unplaced
-      finding whose value was painted anywhere on the page, and the CLI prints that group on
-      its own line. Deliberately NOT a suppression: containment in a char span is positional
-      evidence and may suppress, value identity is not and may only annotate — two occurrences
-      of a value can genuinely sit in two places. The finding therefore stays counted on
-      `unlocated`. Record in [DONE.md](DONE.md).
-
-- [x] ~~**Fuzzy matching for borrowed values**~~ — **DONE 2026-08-11**, the same day the
-      leak was reported. Three tiers in `locate_borrowed` (exact, squash, then fuzzy for
-      needles of 8+ squashed characters), additive rather than fallback, closest-match-first,
-      with identifier-shaped needles on the strict cross-class table and a budget capped
-      below the cost of routing around it. Design in [ARCHITECTURE.md](ARCHITECTURE.md)
-      "A page is not the unit of truth", record in [DONE.md](DONE.md).
-
 - [ ] **Run the TEXT layer-0 pass over the OCR'd page text as well** (Sergei, 2026-08-11,
-      raised while reviewing the borrowed-matching limit above — *"an independent text-only
+      raised while reviewing the limits of borrowed fuzzy matching — *"an independent text-only
       detection pass to run on the OCR-ed text... could fix the reverse failure where the OCR
-      finds the text but the VLM does not flag it"*). Written down, not designed.
+      finds the text but the VLM does not flag it"*; that work shipped the same day, record in
+      [DONE.md](DONE.md)). Written down, not designed.
 
       **The two gaps are mirror images.** Grouping propagates what the VLM found SOMEWHERE in
       the document; this would catch what the VLM found NOWHERE, on text OCR read perfectly
@@ -193,6 +157,13 @@ quantization item below is what stands between this and a usable product.
       runs (silent mis-locations the box fixed), (c) the throughput cost of pass 2 against
       the predicted ~16 s/page. Until this runs, the hybrid is reasoned-for, not measured.
 
+      **The same run is the outstanding validation of `merge_detections`** *(folded in here
+      2026-08-12 from the layer-1-refinement item, which was otherwise complete)*. Layer 1's
+      refine/validate/extend pass over layer-0 findings is unit-tested but has never faced the
+      leak gate, so the first `pii_eval score --modality pdf` on the real corpus measures both
+      at once. It cannot be checked against the frozen baseline (445 findings / 350 distinct
+      values, 31 pages) — that was taken in values mode with no layer 1 at all.
+
 - [ ] Belt-and-braces text-layer scan (*decide later*, split out of the PDF mode task when it
       shipped 2026-07-18): additionally scan any existing source text layer to catch text the
       OCR misses (detection only — output still comes from pixels). Same machinery as the
@@ -219,8 +190,8 @@ quantization item below is what stands between this and a usable product.
       fill matching the background, invisible render mode, clipped or zero-size — and
       report the findings (locations/classes) so the operator knows the source
       carries concealed identifying content. Kin of the belt-and-braces text-layer
-      scan in the PDFs-as-images item above (same machinery: diff text-layer strings
-      against what OCR reads off the rendered pixels).
+      scan above (same machinery: diff text-layer strings against what OCR reads off
+      the rendered pixels).
 - [ ] Statement tables via the image path (the remaining half of the transaction-list task —
       CSV mode shipped 2026-07-12): tabular statements arrive as scans/PDF pages, not CSVs;
       verify the OCR path handles table layouts (row/column integrity, amounts kept intact)
@@ -242,23 +213,6 @@ quantization item below is what stands between this and a usable product.
       `0->@` (the top pair, Consolas slashed zero), `J->3`, `1->2`, `4->8`, `W->H`; decide
       per-pair whether to widen the squash classes (over-merging is recall-safe — it can
       only over-report leaks). Re-run the image-tier gate after.
-- [x] ~~OCR engine choice — PaddleOCR vs a one-pass VLM~~ — **decided 2026-08-09: both, in
-      different roles.** The VLM detects, PaddleOCR supplies geometry (and remains the eval
-      harness's independent read-back instrument). Record in [DONE.md](DONE.md).
-- [x] ~~**One-pass VLM pipeline**~~ — **DONE 2026-08-08**, shipped as layer 0
-      (`--detector vlm`). Record in [DONE.md](DONE.md), design in
-      [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0", evidence in
-      [reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md).
-      Verdict: detection excellent, grounding stochastically unreliable, so **PaddleOCR stays
-      and supplies geometry**. The follow-ups it spawned are the next three items.
-
-- [x] ~~**Layer-1 refinement of VLM findings**~~ — **DONE 2026-08-09** as
-      `PiiPipeline.merge_detections` + a three-tier `_rank`. Record in [DONE.md](DONE.md),
-      design in [ARCHITECTURE.md](ARCHITECTURE.md) "Layer 0".
-      *Not yet measured on the corpus* — the refinement is unit-tested but no leak-gate run
-      has been made against it, so the first `pii_eval score --modality pdf` on the real
-      corpus is the outstanding validation.
-
 - [ ] **Serving / llama.cpp tuning job — now also owns page-level concurrency** (scoped
       2026-08-08; re-scoped 2026-08-09 after the first hybrid run measured the two-pass cost
       for real. Sergei: combine with the conveyor idea and postpone.)
@@ -397,14 +351,14 @@ quantization item below is what stands between this and a usable product.
 
       What it buys, and why it is worth the investigation now: one serving stack for
       everything (layer-0 detection and OCR geometry on the same llama-server), and it drops
-      `paddleocr` + the `paddlepaddle` wheel + `models/paddlex`. Combined with the
-      GLiNER2 retirement making the pipeline process torch-free, it would also remove the
-      last reason `ocr_worker.py` exists — the paddle-GPU wheel is the most fragile
-      dependency in the project (Windows DLL conflicts, per-machine wheel choice).
+      `paddleocr` + the `paddlepaddle` wheel + `models/paddlex` — the most fragile dependency in
+      the project (Windows DLL conflicts, per-machine wheel choice, and the torch guard that
+      exists to police them). The worker subprocess those DLL rules once forced is already gone
+      (2026-08-09); this would remove the rules themselves.
 
       Two costs to weigh. **Memory/process budget:** llama-server serves one model per
       process, so this is a second server alongside Qwen3.6 — it lands directly on the
-      constraint the serving/quantization item below is already fighting. **A generative
+      constraint the serving/quantization item above is already fighting. **A generative
       geometry source:** `ocr_page.py`'s "an OCR line is never dropped" invariant would then
       rest on a model that can omit, and OCR is what supplies the pixels we paint. That is a
       strictly weaker guarantee than a det/rec pipeline gives, and it needs measuring against
@@ -426,8 +380,9 @@ quantization item below is what stands between this and a usable product.
       stays on original pixels. Needs the eval degradation tier to measure.
 
 - [ ] **Font traceback** (diagnostics-only): fill `OcrLine.font` from the PDF text layer
-      (pymupdf `get_text("dict")` spans matched to line boxes) — `None` from any OCR engine.
+      (pymupdf `get_text("dict")` spans matched to line boxes) — it is `None` from any OCR
       engine. Must never feed the strip decision (we deliberately distrust the text layer).
+
 ## Detection pipeline
 
 - [ ] **The corpus cannot see a separator bug, and has now hidden the same one twice**
@@ -557,27 +512,7 @@ quantization item below is what stands between this and a usable product.
         `IDENTIFIER_COSTS` pricing that at infinity, but truncation is deletions — they would
         chain too.
 
-- [x] ~~**Retire `ocr_worker.py`**~~ — **DONE 2026-08-09.** The check this item demanded
-      ("verify, do not assume") is what caught the wrong assumption: GLiNER2 was the only
-      *direct* torch consumer, but spaCy/thinc import real torch eagerly, so the pipeline was
-      still holding it after the layer-2 retirement. Retiring Presidio and spaCy finished the
-      job. Verified before deleting: the full analysis stack plus in-process GPU paddle in one
-      interpreter, on the 2080 Ti, correct output. `get_ocr_page` returns the in-process
-      callable on either wheel; the torch guard in `ocr_paddle._engine` and the modelscope torch
-      stub both stay, and the worker is one revert away in git history.
-
-- [ ] **Decide whether production `--detector vlm` should stop running GLiNER2** (found
-      2026-08-09 while wiring the A/B above). ARCHITECTURE says layer 0 replaces layer 2, but
-      `merge_detections` runs the whole registry and GLiNER2 is unconditionally in it — so the
-      shipping image/PDF default has been running layer 0 **and** layer 1 **and** layer 2 since
-      2026-08-09. Recall-safe (more detectors, not fewer) and it resolves itself when GLiNER2 is
-      deleted, so this is a question of whether to align earlier: aligning now would make the
-      image/PDF path preview its post-deletion recall, which is worth knowing *before* the
-      deletion rather than after. Note the consequence either way — the frozen PDF baseline
-      (445 findings / 350 distinct values, 31 pages) was measured in values mode with no layer 1
-      at all, so it does not pin this and cannot be used to detect the change.
-
-- [ ] **Invalid identifiers lose their context-tier coverage with GLiNER2** (measured
+- [ ] **Invalid identifiers lost their context-tier coverage with GLiNER2** (measured
       2026-08-09, [reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md);
       Sergei: log and proceed). `AU_TFN_INVALID` logged drops 3 → 2 per seed on every seed, and
       the lost candidate is the *context*-tier one every time. The shadow recognizers do not
@@ -599,35 +534,32 @@ quantization item below is what stands between this and a usable product.
       the output — probably wrong), or restate the contract as "layer 0 strips what it sees; the
       mask flag governs layer 1 only" and fix the docs instead. Decide which before coding.
 
-- [ ] **User-editable keep-list ("do not strip") mechanism** (Sergei, 2026-07-18): a
-      user-editable configuration file of do-not-strip entries, grouped per entity
-      class plus a special class `any` (matches regardless of the detected class);
-      entries support regular expressions. Operator workflow is the point: run the
-      tool, spot an over-strip, add an entry, rerun — the list grows with use.
-      Plugs in as a post-detection filter at the merged-spans level: a span whose
-      text matches a keep entry for its class (or `any`) is dropped before painting.
-      Keep-listing only ever *reduces* stripping — it is a precision lever whose leak
-      risk is operator-owned; log every applied keep in the run output so reviews can
-      see what was skipped. Design questions when picked up: match semantics (full
-      span vs substring, case folding, whitespace normalization — OCR'd spans may not
-      match a cleanly typed entry; consider matching through the OCR-confusion squash
-      classes), file format/location, and the core/cli split (core takes a parsed
-      keep-list object; the front-ends own loading the file). Dual coverage rule
-      applies. Measured by the real-corpus over-strip axis.
-- [ ] **Default keep-list content — institutional identities** (real-corpus review,
-      Sergei 2026-07-18): the real corpus records bank/insurer identity blocks —
-      branded org names, their ABNs, 13/1300/1800 numbers, corporate GPO-box
-      addresses — as *keep* truth, and today's pipeline cannot discriminate them from
-      customer PII, so the first eval runs will report them all as over-strips (that
-      is the axis working, not a truth bug). Recovery = ship starter content for the
-      keep-list mechanism above: (1) inbound business numbers as regex entries —
-      13 xx xx / 13 xxxx / 1300 xxx xxx / 1800 xxx xxx are ACMA business-only
-      allocations, never personal lines, so keep-listing them is zero leak risk;
-      (2) major AU financial-institution identities as exact values (names + their
-      public ABNs — e.g. ANZ = 11 005 357 522) — keyed by specific values, so the
-      customer's own org name/ABN still strips. Mobile-shaped contact numbers inside
-      branded blocks (d02's +61 437 968 251) stay syntactically undiscriminable —
-      accepted over-strip unless the operator keep-lists the specific number.
+- [ ] **What the keep list still owes** *(the mechanism SHIPPED 2026-08-11 — `entity_keep.py`,
+      `data/entity_keep.txt`, `--entity-keep` / `$PII_ENTITY_KEEP` / `--strip-orgs`; record in
+      [DONE.md](DONE.md), design in [ARCHITECTURE.md](ARCHITECTURE.md) "What is deliberately
+      kept". This is the residue of the 2026-07-18 sketch that it did not cover.)*
+
+      - **Applied keeps are not logged.** The original ask was that a run report every keep it
+        applied, so a review can see what was deliberately left readable. Nothing prints today.
+        This is the one item with a leak-adjacent argument behind it: keeping is the only
+        operator-owned precision lever in the tool, and an unlogged one is unauditable.
+      - **No `any` section** — a value kept regardless of the class it ends up with. The
+        motivation got sharper after it was written: see the class-mismatch item above, where a
+        bank's published `13 25 99` arrived as `IDENTIFIER_GENERIC` rather than `PHONE_NUMBER`.
+        `any` is one of the three candidate fixes there; decide it in that item, not this one.
+      - **Matching does not go through the OCR-confusion squash classes**, so a keep entry
+        typed cleanly can miss an OCR-damaged printing of the same name. Untested and unmeasured
+        — the borrowed matcher's fuzzy tier shows the shape a fix would take, and the same
+        length-floor guard would be needed.
+
+      Starter content shipped with it (232 lines: banks, insurers, card networks, lenders,
+      utilities, telcos, major merchants). Two 2026-07-18 recommendations were deliberately NOT
+      taken, and the file says so inline: the 13 xx xx / 1300 / 1800 ranges are present but
+      **commented out**, because on a business account the holder's own service line is as
+      identifying as their company name and this corpus is full of business and trust accounts;
+      and institution ABNs are not listed, per the class-mismatch item above. Mobile-shaped
+      numbers inside branded blocks (d02's +61 437 968 251) stay syntactically undiscriminable —
+      an accepted over-strip unless the operator lists the specific number.
 - [ ] **Entity-variant identity matching — all classes** (config-toggled; real-corpus
       review, Sergei 2026-07-18, scope widened to all classes same day): the same
       real-world entity appears under variant surface forms within one document set,
@@ -649,85 +581,81 @@ quantization item below is what stands between this and a usable product.
       as pseudonym-consistency scoring in Evaluation below), OCR-damaged variants.
       Ship with a configuration option to turn matching off entirely (privacy-side
       effect: matching *increases* linkability inside the output by design).
-- [ ] **Reversed-caps person-name residual** ('REID THOMAS' / 'BROOKS ETHAN') — what
-      remains after the 2026-07-15 fixes (full history in DONE.md: JointNameRecognizer
-      → interference diagnosis → per-cell NER windows + PERSON coalescing + name-forms
-      statistics doc). Current numbers on the fixed-n name-forms corpus: PERSON_REVERSED
-      **70/72 across seeds 42+123** (was 20–75% noise on n=5); PERSON_COMMA 32/32,
-      PERSON_PARTICLE 20/20, PERSON_MULTIWORD 20/20. The two residual leaks are pure
-      **label competition on isolated caps junk lines**: person-only pass finds both
-      name words ('REID'@0.86 + 'THOMAS'@0.85), but in the production schema
-      ORGANIZATION claims the line ('REID THOMAS RENT'@0.86 org) and person collapses
-      to 0.06–0.31 — windowing cannot help. Candidates: (1) labels-per-pass isolation
-      (the experiment below owns exactly this; person-only rescues both observed
-      leaks), (2) the person-names database layer below (deterministic recall floor),
-      (3) LoRA fine-tune on statement-style forms. The known-person permutation pass
-      idea is retired as primary (the interference it targeted is fixed at the window
-      level) but remains viable belt-and-braces. When the residual closes, promote
-      PERSON_REVERSED into pii_eval `build.CRITICAL` (PERSON_JOINT was promoted with
-      the joint-form fix).
-- [ ] **Person-names database layer** (Sergei, 2026-07-15) — if reversed/varied-name
-      recall stays unsatisfactory, integrate a names database as a deterministic
-      recall floor: match known given names/surnames (e.g. the `names-dataset`
-      package, US SSA + AU census name lists) as tokens and emit PERSON candidates
-      for adjacent known-name pairs regardless of word order — 'REID THOMAS' hits
-      (Thomas = known given name, Reid = known surname) with no NER involved. Design
-      questions when picked up: score/context policy (confident vs context-promoted),
-      precision on merchant lines (MCDONALDS, HARVEY NORMAN are surname-shaped —
-      probably require a known *given* name in the pair, not just surnames), and the
-      overlap policy vs keep-ORGANIZATION spans. Sibling of the AU place-name
-      gazetteer task (same trie/set-matching machinery, same fuzzy-budget idea).
-- [ ] **Layer-3 local-LLM audit pass** — *contingent, not committed: the plan is to evaluate
-      the tool end-to-end with layers 1+2 only, and build layer 3 only if those results prove
-      unsatisfactory — see ROADMAP.md and ARCHITECTURE.md.* Design if built: "does this still
-      contain anything identifying?" via llama-server; catches contextual identifiers NER
-      can't see ("the borrower's wife, a dentist in Wagga Wagga"), including the bare place
-      names given up when standalone place-name detection was retired.
+- [ ] **Promote `PERSON_REVERSED` into `pii_eval` `build.CRITICAL`** — all that remains of the
+      reversed-caps person-name residual *(2026-07-15 → closed 2026-08-09)*. The residual was a
+      GLiNER2 label-competition effect (ORGANIZATION claiming an isolated caps line and person
+      collapsing to 0.06–0.31, which windowing could not help) and it **died with the
+      detector**: layer 0 scores 100% on seeds 42/123/7 where GLiNER2 scored 89/95/95
+      ([reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md)).
+      The candidate fixes are moot with it — labels-per-pass isolation, the names database
+      below, a LoRA fine-tune. The promotion is the last step, and PERSON_JOINT is the
+      precedent. Do it together with the gate work in Evaluation below, since promoting a probe
+      into CRITICAL changes what the gate fails on. History in DONE.md.
+- [ ] **Person-names database layer** (Sergei, 2026-07-15) — **contingent, and its trigger has
+      not fired**: it was the deterministic recall floor to build *if* reversed/varied-name
+      recall stayed unsatisfactory, and layer 0 took it to 100% (item above). Kept because the
+      argument survives the detector — a stochastic detector wants a mechanical floor under it,
+      which is layer 1's standing job. If built: match known given names/surnames (e.g. the
+      `names-dataset` package, US SSA + AU census lists) as tokens and emit PERSON candidates
+      for adjacent known-name pairs regardless of word order — 'REID THOMAS' hits with no model
+      involved. Design questions when picked up: score/context policy (confident vs
+      context-promoted), precision on merchant lines (MCDONALDS, HARVEY NORMAN are
+      surname-shaped — probably require a known *given* name in the pair, not just surnames),
+      and the overlap policy against keep-listed ORGANIZATION spans. Sibling of the AU
+      place-name gazetteer task (same trie/set-matching machinery, same fuzzy-budget idea).
+- [ ] **Layer-3 local-LLM audit pass** — *contingent, not committed: the plan is to evaluate the
+      tool end-to-end on the layers it has (0 and 1) and build layer 3 only if those results
+      prove unsatisfactory — see ROADMAP.md and ARCHITECTURE.md.* Design if built: a second pass
+      over the **already stripped** text — "does this still contain anything identifying?" — via
+      the same llama-server. It catches what neither live layer can see by nature: contextual
+      identifiers ("the borrower's wife, a dentist in Wagga Wagga"), including the bare place
+      names given up when standalone place-name detection was retired. Note what makes it a
+      separate layer rather than a longer layer-0 prompt: layer 0 reads the original and names
+      values, layer 3 reads the output and judges the residue.
 - [ ] Overlaps merging algorithm — define and document. Interesting areas: how the weights are
       combined (max, average, bayesian/aposteriori), what if winning classes of overlaps
       do not agree, should we merge at all in some cases. Adjacent-span coalescing for
       fragmented multi-part addresses belongs here too.
-      Input (2026-07-14, image-demo wart 2): a strip-type span nested inside a
-      kept-type span — GLiNER2 emits both ORGANIZATION 'WOOLWORTHS NEWTOWN' (kept) and
-      ADDRESS 'NEWTOWN' (stripped), so the merchant name loses its suburb. Question:
-      should a kept ORGANIZATION absorb contained ADDRESS fragments, or is that a leak
-      vector (real addresses legitimately appear inside org-labeled spans)?
-      *(2026-07-15: the tier-1 corpus now generates suburb-suffixed merchants as
-      whole keep-ORGANIZATION spans, so this wart is measured on the over-strip
-      axis — a fix here shows up as the ORGANIZATION over-stripped count dropping.)*
+      Input (2026-07-14, image-demo wart 2): a strip-type span nested inside a kept-type
+      span — a detector emits both ORGANIZATION 'WOOLWORTHS NEWTOWN' (kept) and ADDRESS
+      'NEWTOWN' (stripped), so the merchant name loses its suburb. Question: should a kept
+      ORGANIZATION absorb contained ADDRESS fragments, or is that a leak vector (real addresses
+      legitimately appear inside org-labeled spans)?
+      *(2026-07-15: the tier-1 corpus generates suburb-suffixed merchants as whole
+      keep-ORGANIZATION spans, so this wart is measured on the over-strip axis — a fix shows up
+      as the ORGANIZATION over-stripped count dropping. 2026-08-11: `apply_keep` answered a
+      NEARBY question in the opposite direction — a keep match now exempts only what it covers
+      and the rest of the span strips around it — so the nesting rule here has to be argued
+      against that, not in a vacuum.)*
       Input (2026-07-14, invalid-identifiers work): invalid-class spans already rank below
       any valid type in `_merge_overlaps` (union extents, valid class wins the placeholder)
       — fold that rule into the general algorithm definition.
-- [ ] Loyalty-program ID class (issue #7, 2026-07-22 — design call pending). The Qantas
-      frequent-flyer number on the Amplify statement (page 2) is not detected: no current
-      class covers it, yet it identifies the customer. Decide: (a) is a loyalty ID
-      strip-worthy PII (probably yes — it is a stable customer identifier linkable across
-      documents); (b) one generic LOYALTY_ID class or per-program; (c) mechanism — a layer-1
-      context pattern ('Frequent Flyer', 'Membership No', 'Rewards number' + digit run,
-      the AuAccountNumberRecognizer context-promotion idiom) vs a GLiNER2 label (label
-      competition risk — see the labels-per-pass experiment). Dual coverage on landing:
-      pytest + a pii_eval probe with a truth type per the established convention.
-- [ ] Label/value header columns alias into one span (issue #8a, 2026-07-22; **rescoped
-      2026-08-09**). Two-column page headers (ANZ: left 'Postal Address' → address lines,
-      right 'Trading Account Number' → '314811') band into single assembled lines by design —
-      side-by-side cells ARE one visual row — so the text reads '24 STACEY DRIVE,
-      CARRICKALINGA SA 5204 314811' and GLiNER2 emits the WHOLE line as one ADDRESS span
-      (0.99). Everything strips, so no leak — the damage is aliasing ('314811' hides in
-      ADDRESS_n instead of getting the consistent ACCOUNT_n it gets elsewhere).
-      **This is now a `--detector layers` problem only:** the VLM reads the two columns as
-      what they are, and layer 1 types the account number from the string. The old fix class
-      (detect column structure in the OCR layer and isolate columns as segments) went with the
-      segmenter and is not coming back — if this matters on the layers path, it needs a
-      cheaper mechanism, and if the layers path is eventually retired it closes by itself.
-- [ ] Slim the Presidio NLP engine: exclude `parser` and `ner` from the en_core_web_sm
-      pipeline. Presidio loads the model with bare `spacy.load()` (spacy_nlp_engine.py, no
-      component exclusions), so every analyzed text pays for the full 6-component pipeline;
-      with SpacyRecognizer retired the spaCy NER output is read by nobody, and the parser
-      only produces sentence bounds nothing consumes — lemmas need tagger+attribute_ruler
-      only. Needs a small SpacyNlpEngine subclass or preloaded-nlp injection; first verify
-      no recognizer/enhancer touches `nlp_artifacts.entities`/sents, then measure layer-1+2
-      latency on the eval corpus. (spaCy source review finding (m), 2026-07-15 — record in
-      [DONE.md](DONE.md).)
+- [ ] Loyalty-program ID class (issue #7, 2026-07-22 — **re-check before designing anything**).
+      The Qantas frequent-flyer number on the Amplify statement (page 2) was not detected: no
+      layer-1 class covers it, yet it identifies the customer. What changed since: layer 0's
+      prompt names "membership and loyalty numbers" explicitly, so it most likely strips as
+      `IDENTIFIER_GENERIC` today. **Step one is therefore to re-run that page**, not to pick a
+      mechanism. If it is detected, what remains is only whether a stable customer identifier
+      deserves its own class for report legibility (`LOYALTY_ID` vs `ID_n`) — a much smaller
+      question. If it is still missed, the layer-1 route is a context pattern ('Frequent Flyer',
+      'Membership No', 'Rewards number' + digit run, the `AuAccountNumberRule`
+      context-promotion idiom). Dual coverage on landing: pytest + a pii_eval probe with a truth
+      type per the established convention.
+- [ ] Label/value header columns alias into one span (issue #8a, 2026-07-22; rescoped
+      2026-08-09, **rescoped again 2026-08-12**). Two-column page headers (ANZ: left 'Postal
+      Address' → address lines, right 'Trading Account Number' → '314811') band into one
+      assembled line by design — side-by-side cells ARE one visual row — so the linearized text
+      reads '24 STACEY DRIVE, CARRICKALINGA SA 5204 314811' and a detector reading that string
+      emits the whole line as one ADDRESS span. Everything strips, so there is no leak; the
+      damage is aliasing ('314811' hides inside ADDRESS_n instead of getting the ACCOUNT_n it
+      gets elsewhere).
+      **On the shipping path this is closed**: layer 0 reads the two columns as what they are,
+      and layer 1 types the account number from the string. It survives here as a **known cost
+      of the proposed OCR-text layer-0 pass** (first item in this file), which would read
+      exactly that aliased line — that item lists it among its risks, and this entry is the
+      detail behind it. The old fix class (detect column structure and isolate columns as
+      segments) went with the segmenter and is not coming back; a text pass that wants this
+      fixed needs a cheaper mechanism.
 - [ ] AU place-name gazetteer as a cheap deterministic place-name layer (spaCy source review
       finding (j)): FlashText/PhraseMatcher-style trie — or plain set matching at our char
       level — over a public AU suburb/town list, case-insensitive, whitespace-normalized.
@@ -778,21 +706,25 @@ text tier's record is in [DONE.md](DONE.md).)
       disagreement). Local side-by-side review UI so manual acceptance checks are a quick
       click-through; only declassified findings are reported back.
 
-- [x] ~~**Stop duplicating Presidio's checksum arithmetic**~~ — **DONE 2026-08-09**, by
-      removing Presidio. `pii/core/checksums.py` is now the single source of truth: each
-      `ChecksumRule` calls its function once per match and branches on the result, so the valid
-      class and its `*_INVALID` shadow cannot desync — there is no second implementation to
-      desync *with*. The proposed fix (delegate to presidio's `validate_result`) was inverted by
-      the retirement, exactly as the 2026-08-09 direction note predicted. `pii_eval/au.py` still
-      mirrors the arithmetic, and its coupling test still guards that one seam.
+- [ ] **De-flake the tier-1 gate / revisit `build.CRITICAL`** (2026-08-08; **re-measure before
+      acting, 2026-08-12**). Under GLiNER2 the gate passed at seeds 42 and 1 and failed at 2, 3
+      and 7 on unmodified code — always a residual PERSON miss — so a single-seed gate was
+      partly luck and any change perturbing the draw sequence re-entered the lottery. **Those
+      numbers are stale**: the detector was replaced on 2026-08-09, seeds 42/123/7 were
+      re-measured, and seed 7's failure is now a *recorded accepted loss* rather than a flake
+      (a shared surname that is also a banking word — `LOAN REPAYMENT PERSON_5 FEE`; see the
+      joint-name decision in ARCHITECTURE.md). Seeds 1, 2 and 3 have not been re-run under
+      layer 0. So: re-measure first, then decide between scoring several seeds and gating on the
+      aggregate, or keeping a single seed and listing the accepted losses.
 
-- [ ] **De-flake the tier-1 gate / revisit `build.CRITICAL`** (2026-08-08, incidental finding
-      above). The gate passes at seeds 42 and 1 but fails at 2, 3 and 7 on unmodified code —
-      always a residual GLiNER2 PERSON miss — so a single-seed gate is partly luck and any
-      change perturbing the draw sequence re-enters the lottery. Worth either fixing the PERSON
-      residuals or scoring several seeds and gating on the aggregate. Separately,
-      `CONTEXTUAL_ID` sits at 0% recall at every seed and is excluded from `CRITICAL`; decide
-      whether that exclusion is still intended or is masking a real gap.
+      Two things to settle in the same pass. `CONTEXTUAL_ID` sits at 0% recall at every seed and
+      is excluded from `CRITICAL` — decide whether that exclusion is still intended or is
+      masking a real gap; layer 3 is nominally its owner and layer 3 is contingent. And
+      `PERSON_REVERSED` is due for promotion into `CRITICAL` (item in Detection pipeline above),
+      which changes what the gate fails on.
+
+      Note the gate now needs a llama-server, which changes its character: it is no longer a
+      cheap model-free check, and `-np 1` is required for the reproducibility it depends on.
 
 ## Nice-to-have
 

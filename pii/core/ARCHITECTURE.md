@@ -27,7 +27,8 @@ or the web app; the only planned shared infrastructure is the local llama-server
 | `tldextract`, `phonenumbers` | The two validators worth not writing: public-suffix check for emails, libphonenumber for AU phone numbers. |
 | llama-server (llama.cpp), Qwen3.6-27B | **Layer 0**, the semantic detector — reached over HTTP, never imported. Not a dependency of `pii.core` (stdlib `urllib` transport) but a hard runtime requirement of every strip mode. |
 | PaddleOCR (`paddleocr` + a `paddlepaddle` wheel) | The OCR engine behind the image path — **geometry only, never detection** (Tesseract was the first backend, retired 2026-07-17 — decision below). Runs in-process on either wheel since the torch conflict went (2026-08-09). |
-| Pillow | Pixel painting for image output. |
+| Pillow | Pixel painting — placeholders onto the original image, and the debug overlays. |
+| pymupdf | PDF page rendering, reassembly and metadata scrubbing. **AGPL** — revisit before any commercial distribution (decision below). |
 
 ### Our modules
 
@@ -38,10 +39,11 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | Module | Role |
 |---|---|
 | `__init__.py`, `constants.py` | Public API surface (`PiiPipeline`, `PseudonymMap`, `RECORD_SEPARATOR`, `DEFAULT_STRIP_ENTITIES`, `InvalidFinding`, `INVALID_ENTITY_TYPES`); `RECORD_SEPARATOR` lives in `constants.py` (zero-import, cycle-free) |
-| `pipeline.py` | `PiiPipeline` — **layer 1**: builds the Presidio registry, runs one analyzer pass, filters to the strip list, union-merges overlaps, collects checksum-invalid findings. `merge_detections` folds layer 0 in on top |
+| `pipeline.py` | `PiiPipeline` — **layer 1**: builds the rule set, runs one `Analyzer` pass, filters to the strip list and applies the keep list, union-merges overlaps, collects checksum-invalid findings. `merge_detections` folds layer 0 in on top |
 | `detection.py` | `Detection` — the record every layer emits and every consumer reads |
 | `engine.py` | `Rule` / `PatternRule` / `Analyzer` — the regex loop, the validation hook, the char-level context boost, thresholding and deduplication |
 | `recognizers.py` | **Every** layer-1 rule: the checksummed identifiers (each emitting its valid class OR its `*_INVALID` shadow from one checksum call), BSB, account, PayID, licences, joint names, ATF tails, email, IBAN, phone |
+| `checksums.py` | The identifier arithmetic — TFN, Medicare, ABN, ACN, Luhn. Single source of truth since Presidio went; `pii_eval/au.py` mirrors it under a coupling test |
 | `mapping.py` | `PseudonymMap` — placeholder allocation, JSON persistence, rehydration |
 | `entity_keep.py` | The keep list: what is detected but NOT stripped, per entity type, loaded from `data/entity_keep.txt` (or any path) |
 | `csv_mode.py` | Per-cell transaction-CSV processing |
@@ -54,7 +56,7 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `ocr.py` | OCR-engine seam (`get_ocr_page`) + the shared pixel toolkit (`Box`, `_rows` banding, word-box normalization) |
 | `ocr_page.py` | Perception: `OcrPage` → `OcrLine` → `OcrWord` + `OcrFrame`. Geometry only, no character offsets |
 | `linearization.py` | `OcrPage` → `RecognizerInput`: the flat page string plus the source map that turns a span back into pixel boxes |
-| `ocr_paddle.py` | PaddleOCR adapter: line-oriented det/rec → per-word `OcrPage`; picks worker vs in-process by wheel |
+| `ocr_paddle.py` | PaddleOCR adapter: line-oriented det/rec → per-word `OcrPage`; in-process on either wheel, and holds the torch guard that keeps it safe |
 | `debug_overlay.py` | `strip --debug` renderers: the ocr / layer-0 / layer-1 diagnostic layers drawn onto the page a run processed |
 | `paint.py` | The drawing toolkit (`Segment`, `paint_segments`, fill/frame styles), shared by strip and the debug overlay |
 | `image_mode.py` | Image front/back-end: layer-0 detect, locate in the OCR text, paint placeholders onto the original pixels |
@@ -69,7 +71,7 @@ flowchart TB
     IMG["image scan"]
     PDF["PDF"]
 
-    PDF -- "pdf_mode.py: render pages<br>(300 DPI, streamed)" --> IMG
+    PDF -- "pdf_mode.py: render pages<br>(300 DPI, cached between the two sweeps)" --> IMG
     IMG --> VLM["vlm.py — Layer 0<br>pass 1: read the pixels, name the values<br>pass 2: box those values"]
     IMG --> OCRPY["ocr.py seam → ocr_paddle.py (PaddleOCR)<br>in-process, either wheel<br>OcrPage → linearize:<br>page string + word-box source map"]
     CSV --> CSVM["csv_mode.py<br>per-cell, sentinel-joined batches"]
@@ -88,10 +90,10 @@ flowchart TB
     LOC -- "spans in the page string" --> MRG
 
     subgraph PIPE["pipeline.py — PiiPipeline"]
-        AE["Presidio AnalyzerEngine<br>(spaCy NLP engine: tokens/lemmas<br>→ context enhancer)"]
-        L1["Layer 1 — patterns/checksums<br>built-in AU TFN/Medicare/ABN/ACN,<br>cards, email, phone, IBAN<br>+ recognizers.py: BSB, account, PayID<br>+ invalid_recognizers.py: shadows"]
+        AE["engine.py — Analyzer<br>(regex loop, validation hook,<br>char-level context boost, threshold)"]
+        L1["Layer 1 — recognizers.py<br>one rule per checksummed class:<br>TFN/Medicare/ABN/ACN, cards<br>→ valid class OR its *_INVALID shadow<br>+ BSB, account, PayID, licences,<br>joint names, ATF, email, phone, IBAN"]
         L3["Layer 3 — local-LLM audit<br>via llama-server (planned)"]
-        MRG["filter to strip list →<br>union-merge overlapping spans<br>(layer 1 refines IDENTIFIER_GENERIC)"]
+        MRG["filter to strip list, subtract<br>keep-list matches →<br>union-merge overlapping spans<br>(layer 1 refines IDENTIFIER_GENERIC)"]
         AE --- L1
         AE -.- L3
         AE --> MRG
@@ -169,12 +171,14 @@ pixels-first is in the "PDFs as rendered images" decision below.
 
 ## Detection stack
 
-Three layers, unioned — no single detector catches everything (2026-07-05):
+**Two** live layers today, unioned — no single detector catches everything (2026-07-05). A
+third is planned and contingent; the second was retired. The numbering is kept as it was
+assigned, so the record and the code agree:
 
 | Layer | Engine | Owns | Status |
 |---|---|---|---|
 | 0 | Local LLM reading the page image (`vlm.py`) or the document text (`text_llm.py`) | everything, semantically — refined, validated and extended by layer 1 | pixels shipped 2026-08-08 (default 2026-08-09); text shipped 2026-08-09. **The only detector** since layer 2 was retired |
-| 1 | Presidio patterns + checksums | TFN, Medicare, ABN/ACN, BSB, account, PayID, cards, email, phone, IBAN; invalid-candidate shadows | shipped |
+| 1 | Our own pattern/checksum engine (`engine.py` + `recognizers.py`) | TFN, Medicare, ABN/ACN, BSB, account, PayID, cards, email, phone, IBAN; the `*_INVALID` shadows of each checksummed class | shipped; on Presidio until 2026-08-09 |
 | 2 | ~~GLiNER2 zero-shot NER~~ | PERSON, ORGANIZATION, ADDRESS, DATE_OF_BIRTH | **retired 2026-08-09** — layer 0 replaced it (decision below) |
 | 3 | Local LLM audit (llama-server) | contextual identifiers ("the borrower's wife, a dentist in Wagga Wagga") | planned |
 
@@ -255,21 +259,10 @@ never leave the machine.
   case-insensitively with whitespace collapsed; rehydration restores the first-seen surface
   form.
 
-### Presidio AU recognizers require explicit registration (2026-07-12)
+### Phone regions are AU-only (2026-07-22)
 
-Presidio *ships* AU_TFN/AU_MEDICARE/AU_ABN/AU_ACN implementations (open source, MIT — no paid
-tier involved), but its default registry config
-(`presidio_analyzer/conf/default_recognizers.yaml`) lists every country-specific recognizer
-with `enabled: false`; only generic + US recognizers are on by default. Consequence: they
-silently never run unless registered. `pii/core/pipeline.py` registers the four AU classes
-explicitly. The checksum logic is ordinary local Python in the library
-(`predefined_recognizers/country_specific/australia/`) and verified working: a valid-checksum
-TFN scores 1.00, a digit-swapped one is rejected entirely. Keep presidio ≥ 2.2.364 —
-2.2.362's ACN validator rejects every ACN with check digit 0, and 2.2.364 changed the ABN
-validator's leading-zero handling, which `pii/core/checksums.py` mirrors.
-
-Phone regions are **AU-only** (issue #11 follow-up, Sergei's option A, 2026-07-22; was
-AU+US+GB): with US in the list, libphonenumber read account+amount digit runs
+`PhoneRule` hands libphonenumber the **AU region only** (issue #11 follow-up, Sergei's option A;
+it was AU+US+GB). With US in the list, libphonenumber read account+amount digit runs
 ('A/C 30-743-3257 1.50' → '3074332571') as valid US numbers and the merged span re-swallowed
 the amount the labeled-account guard had just released. Zero measured loss: international
 '+'-prefixed numbers are parsed region-independently ('+1 305 555 0123' still strips), AU
@@ -282,9 +275,11 @@ Scoring philosophy: a false positive costs some analytical utility; a false nega
 classified PII. Every ambiguity resolves toward stripping.
 
 - **Filter before overlap resolution.** Detected spans are filtered to strip-listed entity
-  types *before* overlaps are resolved. Found the hard way: spacy emits bogus high-score
-  `DATE_TIME` spans over account/phone numbers; if kept-type spans compete, they shadow real
-  PII which then leaks.
+  types *before* overlaps are resolved. Found the hard way on the retired chassis, whose
+  `DATE_TIME` detector emitted bogus high-score spans over account and phone numbers: if
+  kept-type spans are allowed to compete, they shadow real PII, which then leaks. The rule
+  outlived the detector that motivated it — layer 0 still emits a kept class (ORGANIZATION)
+  over the same text as a stripped one.
 - **Merge overlapping PII spans; never rank them.** Highest-score-wins let a small `AU_BSB`
   span (0.55) evict a wider account-number span (0.52) that covered it, exposing the
   remainder. Overlapping strip-listed spans are unioned into one replacement (entity type of
@@ -333,42 +328,40 @@ the wrong assumption). Retiring the chassis the same day is what finished the jo
 paddle worker decision below.
 
 One layer-1 rule outlived the retirement and should not be mistaken for NER leftovers:
-`AuAccountNumberRecognizer`'s >=5-digit floor (`validate_result`). It was introduced alongside
+`AuAccountNumberRule`'s >=5-digit floor (`validate`). It was introduced alongside
 the GLiNER2 guess floors on 2026-07-14 but is a property of the account *pattern*, not of any
 model.
 
-### spaCy retired as a detector; no standalone place-name detection (2026-07-15; LOCATION reversed 2026-07-23)
+### No standalone place-name detection (2026-07-23)
 
-Current design: `SpacyRecognizer` is not in the registry and the `--no-ner` patterns-only
-regime is gone — spaCy serves only as Presidio's mandatory NLP engine (tokens/lemmas →
-context enhancer). Layer 0 owns PERSON, ORGANIZATION, ADDRESS and DATE_OF_BIRTH. **No
-standalone place-name detection runs:** a lone city/town name ('Security property is in
-Cairns') passes verbatim — acceptable in mortgage-policy and bank-statement documents, and
-not worth a dedicated schema pass' latency or false-positive surface. The ADDRESS passes are
-untouched, so full addresses and suburb-state-postcode lines still strip, and a suburb in
-clearly address-flavoured context ('resided in Kew') can still be caught by ADDRESS — an
-intended residual overlap. Contextual identifiers that are neither addresses nor layer-1
-types are deferred to the planned layer-3 audit.
+**A lone city or town name passes verbatim** — 'Security property is in Cairns' is not
+redacted. `LOCATION` is in neither `DEFAULT_STRIP_ENTITIES` nor the placeholder map, and
+nothing in either layer claims the class. Acceptable in mortgage-policy and bank-statement
+documents, and not worth the false-positive surface a dedicated pass costs. What still strips
+is unchanged: layer 0 owns ADDRESS, so full addresses and suburb-state-postcode lines go, and
+a suburb in clearly address-flavoured context ('resided in Kew') is caught as ADDRESS — an
+intended residual overlap. Contextual identifiers that are neither addresses nor layer-1 types
+are deferred to the planned layer-3 audit.
 
-Why spaCy's detector went: on OCR text en_core_web_sm produced cross-line glue PERSON spans
-('Emily Watson\nAddress') and date-as-PERSON false positives, while the NER layer of the day
-already owned PERSON/ORG/dates cleanly (source-level mechanism in the "spaCy source review"
-decision below). The `--no-ner` regime was removed outright (Sergei) — its name leaks made it
-unsafe, and every input mode now runs the one pipeline. That ruling is why the mode entry
-points *require* a layer-0 detector today: patterns-only must not be reachable by accident.
+History, all in DONE.md: a dedicated NER LOCATION pass shipped 2026-07-15 — chosen
+head-to-head over spaCy LOCATION, which is blind to towns like 'Wagga Wagga'/'Dubbo' — and was
+retired 2026-07-23 when the policy above was adopted, taking its `LOCATION_MIN_CHARS=4` floor
+trade-off with it. spaCy's own NER had been retired as a detector earlier the same week (glue
+PERSON spans across line breaks on OCR text, date-as-PERSON false positives), and the library
+itself went with the chassis on 2026-08-09 — decision above.
 
-History: a dedicated NER LOCATION pass shipped 2026-07-15 (chosen head-to-head over spaCy
-LOCATION, which is blind to towns like 'Wagga Wagga'/'Dubbo') and was retired 2026-07-23 when
-the lone-place-name policy above was adopted. The head-to-head numbers, the
-`LOCATION_MIN_CHARS=4` floor trade-off, and the retirement are in DONE.md.
+**The `--no-ner` patterns-only regime is gone** (Sergei, 2026-07-15): its name leaks made it
+unsafe. That ruling is why the mode entry points *require* a layer-0 detector today —
+patterns-only must not be reachable by forgetting an argument.
 
-Registry composition is regression-tested in `tests/pii/core/test_registry_policy.py`:
-SpacyRecognizer and Gliner2Recognizer both absent, no registry entry claiming ADDRESS or
-DATE_OF_BIRTH, and PERSON claimed only by the mechanical `JointNameRecognizer`.
+Layer-1 composition is regression-tested in `tests/pii/core/test_registry_policy.py`: no rule
+claims ADDRESS or DATE_OF_BIRTH, PERSON is claimed only by the mechanical `JointNameRule`, the
+retired detectors stay absent by name, and a **subprocess** probe asserts that building a
+pipeline — front-ends included — imports neither presidio, spaCy, thinc nor torch.
 
 ### Mechanical joint-name forms are layer-1 patterns, not an NER problem (2026-07-15)
 
-`JointNameRecognizer` (pii/core/recognizers.py, emits PERSON) owns the joint-account name
+`JointNameRule` (pii/core/recognizers.py, emits PERSON) owns the joint-account name
 shapes: initials-pair 'E & J Moore' (@0.5) and shared-surname 'Julie and Brian Summers' /
 'JULIE AND BRIAN SUMMERS' (@0.45). Rationale from the raw-emission diagnostic (DONE.md):
 the NER model of the day labelled these forms confidently (0.93+) in clean context but lost
@@ -379,13 +372,14 @@ deterministic floor under a stochastic detector, which is layer 1's standing job
 
 Two design points:
 
-- **Confident scores, no context gating.** Presidio's context enhancer looks 5 tokens
-  back and 0 forward; on statement lines the joint name routinely trails a payee/ref tail
-  longer than that. Context-promoted sub-threshold patterns (the account-number idiom)
-  would systematically miss exactly the lines the recognizer exists for.
+- **Confident scores, no context gating.** The context boost only looks *backward*, over a
+  short window (60 characters now; 5 tokens under the Presidio enhancer this was tuned
+  against), and on statement lines the joint name routinely trails a payee/ref tail longer
+  than that. A context-promoted sub-threshold pattern — the account-number idiom — would
+  systematically miss exactly the lines this rule exists for.
 - **Precision guard is a positional stop-vocabulary, not a floor.** 'X AND Y Z' caps
   triples collide with statement phrases ('PRINCIPAL AND INTEREST PAYMENT') and org names
-  ('TAYLOR AND SCOTT LAWYERS PTY LTD'). `validate_result` checks by slot (reworked in the
+  ('TAYLOR AND SCOTT LAWYERS PTY LTD'). `validate` checks by slot (reworked in the
   2026-07-15 review round — the first any-position version sacrificed real surnames like
   Fee/Card): given-name slots reject statement vocabulary (phrases carry their giveaway
   word there), the surname slot rejects only corporate markers, and a corporate-tail
@@ -406,10 +400,11 @@ failure is a known trade-off, not an open regression. Record:
 [reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md).
 
 With this, `PERSON_JOINT` moved into the eval's CRITICAL gate (100% on seeds 42/123).
-`PERSON_REVERSED` ('MOORE OLGA') stays a per-form probe: two bare caps words admit no
-pattern, so the reversed-caps residual keeps its own TODO item (diagnosis there: the
-misses are CSV-blob effects — mention shadowing and blob-scale label competition — not
-coalescible fragments).
+`PERSON_REVERSED` ('MOORE OLGA') stays a per-form probe — two bare caps words admit no
+pattern, so it never had a layer-1 owner and never will — but the residual that kept it out of
+the gate **closed with the layer-2 retirement**: layer 0 scores 100% on seeds 42/123/7 where
+GLiNER2 scored 89/95/95. Promoting the probe into `pii_eval` `build.CRITICAL` is the remaining
+step, and is a TODO item.
 
 ### What is deliberately kept — a configurable keep list (2026-08-11)
 
@@ -449,20 +444,30 @@ two lists.
 One special case died with it: ORGANIZATION is now an ordinary member of `DEFAULT_STRIP_ENTITIES`
 and `_in_strip_plan` has one rule for every class — on the strip list, and not exempted by value.
 
-### Checksum-invalid identifiers are surfaced, not silently dropped (2026-07-14)
+### Checksum-invalid identifiers are surfaced, not silently dropped (2026-07-14; one-rule ownership 2026-08-09)
 
 A value shaped like a TFN whose mod-11 arithmetic fails is a typo, bad OCR, or forgery — all
-three worth reporting. Design: *shadow recognizers* (`invalid_recognizers.py`) mirror the
-checksummed recognizers with inverted validation, emitting distinct classes per failure mode —
-`*_INVALID` (checksum fails) vs `*_MALFORMED` (structurally impossible) — because the
-typo-vs-impossible distinction is exactly the forgery signal. Three orthogonal CLI controls
-(collection tier / log / mask); collection tiers are defined by *where the evidence sits*
-(in-span grouping or label → `likely`; nearby context words via the lemma enhancer →
-`context`; any failing match → `all`, which is noise). Guardrails: candidates covered by a
-*validated* detection are suppressed (keyed on the validating recognizer's name, not entity
-type — an NER guess must never suppress); invalid classes always lose the placeholder to
-valid types on overlap. Adopted defaults: `likely` + log + no mask. **The findings log is
-near-PII** (a typo'd TFN is a real TFN minus a digit) — local-only artifact, like `map.json`.
+three worth reporting. **One `ChecksumRule` owns both halves of its digit space**: it matches
+once, extracts the digits once, calls the checksum once, and emits either the valid class or
+its shadow — `*_INVALID` (checksum fails) or `*_MALFORMED` (structurally impossible), the
+typo-vs-impossible distinction being exactly the forgery signal. The two halves used to live in
+separate modules with separate pattern sets and disagreed silently; that leak is what retired
+the Presidio chassis (decision above), and they must not be split again.
+
+Three orthogonal CLI controls — collection tier, log, mask. The tiers are defined by *where the
+evidence sits*: in-span grouping or a label → `likely`; a context term in the 60-character
+window before the match → `context`; any failing match at all → `all`, which is noise.
+Guardrails: a candidate covered by a *validated* detection is suppressed, keyed on the
+validating rule's name rather than on the entity type — a semantic guess must never suppress a
+checksum candidate — and invalid classes always lose the placeholder to valid types on overlap.
+Adopted defaults: `likely` + log + no mask. **The findings log is near-PII** (a typo'd TFN is a
+real TFN minus a digit) — a local-only artifact, like `map.json`.
+
+Layer 0 disturbed this feature in two ways, both still open (TODO.md): the `context` tier lost
+its only real source when GLiNER2's identifier post-validation went with it, and layer 0 strips
+a checksum-failed identifier as `IDENTIFIER_GENERIC` whatever `--mask-invalid-identifiers`
+says, which breaks the report-vs-mask separation the feature is built on.
+
 Full design narrative, eval numbers and follow-on findings: DONE.md.
 
 ### CSV handling (2026-07-12)
@@ -498,77 +503,62 @@ detect and mask barcode regions.
   output pixels, so encoding damage is measured, not hidden). Encoding configurability is a
   recorded TODO.
 
-### Image path is orthogonal to presidio-image-redactor (2026-07-14)
+### Image-path invariants, harvested from a package we declined (2026-07-14)
 
-The OCR/image pipeline is built around our own `PiiPipeline`, not Microsoft's
-`presidio-image-redactor` package. Presidio stays exactly where it is today — as the engine
-inside the *text-analysis* layer — and the image path is a front-end (render → OCR → assembled
-text with offset↔word-box bookkeeping) plus a back-end (span → boxes → paint → reassemble PDF)
-around the unchanged text pipeline. Reasons:
+The image path was built around our own pipeline rather than Microsoft's
+`presidio-image-redactor`, whose `ImageRedactorEngine` draws filled boxes (blank redaction,
+where we pseudonymize) and hooks in below everything that makes this tool ours — recall-first
+union merging, invalid-identifier collection, strip planning, the pseudonym map. That choice is
+moot now that Presidio is gone entirely, but the source review behind it produced four rules
+that are load-bearing and still govern the code. Their span→bbox mapping was the *what-to-avoid*
+exhibit: it re-derives character offsets inside its matching loop and carries two silent-leak
+classes.
 
-- **Wrong hook point.** `ImageAnalyzerEngine` plugs in at the bare `AnalyzerEngine` level, but
-  our value-add lives above it in `pii/core/pipeline.py`: recall-first union overlap merging (theirs
-  drops overlaps by score rank — the leaky approach rejected 2026-07-12), invalid-identifier
-  collection/reporting, strip planning, pseudonym mapping. Adopting it means bypassing or
-  forking all of that.
-- **Wrong output model.** `ImageRedactorEngine` draws filled boxes — blank redaction. Our core
-  requirement is pseudonymization: paint the region and draw the placeholder (`PERSON_1`) into
-  it, emitting the same rehydratable `map.json`.
-- **No home for roadmap items.** Barcode masking is not text-driven (no OCR span to map);
-  the OCR bake-off needs an engine interface we own (theirs is shaped like Tesseract's TSV, so
-  wiring PaddleOCR/Surya is the same work either way); a future local-VLM path does OCR+detection
-  in one pass, which an OCR-then-analyze frame can't express; PDF reassembly and the
-  belt-and-braces text-layer scan are ours to build regardless.
-- **The eval needs to own the mapping.** pii_eval's planned degradation tier and the Tier-3
-  cross-OCR-engine disagreement metric both require control over the assembled-text/offset/box
-  contract — that must not be buried in a third-party engine.
-
-The 2026-07-14 source review (full harvest in DONE.md) confirmed the decision and demoted
-their span→bbox mapping to a *what-to-avoid* exhibit — it re-derives char offsets in its
-matching loop and carries two silent-leak classes. What did transfer into our design:
-
-- **Record `(char_start, char_end, bbox)` per word at assembly time** so span→boxes is pure
-  interval intersection over *merged* spans (never raw analyzer results — merge-before-paint
-  eliminates their overlapping-results leak by construction).
-- **The OCR interchange format**: Tesseract's `image_to_data` parallel-lists dict as the
-  engine-neutral contract — the seam for the Tesseract/PaddleOCR/Surya bake-off (any engine
-  normalizes into it; drop empty word boxes before assembly).
-- **Coordinate discipline**: any OCR preprocessing feeds OCR *only*; painting happens on the
+- **Record `(char_start, char_end, bbox)` per word at assembly time; never re-derive an offset
+  from string lengths.** Span→boxes is then pure interval intersection, over *merged* spans and
+  never raw detections — which makes the overlapping-results leak inexpressible rather than
+  guarded against. This rule lives on `linearization.RecognizerInput`.
+- **Coordinate discipline.** Any OCR preprocessing feeds OCR *only*; painting happens on the
   original pixels, with explicit scale/offset metadata mapping boxes back.
-- **Allow-listing belongs in the text layer only** — their per-word allow-list recheck at
-  paint time is a leak vector; the paint layer must follow merged spans exactly.
-- Smaller notes: Tesseract misreads text flush against image edges (pad tightly-cropped
-  inputs); a per-document deny-list of known-by-construction values (account-holder name,
-  account number) is a cheap recall booster; image-tier eval should match boxes with pixel
-  tolerance, never exact coordinates.
+- **Keep-listing belongs in the text layer only.** Their per-word allow-list recheck at paint
+  time is a leak vector. The paint layer follows merged spans exactly and makes no policy
+  decision of its own.
+- **The image-tier eval matches painted boxes with pixel tolerance, never exact coordinates** —
+  exact-box assertions break across engine versions.
 
-`presidio-image-redactor` is not installed as a dependency; only `presidio-analyzer` remains.
+Two smaller notes kept because they cost nothing: a per-document deny-list of
+known-by-construction values (account-holder name, account number) is a cheap recall booster,
+and tightly-cropped inputs want padding before OCR. Full harvest in DONE.md.
 
 ### OCR backends are interchangeable adapters; a local VLM is not (2026-07-14)
 
-The engine seam is the word-box interchange dict in `ocr.py`. Tesseract is the first adapter;
-PaddleOCR/Surya/docTR are future adapters normalizing into the same contract (polygons →
-axis-aligned envelopes), so the text pipeline and the paint layer never know which engine ran.
-The exception is a local VLM doing OCR+PII detection in one pass: that cannot be expressed as
-an OCR adapter feeding the analyze step, so it is an *alternative pipeline* joining at the
-merged-spans level — **built 2026-08-08, see "Layer 0" below**.
+The engine seam is `ocr.py::get_ocr_page(backend) -> (image, lang=...) -> OcrPage`
+(`OCR_PAGE_BACKENDS`; an entry selects a model tier, e.g. `paddle:v6_medium`). Any engine
+normalizes into that contract — polygons → axis-aligned envelopes — so the recognizer feed and
+the paint layer never learn which one ran. Tesseract was the first adapter and PaddleOCR is the
+only one today; Surya and the two layout backends were built against this seam and retired
+through it, which is the evidence that it holds.
 
-**Realized 2026-07-17** as `ocr.py::get_ocr_page(backend) -> (image, lang=...) -> OcrPage`
-(`OCR_PAGE_BACKENDS`; entries select a model tier, e.g. `paddle:v6_medium`). The PaddleOCR
-adapter (`ocr_paddle.py`) established two structural rules the seam now carries:
+The exception the title names is a local VLM doing OCR *and* PII detection in one pass: that
+cannot be expressed as an OCR adapter feeding an analyze step, so it joins at the merged-spans
+level instead — **built 2026-08-08 as layer 0**, decision below.
+
+Three structural rules the PaddleOCR adapter (`ocr_paddle.py`) established, which the seam now
+carries:
 
 - **Process rules are part of a backend's contract.** On Windows, paddlepaddle-gpu and torch
   cannot share a process (bundled-cudnn mutual exclusion; full story in the adapter docstring
-  and the 2026-07-17 DONE record). GPU paddle therefore serves torch-free OCR-only processes
-  (the pii_eval fidelity sweep) directly. Since 2026-08-09 *every* path is torch-free, so the
-  GPU wheel serves all of them in-process — see the paddle worker decision below. The adapter installs a torch *stub* to satisfy
-  paddleocr's modelscope import chain in GPU processes.
-- **Package inits stay lazy (PEP 562) — load-bearing.** `pii/__init__` and
-  `pii/core/__init__` resolve their public names lazily so `import pii.core.ocr` never drags
-  in presidio → spaCy → thinc → torch. OCR-only processes depend on this to stay torch-free;
-  don't re-add eager imports to those `__init__`s.
-- Backend model caches follow the repo convention: `models/paddlex` (PADDLE_PDX_CACHE_HOME,
-  set by the adapter).
+  and the 2026-07-17 DONE record). That once forced a worker subprocess; since 2026-08-09
+  nothing in the strip path imports torch, so the GPU wheel runs in-process everywhere and the
+  worker is retired (decision below). The adapter installs a torch *stub* to satisfy
+  paddleocr's modelscope import chain.
+- **Package inits stay lazy (PEP 562) — load-bearing.** `pii/__init__` and `pii/core/__init__`
+  resolve their public names lazily, so `import pii.core.ocr` never drags the analysis stack in
+  behind it. The original reason — keeping OCR-only processes torch-free against the
+  presidio → spaCy → thinc → torch chain — is weaker now that the chain is gone, but the
+  property is cheap and the guard stays. Don't re-add eager imports to those `__init__`s.
+- **Backend model caches follow the repo convention**: `models/paddlex`, via
+  `PADDLE_PDX_CACHE_HOME`, set by the adapter.
 
 ### Paddle worker-process isolation — built 2026-07-17, RETIRED 2026-08-09
 
@@ -639,10 +629,11 @@ purpose, which is why it is as small as it is — the layout/segmenter half of i
   presidio-image-redactor leak class) lives on the source map. `RecognizerInput` is the **single**
   implementation of span→box mapping; the parallel flat `OcrResult`/`assemble` copy of it was
   deleted 2026-08-09.
-- **`get_ocr_page(backend)` — wheel-selected transport, one implementation.** Worker subprocess
-  on the GPU paddle wheel, in-process on the CPU wheel (the DLL rules in `ocr_paddle.py`). Strip,
-  diagnostics and the eval harness all go through it, so there is *no* second OCR path and the
-  diagnostics exercise exactly the transport release uses. A worker spec is simply a model tier.
+- **`get_ocr_page(backend)` — one implementation, in-process on either wheel** (it routed the
+  GPU wheel through a worker subprocess until 2026-08-09; the DLL rules that made it necessary
+  are still in `ocr_paddle.py`, and so is the guard that enforces them). Strip, diagnostics and
+  the eval harness all go through it, so there is *no* second OCR path and the diagnostics
+  exercise exactly what a release run uses. A backend name is simply a model tier.
 - **Diagnostics are a by-product of a real run (`debug_overlay.py`, `strip --debug`).** Four
   independently selectable layers — **one per pipeline STAGE** — drawn onto the page the run
   processed: `ocr` (word boxes, assembled line boxes numbered — the `_rows` banding made
@@ -695,8 +686,9 @@ not have, and structure damage that was the actual identifier-leak driver). The 
 (`ocr_image`/`_lines_from_tesseract`), the `pytesseract` dependency, the edge-pad workaround,
 and the `tesseract` backend name are removed; the OCR seam and `--ocr-backend` default to
 paddle (`v6_medium`). The neutral interchange was unchanged by the removal — it was always
-the seam, not Tesseract-specific. Leak-gate parity confirmed before removal
-(records in DONE.md). The operational-profile section below is kept as **history**.
+the seam, not Tesseract-specific. Leak-gate parity confirmed before removal. Its operational
+profile — the x-height cliff, the `--dpi` no-op, uncalibrated `conf` — was engine-specific and
+transfers to nothing; it lives only in DONE.md now, with the bake-off records.
 
 ### Layer 0 — the VLM detector, and where its geometry comes from (2026-08-08; default 2026-08-09)
 
@@ -1037,42 +1029,26 @@ Two things it left behind: the neutral line→word helpers (`_to_box`/`_interpol
 now live in `ocr.py`, and the operational VLM lessons transfer to the one-pass-VLM TODO
 item. docTR was dropped from the bake-off unevaluated (Sergei: no expected gains).
 
-### Tesseract operational profile (2026-07-16 stack review; full harvest in DONE.md — HISTORICAL, backend retired 2026-07-17)
-
-Pinned facts about the shipped OCR stack (Tesseract 5.4.0 UB Mannheim + pytesseract 0.3.13),
-from the docs review and empirical checks — findings are engine-specific and do NOT transfer
-to future bake-off backends:
-
-- **Engine is LSTM-only by install**: the winget `eng.traineddata` carries no legacy-engine
-  components (`--oem 0` fails to load), so OEM flags are moot. PSM ships at default 3
-  (full auto); PSM 4/6/11 are candidate follow-ups for statement layouts.
-- **Recognition quality is driven by x-height in pixels**, not DPI: <10 px poor, <8 px
-  destroyed, ~30 px LSTM ceiling (tessdoc). The `--dpi` hint provably does not change
-  recognition output, and DPI metadata never reaches Tesseract from our pipeline anyway
-  (the edge-pad rebuild and pytesseract's temp-file re-save both drop it) — so no code
-  stamps or passes DPI, ever; only rendered/scanned glyph size matters.
-- **`conf` is word-level and uncalibrated** (int-truncated by pytesseract); thresholding on
-  it is banned until the ocr-report sweep produces measured conf-vs-error data.
-- **Internal binarization is Otsu** (5.0+ optional Adaptive Otsu/Sauvola) — external
-  preprocessing only pays on uneven backgrounds; borders ~10 px+ needed (we pad 25),
-  skew degrades line segmentation first. These feed the degradation/preprocessing tasks.
-
 ### Layer-3 LLM audit (contingent — expectation set 2026-07-15)
 
-**Layer 3 is not a certainty.** The plan is to evaluate the tool end-to-end with layers 1+2
-only; layer 3 gets built only if those results prove unsatisfactory (Sergei, 2026-07-15).
-Consequence: known layer-1/2 gaps must not be parked as "layer 3 will own it" — each needs
-its own fix or an explicit accepted-loss record (the joint/reversed person-name gap got its
-own TODO item the same day; the joint half was then fixed at layer 1 — see the joint-name
-decision above — leaving the reversed-caps residual as the open item).
+**Layer 3 is not a certainty.** The plan is to evaluate the tool end-to-end on the layers it
+has — 0 and 1 — and build layer 3 only if those results prove unsatisfactory (Sergei,
+2026-07-15). Consequence: a known gap must not be parked as "layer 3 will own it". Each needs
+its own fix or an explicit accepted-loss record — the joint/reversed person-name gap got its own
+TODO item the same day, the joint half was then fixed at layer 1 (decision above), and the
+reversed half closed when layer 0 replaced layer 2.
 
-The design, should it be built: a local-LLM pass over the layer-1/2-stripped text — "does
-this still contain anything identifying?" — served by llama-server (the one piece of
-infrastructure shared with the RAG app). It joins the stack *before* overlap merging
-conceptually: its findings become spans like any other layer's, so the CSV and image wrappers
-inherit it for free. It targets what layers 1–2 cannot see by nature: contextual identifiers — including the bare
-place names given up when the standalone LOCATION pass was retired (2026-07-23), which layer 3
-is now the intended home for.
+The design, should it be built: a local-LLM pass over the **already stripped** text — "does this
+still contain anything identifying?" — served by the same llama-server. It joins the stack
+before overlap merging conceptually, its findings becoming spans like any other layer's, so the
+CSV and image wrappers inherit it for free. It targets what neither live layer can see by
+nature: contextual identifiers ("the borrower's wife, a dentist in Wagga Wagga"), including the
+bare place names given up when standalone place-name detection was retired (2026-07-23), for
+which layer 3 is the intended home.
+
+The distinction from layer 0 is what makes it a separate layer rather than a longer prompt:
+layer 0 reads the *original* document and names values, layer 3 reads the *output* and judges
+whether it still identifies someone. The second job only exists once the redactions are applied.
 
 ### Evaluation (designed 2026-07-05/12; text tier built 2026-07-12)
 
@@ -1082,33 +1058,21 @@ real corpus. Acceptance is recall-first and severity-weighted: zero critical mis
 account numbers, names), not an F1 number. Tier plan in [ROADMAP.md](ROADMAP.md); harness in
 [../../pii_eval/](../../pii_eval/README.md); text-tier record in DONE.md.
 
-### spaCy source review — the measured failure modes, grounded in mechanism (2026-07-15)
+### Input for the overlaps algebra, from the spaCy source review (2026-07-15)
 
-The 2026-07-14/15 eval findings against SpacyRecognizer now have source-level explanations
-(review record with the full harvest in [DONE.md](DONE.md)); they underpin the detector
-retirement independently of the eval numbers:
+The review that retired spaCy as a detector is in [DONE.md](DONE.md). Its three mechanisms —
+structurally unconstrained glue spans, representational blindness to AU place names, and
+tokenization gating the lemma context enhancer — explain the failures of a dependency the tool
+no longer has, and its one live conclusion (keep label and context matching char-level) is
+implemented and argued in the engine decision above.
 
-- **Glue spans are structural, not incidental.** en_core_web_sm's transition system forbids
-  entities *starting* on whitespace but not *containing* it, and its sentence bounds come
-  from a parser that finds none in punctuation-less OCR lines — so nothing stops a PERSON
-  from swallowing a `name\naddress\ntown` block, and greedy decoding commits the error at
-  the first token. No threshold or post-filter fixes a constraint that isn't there.
-- **AU-place blindness is representational.** OntoNotes-trained, no gazetteer, no static
-  vectors: an OOV town is just a hashed NORM + 1-char prefix + 3-char suffix + SHAPE inside
-  a ±4-token receptive field — `Wagga` is feature-identical to a surname. The model
-  self-reports LOC f=0.668 / FAC f=0.349 even in-domain.
-- **Tokenization gates Presidio's context enhancer.** `/` and `:` infixes split only before
-  letters, so `a/c` fragments (`a|/|c`) while `TFN:123456782` / `ph:0412345678` stay single
-  tokens — either way the label word never surfaces as a token for lemma-context matching,
-  and the rule lemmatizer's PROPN passthrough leaves HEADER-CASE label words unlemmatized
-  on top. Char-level regex label matching (our layer 1) is the right instrument on this
-  text; keep label/context matching char-level.
-
-Input for the overlaps-merging task: spaCy's `util.filter_spans` (longest-first greedy,
-earliest-start tiebreak, winner-take-all) is the standard precision-first alternative to our
-recall-first union merge; spaCy itself keeps overlapping candidates in `SpanGroup`s and
-resolves late, and SpanRuler exposes the rule-vs-model conflict policy as a pluggable
-filter — useful framing when we define our merge algebra.
+What survives as *input* is the framing for the still-open overlaps-merging task: spaCy's
+`util.filter_spans` (longest-first greedy, earliest-start tiebreak, winner-take-all) is the
+standard precision-first alternative to our recall-first union merge; spaCy itself keeps
+overlapping candidates in `SpanGroup`s and resolves late; and SpanRuler exposes the
+rule-vs-model conflict policy as a pluggable filter. That last one is worth the most — the
+rule-vs-model conflict is exactly what `merge_detections` arbitrates today, with a fixed
+three-tier rank rather than a policy.
 
 ## Dependency/runtime notes
 
@@ -1117,6 +1081,9 @@ filter — useful framing when we define our merge algebra.
 - **A llama-server is required by every strip mode** (`--vlm-url` / `$PII_VLM_URL`): layer 0
   is reached over HTTP, so it is a runtime dependency rather than a package one. Nothing in
   this repo starts it.
-- No torch, and no local NER weights, since the 2026-08-09 layer-2 retirement.
+- **No torch, no presidio, no spaCy, and no local NER weights** since 2026-08-09. Retiring
+  GLiNER2 removed the only *direct* torch consumer; retiring the chassis removed the transitive
+  one. Re-adding any of them brings back the paddle-GPU DLL conflict — `requirements.txt` says
+  so too, and `test_registry_policy.py` enforces it in a subprocess.
 - OCR: `paddleocr` + a `paddlepaddle` wheel (GPU `paddlepaddle-gpu` here), driven in-process.
   Tesseract + `pytesseract` retired 2026-07-17.

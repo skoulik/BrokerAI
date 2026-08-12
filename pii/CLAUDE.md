@@ -182,8 +182,10 @@ items move to [core/DONE.md](core/DONE.md) with their records.
 - **A line box contains its glyph ink.** Build `OcrLine.box` only through
   `ocr_page._line_box` (word boxes ∪ their region boxes) — engine word boxes are inset from the
   ink, so a word-box union slices the first and last glyph.
-- **Reach OCR only through `get_ocr_page`** (worker on the GPU paddle wheel, in-process on CPU)
-  — never import torch into a paddle-GPU process. Models live under `models/paddlex`.
+- **Reach OCR only through `get_ocr_page`** — in-process on either paddle wheel since the
+  worker subprocess went (2026-08-09). Never import torch into a paddle-GPU process; that is
+  what the worker used to isolate and what `ocr_paddle._engine`'s guard now enforces alone.
+  Models live under `models/paddlex`.
 - **Edge cases get dual coverage (2026-07-15).** Every newly identified corner case or fail
   mode gets BOTH a pytest test (model-free via the fake-model/stub patterns where possible,
   `model`-marked otherwise) AND a pii_eval corpus probe (distinct truth type per the
