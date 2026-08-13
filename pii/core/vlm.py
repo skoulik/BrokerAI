@@ -97,49 +97,38 @@ DEFAULT_GEOMETRY = "hybrid"
 #    aim its large precision side-effect by rewording - per-value keep
 #    decisions belong in entity_keep.txt where they are auditable.
 #    Measurements in DONE.md.
-PROMPT = """You are auditing a scanned Australian financial document for personally \
-identifying information, so that it can be pseudonymized before leaving a secure network.
+PROMPT = """Find all occurrences of Personally Identifiable Information (PII) identifiers in \
+this page. Look for them anywhere: main text, titles, headers, footers, tables.
 
-Report EVERY span of text on this page that could identify a person or an organization, or \
-that ties the document to a particular customer. Be exhaustive: a missed identifier is a \
-privacy breach. When in doubt, report it - reporting too much is harmless and corrected \
-later, missing something is not. Include every occurrence, even when the same value appears \
-more than once on the page.
+Identifier TYPE is one of:
+* PII_NAME : a person's name, full or partial, including when used in account names;
+* PII_DOB : a person's date of birth;
+* PII_ADDRESS : a postal address, full or partial;
+* PII_COMPANY : a name of a company or an organization, full or partial, including when \
+used in account names;
+* PII_IDENTIFIER : any other PII identifier - a number or a code identifying a person, \
+an organization or an account, such as:
+  - account number, credit card, driving licence, TFN, medicare or passport number;
+  - insurance policy, reference or claim identifier;
+  - membership or loyalty card number;
+  - ABN, ACN or TFN number;
+  - phone number, email address;
+  - vehicle plate number.
 
-Use these types:
-  - PII_NAME        a person's name, full or partial
-  - PII_ADDRESS     a postal address or any part of one (street line, suburb/state/postcode)
-  - PII_COMPANY     the name of a company or organization
-  - PII_DOB         a person's date of birth
-  - PII_IDENTIFIER  any number or code identifying a person, organization or account -
-                    account and customer numbers, BSB, card numbers, tax file numbers,
-                    Medicare, ABN/ACN, membership and loyalty numbers, policy, reference
-                    and claim numbers, phone numbers, email addresses, licence and
-                    passport numbers
-
-Monetary amounts, transaction dates, interest rates and balances are NOT identifiers - do \
-not report them.
-
-Identifiers appear anywhere on the page, not only as the value of a labelled field. A \
-heading, title, footer, prose sentence or table cell may itself contain an identifier, with \
-no separate label next to it - read those as carefully as you read labelled fields.
-
-Report the VALUE, never the label that introduces it: in "Account number 1234-5678" the \
-identifier is "1234-5678", not "Account number".
-
-Transcribe each value EXACTLY as printed, preserving spacing, hyphens and punctuation. Do \
-not normalize, reformat or correct it."""
+Use an appropriate TYPE for each PII that you find, if unsure, fallback to PII_IDENTIFIER.
+Do not output monetary amounts, transaction dates, interest rates, balances, percentages - they \
+are NOT identifiers.
+Do not explain your reasoning.
+Stop immediately after the closing ]."""
 
 _OUTPUT_VALUES = """
-
-Output a JSON array only, no prose, no markdown fence:
-[{"text": "<exact text as printed>", "type": "<TYPE>"}]
+Output in this JSON format:
+[{"type": "<TYPE>", "text": "<exact text as printed>"}]
 If the page contains none, output []."""
 
 _OUTPUT_BOXES = """
-
-Output a JSON array only, no prose, no markdown fence:
-[{"text": "<exact text as printed>", "type": "<TYPE>", "bbox_2d": [x1, y1, x2, y2]}]
+Output in this JSON format:
+[{"type": "<TYPE>", "text": "<exact text as printed>", "bbox_2d": [x1, y1, x2, y2]}]
 bbox_2d is the tight box around that text: (x1,y1) top-left, (x2,y2) bottom-right, in \
 normalized relative coordinates scaled to 1000. Make the box enclose the whole string \
 including its first and last characters.
@@ -170,11 +159,12 @@ For every value in the list, output one entry per place it appears on the page. 
 printed twice gets two entries. If you cannot find a value on the page, omit it — do not \
 guess a location.
 
-Output a JSON array only, no prose, no markdown fence:
+Output in this JSON format:
 [{{"text": "<the value, copied from the list>", "bbox_2d": [x1, y1, x2, y2]}}]
 bbox_2d is the tight box around that text: (x1,y1) top-left, (x2,y2) bottom-right, in \
 normalized relative coordinates scaled to 1000. Make the box enclose the whole string \
-including its first and last characters."""
+including its first and last characters.
+Stop immediately after the closing ]"""
 
 # GBNF grammars — the output SHAPE, enforced at the sampler instead of parsed
 # out of whatever comes back. One per prompt, and the prompts are unchanged:
