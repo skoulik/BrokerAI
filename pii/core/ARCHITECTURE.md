@@ -739,9 +739,15 @@ nothing left to choose between.
 each one is. They are split because asking for both at once costs **7.4% recall corpus-wide**
 (350 → 324 distinct values over 31 pages) — the model spends budget on geometry instead of
 detection, and the page that lost its policy number lost the hardest-won detection on it. The
-split is affordable because llama.cpp caches image prefill per image: a second pass on a page
-already seen costs ~16 s against the ~130 s the image itself cost. Two-pass also boxes *more*
-tightly than one-pass (1.24× vs 1.41× ink).
+split is affordable because the server restores a context checkpoint taken immediately after the
+image, so pass 2 reuses the whole image prefill: **~0.5 s against the ~60 s the image itself
+cost** (measured 2026-08-13 over a 4-page document, end to end). That depends on serving flags,
+not just on our code — Qwen3.6 is hybrid SSM+attention and cannot roll its memory back to an
+arbitrary position, so without a post-image checkpoint every second pass re-projects the page in
+full and the split doubles prefill instead of costing nothing. It needs the patched
+llama-server and `-ctxcp > 0`; see
+[reports/2026-08-13-qwen36-ssm-prompt-cache.md](reports/2026-08-13-qwen36-ssm-prompt-cache.md).
+Two-pass also boxes *more* tightly than one-pass (1.24× vs 1.41× ink).
 
 **A model box is a search constraint, not paint geometry.** The boxes are stochastically bad
 to paint — 64.9% fully covered at an 8 px pad, p90 inward clip 63.9 px, the same value boxed

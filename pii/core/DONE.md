@@ -2333,3 +2333,43 @@ the move; new completed tasks append to the matching section with their records.
       characters with NO confusion partner (adfkmnpqrxy — every digit has one), which do cost a
       full 1.0 to lose; it rejects 15% on realistic needles and does not earn its complexity.
       Revisit if the text-only regime lands and a page drops to seconds.
+
+- [x] **The two-pass split stops paying for the image twice — a llama.cpp fix, not a `pii/` one**
+      *(2026-08-13. Full record in
+      [reports/2026-08-13-qwen36-ssm-prompt-cache.md](reports/2026-08-13-qwen36-ssm-prompt-cache.md);
+      the distilled rule is in [ARCHITECTURE.md](ARCHITECTURE.md) "Detection and grounding are
+      separate model passes", the invariant in [../CLAUDE.md](../CLAUDE.md).)*
+
+      **The premise that turned out to be false.** The two-pass regime was adopted on the
+      strength of "a second pass on a page already seen costs ~16 s because llama.cpp caches
+      image prefill" — measured, correctly, on Qwen3-VL-8B. It does not survive the move to
+      Qwen3.6: every `localize` call was re-projecting the whole page, ~50 s of vision tower,
+      on every page of every document. Nothing reported an error; the only symptom was the
+      wall clock, which is why it stood for days.
+
+      **Root cause is the architecture, not the platform.** Qwen3.6 is hybrid SSM+attention
+      (`ssm.*` keys in the GGUF, both the 27B dense and the 35B MoE). Recurrent state is a
+      running summary: extendable, but not truncatable back to an arbitrary earlier position.
+      So when the longest common prefix ends mid-sequence — which is exactly where it ends when
+      two requests share an image and differ in the text after it — the server cannot roll back
+      and discards the entire prefix. A CUDA control on Qwen3-VL reused 8586 of 8596 tokens in
+      the identical request shape, which isolates architecture from backend.
+
+      **The escape existed and was unreachable.** Context checkpoints are the designed answer
+      for memory that cannot do partial removal, and they did not help: the only useful
+      checkpoint position is immediately after the image, and upstream suppressed checkpointing
+      on exactly that iteration (`do_checkpoint = do_checkpoint && !has_mtmd`). The next
+      opportunity came after the trailing text, by which point the position had advanced past
+      the divergence, so the checkpoint was created, rejected and erased on every request
+      regardless of `-ctxcp` or `-cms`. Removing the suppression is a two-line change and lands
+      exactly one extra checkpoint. Measured 95x on the second request with byte-identical
+      replies.
+
+      **Shipped in the serving layer, not in `vlm.py`.** The alternative — restructuring pass 2
+      as a multi-turn continuation — was measured to work equally well (885 ms) and rejected:
+      it carries pass 1's prompt and reply into pass 2's context, so localization quality would
+      need re-gating, where the server patch is transparent to the model. Deployed by
+      repointing every `serve.sh` at the local build and adding `-ctxcp 4`; `/opt/llama.cpp`
+      retired. Smoke test over 4 real pages: localize prefill 59 s → ~0.5 s on every page,
+      ~237 s saved on one document. Not yet compared against the stock server — the outstanding
+      check is a determinism diff over the corpus, not a recall score.

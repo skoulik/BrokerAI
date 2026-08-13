@@ -150,10 +150,16 @@ If the page contains none, output []."""
 # over 31 pages, and the page that lost its policy number lost the hardest-won
 # detection on it. Splitting them recovers that in full (pass 1 below is
 # byte-identical to the single-pass values prompt) and boxes MORE tightly
-# (1.24x vs 1.41x ink). It is affordable because llama.cpp caches image
-# prefill per image: a second pass on a page already seen costs ~16 s against
-# the ~130 s the image itself cost. Evidence:
-# reports/2026-08-08-vlm-oneshot-qwen36.md.
+# (1.24x vs 1.41x ink). Evidence: reports/2026-08-08-vlm-oneshot-qwen36.md.
+#
+# OPERATIONAL, and it is not visible from this file: pass 2 is cheap only
+# because the server restores a context checkpoint taken right after the image,
+# which needs the patched llama-server and -ctxcp > 0. Two edits here would
+# silently forfeit that and double the prefill of every page — putting anything
+# ahead of the image in _ask's message list, and re-encoding the page to
+# different PNG bytes between the two calls, since the server keys the image
+# chunk on a hash of the encoded bytes. Neither fails loudly; both just get
+# slow. See reports/2026-08-13-qwen36-ssm-prompt-cache.md.
 _LOCATE_PROMPT = """This page has already been read. Below is the list of text values found \
 on it. Your only job now is to say WHERE each one is printed.
 

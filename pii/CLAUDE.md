@@ -84,8 +84,9 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 - **Detection and grounding are two model passes, never one.** `detect` names the values,
   `localize` asks where they are. Asking for both at once costs 7.4% recall (measured, 31
-  pages); the split costs ~16 s/page because image prefill is cached. Never add `bbox_2d` to
-  the detection prompt.
+  pages); the split is near-free only while the server can restore a post-image context
+  checkpoint (patched llama-server, `-ctxcp > 0`), and doubles prefill per page when it cannot.
+  Never add `bbox_2d` to the detection prompt.
 - **A model box is a search constraint, not paint geometry.** Layer 0's boxes are
   stochastically unsafe to paint (16% clip by >20 px) but reliable enough to say *which*
   occurrence a value is — painting tolerance is zero pixels, localization tolerance is half a
