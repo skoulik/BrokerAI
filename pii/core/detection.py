@@ -28,6 +28,13 @@ class Detection:
     # Name of the rule that emitted this span; "" for spans synthesized by a
     # caller (layer-0 findings, tests).
     recognizer: str = ""
+    # The COMPLETE value this span is a piece of, when the span text is not
+    # the whole of it. Set only where a value occupies several ranges of the
+    # analyzed string — a page that wraps an address across two lines splices
+    # the neighbouring column's text between its halves (`locator`) — and it
+    # is the pseudonym key, so both halves collect one placeholder instead of
+    # forking one address into ADDRESS_1 and ADDRESS_2.
+    full_value: str | None = None
 
     def __post_init__(self) -> None:
         if self.start > self.end:

@@ -51,6 +51,20 @@ Geometry then resolves in three tiers, in descending order of confidence:
 
 A finding with no usable box degrades to exactly the old behaviour, so the
 change cannot regress any value that located correctly before.
+
+**And a value is not always one range of the page string.** That string is
+banded VISUALLY (`ocr_page._rows`), which is what puts a label beside its
+value and is load-bearing for context promotion; the price is that two cards
+side by side share every band, so a value that WRAPS inside one column has
+the other card's row-mate spliced between its halves. Nothing contiguous
+reaches across it. So tiers 1 and 2 also search the value's own reading
+order, assembled a line at a time from the words the box covers — by the
+NEEDLE (`_wrapped_occurrences`), never by scanning those words, which is what
+lets a line be offered whole and picked from safely. Hence `Placement.spans`:
+one value, several ranges, keyed on the whole of itself downstream
+(`Detection.full_value`). `locate_borrowed` runs the same walk with no box to
+lean on, constrained by geometry instead — consecutive lines whose pieces
+share an x-column.
 """
 
 from __future__ import annotations
@@ -72,20 +86,24 @@ from pii.core.vlm import VlmFinding, squash_map
 FALLBACK_PAD_RATIO = 0.6
 FALLBACK_PAD_MIN = 8
 
-# Words beyond the box's own span considered for a fuzzy window, to recover
-# from a clipped box that missed its first or last word.
+# Words beyond the box's own span considered for a box-local assembly, to
+# recover from a clipped box that missed its first or last word.
 _WORD_SLACK = 2
 
 # Above this many covered words a box is not a constraint any more, and fuzzy
 # matching inside it would be the page-wide edit-distance search the design
 # rules out. Such a box (a whole-page rectangle, say) still ranks candidates
-# by overlap; it just stops licensing the fuzzy tier. A real value spans a few
-# words, so the cap is far above anything legitimate.
+# by overlap; it just stops licensing the box-local tiers. A real value spans
+# a few words, so the cap is far above anything legitimate.
 _MAX_BOX_WORDS = 40
 
-# A word is folded into a tier-3 fallback box only if the box really covers
-# it; a one-pixel touch must not drag a whole neighbouring word in.
-_SNAP_MIN_OVERLAP = 0.2
+# How much of a word the box must hold for that word to count as covered —
+# used both to select the box-local assembly and to fold a word into a tier-3
+# fallback box. Lenient on purpose: the measured clip is INWARD, so a box that
+# cuts into the first or last glyph of a word must still select it, and it is
+# the needle match, not this threshold, that decides where the value is. A
+# one-pixel touch must still not drag a whole neighbouring word in.
+_BOX_WORD_OVERLAP = 0.2
 
 _KIND_RANK = {"exact": 3, "squash": 2, "fuzzy": 1}
 
@@ -93,19 +111,25 @@ _KIND_RANK = {"exact": 3, "squash": 2, "fuzzy": 1}
 @dataclass(frozen=True)
 class Placement:
     """Where one finding landed. `kind` records which tier resolved it:
-    exact/squash/fuzzy carry a char span, "box" carries pixel geometry only,
+    exact/squash/fuzzy carry char spans, "box" carries pixel geometry only,
     "redundant" means an already-placed finding covers it, and None means
     nothing did — an unredacted detection.
 
-    `value_painted_elsewhere` qualifies that last case only: an identical
+    `spans` is a TUPLE because one value is not always one range of the page
+    string: `_rows` bands a page visually, so on a two-column layout a value
+    that wraps inside one column has the other column's row-mate spliced
+    between its halves. It is still ONE value — `image_mode` keys its
+    pseudonym on the whole of it — so the pieces must travel together rather
+    than as two findings.
+
+    `value_painted_elsewhere` qualifies the unplaced case only: an identical
     value WAS painted somewhere on this page. It does not make the placement
     redacted — the two may be separate printings — it exists so the report can
     say which of the two situations this is."""
 
     finding: VlmFinding
     kind: str | None
-    start: int | None = None
-    end: int | None = None
+    spans: tuple[tuple[int, int], ...] = ()
     box: Box | None = None
     overlap: float = 0.0
     distance: float = 0.0
@@ -118,8 +142,8 @@ class LocateResult:
 
     @property
     def located(self) -> list[Placement]:
-        """Placements carrying a char span — tiers 1 and 2."""
-        return [p for p in self.placements if p.start is not None]
+        """Placements carrying char spans — tiers 1 and 2."""
+        return [p for p in self.placements if p.spans]
 
     @property
     def box_only(self) -> list[Placement]:
@@ -169,8 +193,7 @@ def locate_findings(
         finding = findings[i]
         box = _usable_box(finding, width, height)
         placement = _place(finding, box, ocr, taken)
-        if placement.start is not None:
-            taken.append((placement.start, placement.end))
+        taken.extend(placement.spans)
         placements[i] = placement
     return LocateResult(
         placements=_mark_painted_elsewhere([p for p in placements if p is not None])
@@ -226,27 +249,43 @@ def _place(
     candidates = _candidates(finding.text, box, ocr)
 
     free, contained = [], []
-    for start, end, kind, dist in candidates:
-        if any(start < t_end and t_start < end for t_start, t_end in taken):
-            if any(t_start <= start and end <= t_end for t_start, t_end in taken):
-                contained.append((start, end))
+    for spans, kind, dist in candidates:
+        if any(
+            start < t_end and t_start < end
+            for start, end in spans
+            for t_start, t_end in taken
+        ):
+            if all(
+                any(
+                    t_start <= start and end <= t_end
+                    for t_start, t_end in taken
+                )
+                for start, end in spans
+            ):
+                contained.append(spans)
             continue
-        free.append((start, end, kind, dist, _overlap(ocr, start, end, box)))
+        free.append((spans, kind, dist, _overlap(ocr, spans, box)))
 
     if free:
         # Positional agreement outranks textual agreement: a value the box
         # points at beats a better-looking string match somewhere else on the
         # page. With no box every overlap is 0 and this falls through to
         # kind-then-position, which is exactly the pre-box behaviour.
-        start, end, kind, dist, overlap = max(
+        #
+        # Being in the box at all is that agreement; how MUCH of the box a
+        # candidate fills is not, and ranking by it ahead of edit distance
+        # hands a clipped box to whichever candidate fits inside it — a
+        # truncation of the value beating the whole of it. Exact and squash
+        # candidates all score distance 0, so this only ever orders the fuzzy
+        # tier, where closer text is the better evidence.
+        spans, kind, dist, overlap = max(
             free,
-            key=lambda c: (1 if c[4] > 0 else 0, _KIND_RANK[c[2]], c[4], -c[3]),
+            key=lambda c: (1 if c[3] > 0 else 0, _KIND_RANK[c[1]], -c[2], c[3]),
         )
         return Placement(
             finding=finding,
             kind=kind,
-            start=start,
-            end=end,
+            spans=spans,
             overlap=overlap,
             distance=dist,
         )
@@ -266,23 +305,27 @@ def _place(
 
 def _candidates(
     needle: str, box: Box | None, ocr: RecognizerInput
-) -> list[tuple[int, int, str, float]]:
-    """Every plausible (start, end, kind, distance) for `needle`.
+) -> list[tuple[tuple[tuple[int, int], ...], str, float]]:
+    """Every plausible (spans, kind, distance) for `needle`.
 
     Exact and squash matches are collected page-wide — that is the floor the
-    old locator provided and it must survive a useless box. Fuzzy windows are
-    collected only inside `box`.
+    old locator provided and it must survive a useless box. Squash and fuzzy
+    matches over the box-local assembly are collected only inside `box`.
     """
-    found: dict[tuple[int, int], tuple[str, float]] = {}
+    found: dict[tuple[tuple[int, int], ...], tuple[str, float]] = {}
 
-    def offer(start: int, end: int, kind: str, dist: float) -> None:
-        prior = found.get((start, end))
+    def offer(
+        spans: tuple[tuple[int, int], ...], kind: str, dist: float
+    ) -> None:
+        if not spans:
+            return
+        prior = found.get(spans)
         if prior is None or _KIND_RANK[kind] > _KIND_RANK[prior[0]]:
-            found[(start, end)] = (kind, dist)
+            found[spans] = (kind, dist)
 
     at = ocr.text.find(needle)
     while at != -1:
-        offer(at, at + len(needle), "exact", 0.0)
+        offer(((at, at + len(needle)),), "exact", 0.0)
         at = ocr.text.find(needle, at + 1)
 
     hay_sq, index = squash_map(ocr.text)
@@ -290,44 +333,54 @@ def _candidates(
     if need_sq:
         at = hay_sq.find(need_sq)
         while at != -1:
-            offer(index[at], index[at + len(need_sq) - 1] + 1, "squash", 0.0)
+            offer(((index[at], index[at + len(need_sq) - 1] + 1),), "squash", 0.0)
             at = hay_sq.find(need_sq, at + 1)
 
     if box is not None and need_sq:
-        for start, end, dist in _fuzzy_windows(need_sq, box, ocr):
-            offer(start, end, "fuzzy", dist)
+        allowed = _box_words(box, ocr)
+        if allowed is not None:
+            for spans in _wrapped_occurrences(ocr, need_sq, allowed):
+                offer(spans, "squash", 0.0)
+        for spans, dist in _fuzzy_windows(need_sq, box, ocr):
+            offer(spans, "fuzzy", dist)
 
     return sorted(
-        (start, end, kind, dist)
-        for (start, end), (kind, dist) in found.items()
+        (spans, kind, dist) for spans, (kind, dist) in found.items()
     )
+
+
+@dataclass(frozen=True)
+class _LocalWord:
+    """One word of a box-local assembly: where it sits in the local string,
+    and the page-string range and word index it came from."""
+
+    local_start: int
+    local_end: int
+    char_start: int
+    char_end: int
+    index: int
 
 
 def _fuzzy_windows(
     need_sq: str, box: Box, ocr: RecognizerInput
-) -> list[tuple[int, int, float]]:
-    """Word windows inside `box` whose squashed text is within edit budget.
+) -> list[tuple[tuple[tuple[int, int], ...], float]]:
+    """Windows of the box-local assembly within `need_sq`'s edit budget.
 
-    Windows are contiguous slices of the source map, so a window's character
-    span is a genuine contiguous range of the page text (and may cross a line
-    break — a wrapped address is one value). The slice is grown by
-    `_WORD_SLACK` words each side because a clipped box routinely misses the
-    first or last word of the value it marks.
+    The assembly is the words the box covers, read in order and joined into
+    ONE line — see `_box_line`. Where nothing is spliced between them (the
+    ordinary single-column case) it is character-for-character the page slice
+    this used to scan; where the page interleaves two columns it is the value
+    without the interloper, so a wrapped value can be recovered fuzzily too.
     """
-    covered = [
-        i for i, w in enumerate(ocr.words) if _intersects(w.box, box)
-    ]
-    if not covered or len(covered) > _MAX_BOX_WORDS:
+    assembly = _box_line(box, ocr)
+    if assembly is None:
         return []
-    lo = max(min(covered) - _WORD_SLACK, 0)
-    hi = min(max(covered) + _WORD_SLACK, len(ocr.words) - 1)
-
+    text, words = assembly
     out = []
-    for a in range(lo, hi + 1):
-        for b in range(a, hi + 1):
-            start = ocr.words[a].char_start
-            end = ocr.words[b].char_end
-            window, _ = squash_map(ocr.text[start:end])
+    for a in range(len(words)):
+        for b in range(a, len(words)):
+            start, end = words[a].local_start, words[b].local_end
+            window, _ = squash_map(text[start:end])
             if not window:
                 continue
             if len(window) > 2 * len(need_sq):
@@ -336,8 +389,230 @@ def _fuzzy_windows(
                 continue
             dist = fuzzy.matches(window, need_sq)
             if dist is not None:
-                out.append((start, end, dist))
+                spans = _to_spans(words, start, end)
+                if spans:
+                    out.append((spans, dist))
     return out
+
+
+def _box_line(
+    box: Box, ocr: RecognizerInput
+) -> tuple[str, tuple[_LocalWord, ...]] | None:
+    """The words the box covers, read in order and joined into one line.
+
+    Selection is by how much of a WORD the box holds rather than by any
+    overlap at all, so a box that cuts into a glyph still takes the word
+    whole. Slack is added at the OUTER ends only, because a clipped box
+    routinely misses the first or last word of the value it marks; filling the
+    INTERIOR would splice the neighbouring column's row-mate straight back in,
+    which is the very text this exists to step over.
+    """
+    covered = _covered_words(box, ocr)
+    if covered is None:
+        return None
+    chosen = (
+        list(range(max(covered[0] - _WORD_SLACK, 0), covered[0]))
+        + covered
+        + list(
+            range(
+                covered[-1] + 1,
+                min(covered[-1] + _WORD_SLACK, len(ocr.words) - 1) + 1,
+            )
+        )
+    )
+    words, parts, pos = [], [], 0
+    for n, i in enumerate(chosen):
+        if n:
+            parts.append(" ")
+            pos += 1
+        word = ocr.words[i]
+        words.append(
+            _LocalWord(
+                local_start=pos,
+                local_end=pos + len(word.text),
+                char_start=word.char_start,
+                char_end=word.char_end,
+                index=i,
+            )
+        )
+        parts.append(word.text)
+        pos += len(word.text)
+    return "".join(parts), tuple(words)
+
+
+def _covered_words(box: Box, ocr: RecognizerInput) -> list[int] | None:
+    """Indices of the words the box really holds, or None if it constrains
+    nothing — it covers no word at all, or so many that fuzzy matching under
+    it would be the page-wide edit-distance search the design rules out."""
+    covered = [
+        i
+        for i, w in enumerate(ocr.words)
+        if _area(w.box) > 0
+        and _intersection_area(w.box, box) / _area(w.box) >= _BOX_WORD_OVERLAP
+    ]
+    if not covered or len(covered) > _MAX_BOX_WORDS:
+        return None
+    return covered
+
+
+def _box_words(box: Box, ocr: RecognizerInput) -> frozenset[int] | None:
+    """The words a wrapped match inside `box` may be built from.
+
+    Per-LINE slack here, unlike `_box_line`'s outer-only slack, and the two
+    differ because the searches differ. A flat assembly is scanned for a
+    substring, so slack at a line seam splices junk into the middle of the
+    needle and the match dies; the wrapped walk is needle-driven and simply
+    never starts on a word the needle does not begin with, so it can be
+    offered the whole line-end without harm. That is what recovers the word a
+    box clips off the END of a wrapped value's first line — interior to the
+    assembly, and unreachable from its outer ends.
+    """
+    covered = _covered_words(box, ocr)
+    if covered is None:
+        return None
+    rows: dict[int, list[int]] = {}
+    for i, word in enumerate(ocr.words):
+        rows.setdefault(word.line, []).append(i)
+    hit = set(covered)
+    allowed = set(covered)
+    for row in rows.values():
+        marked = [n for n, i in enumerate(row) if i in hit]
+        if not marked:
+            continue
+        allowed.update(
+            row[
+                max(marked[0] - _WORD_SLACK, 0) : min(
+                    marked[-1] + _WORD_SLACK, len(row) - 1
+                )
+                + 1
+            ]
+        )
+    return frozenset(allowed)
+
+
+def _wrapped_occurrences(
+    ocr: RecognizerInput,
+    need_sq: str,
+    allowed: frozenset[int] | None = None,
+) -> list[tuple[tuple[int, int], ...]]:
+    """Occurrences of a needle the page WRAPS, as one span per line it uses.
+
+    The page string cannot be searched for these. `_rows` bands a page
+    VISUALLY, which is what puts a label beside its value and is load-bearing
+    for context promotion; the price is that two cards side by side share
+    every band, so a value that wraps inside one column has the other column's
+    row-mate spliced between its halves ('24 Stacey Dr' / 'Expiry date 12
+    March 2025 11:59pm AEST' / 'Carrickalinga SA 5204', 2026-08-13). Squashing
+    does not bridge that — the interloper is alphanumeric, not separators —
+    and a contiguous word window has to swallow it whole.
+
+    So the needle drives the search instead of the page: each line contributes
+    one run of whole words that continues the needle exactly, and a run only
+    ever starts where the needle's next character does. That is what lets the
+    walk be offered a whole line without picking anything up from it.
+
+    Two guards, both geometric, and they are the same primitive `_rows` bands
+    with: pieces sit on CONSECUTIVE lines and share an x-column. That is
+    exactly what separates 'Carrickalinga SA 5204' from the 'AEST' printed to
+    its left on the same assembled line.
+
+    `allowed` restricts the walk to the words a box covers (`_box_words`).
+    With none given the whole page is in play, which is the borrowed case —
+    there is no box to say where on this page the value belongs.
+
+    Matching is squash-EQUALITY over whole words, never edit distance: the
+    fuzzy tier is licensed by a box constraining the candidate set, and a
+    needle assembled across a line break is already spending that licence.
+    """
+    by_line: dict[int, list[int]] = {}
+    for i, word in enumerate(ocr.words):
+        if allowed is None or i in allowed:
+            by_line.setdefault(word.line, []).append(i)
+
+    out: list[tuple[tuple[int, int], ...]] = []
+
+    def walk(
+        line: int,
+        spans: tuple[tuple[int, int], ...],
+        consumed: int,
+        previous: Box | None,
+    ) -> None:
+        row = by_line.get(line)
+        if row is None:
+            return
+        for first in range(len(row)):
+            piece: list[int] = []
+            at = consumed
+            for i in row[first:]:
+                if piece and i != piece[-1] + 1:
+                    break  # a gap in the row is text the box or line dropped
+                chunk, _ = squash_map(ocr.words[i].text)
+                # A word of pure punctuation squashes to nothing, and
+                # `startswith("")` is true at every position — so without this
+                # it joins any piece anywhere, for free. A piece of one such
+                # word then consumes NONE of the needle while still counting
+                # as a proper prefix, and the walk carries it to the next line
+                # where the real value completes the match: every needle
+                # claims whatever stray '-' or '?' sits on the line above it
+                # (2026-08-13, an insurance heading's hyphen and a card's help
+                # icon, painted as ORGANIZATION and PERSON). Every piece must
+                # earn its place in the needle.
+                if not chunk or not need_sq.startswith(chunk, at):
+                    break
+                piece.append(i)
+                at += len(chunk)
+                extent = _union([ocr.words[j].box for j in piece])
+                if previous is not None and not _shares_column(previous, extent):
+                    continue
+                span = (
+                    ocr.words[piece[0]].char_start,
+                    ocr.words[piece[-1]].char_end,
+                )
+                if at == len(need_sq):
+                    # A needle that fits on one line is not wrapped, and the
+                    # contiguous tiers already own it.
+                    if spans:
+                        out.append(spans + (span,))
+                else:
+                    walk(line + 1, spans + (span,), at, extent)
+
+    for line in by_line:
+        walk(line, (), 0, None)
+    return out
+
+
+def _shares_column(a: Box, b: Box) -> bool:
+    """Whether two pieces on consecutive lines stand in the same column."""
+    return min(a.right, b.right) > max(a.left, b.left)
+
+
+def _to_spans(
+    words: tuple[_LocalWord, ...], start: int, end: int
+) -> tuple[tuple[int, int], ...]:
+    """A local character range as page spans — one per contiguous run of words.
+
+    Consecutive entries of the source map are consecutive in the page string,
+    so a run of them is a genuine contiguous range of it; a jump in word index
+    is where the assembly stepped over another column and starts a new span.
+    Offsets INSIDE the first and last word are carried across, so an assembled
+    match is never wider than the page-wide tiers would have been.
+    """
+    hit = [w for w in words if max(start, w.local_start) < min(end, w.local_end)]
+    if not hit:
+        return ()
+    runs = [[hit[0]]]
+    for word in hit[1:]:
+        if word.index == runs[-1][-1].index + 1:
+            runs[-1].append(word)
+        else:
+            runs.append([word])
+    return tuple(
+        (
+            run[0].char_start + max(start - run[0].local_start, 0),
+            run[-1].char_end - max(run[-1].local_end - end, 0),
+        )
+        for run in runs
+    )
 
 
 def _fallback_box(box: Box, ocr: RecognizerInput) -> Box:
@@ -359,7 +634,7 @@ def _fallback_box(box: Box, ocr: RecognizerInput) -> Box:
         w.box
         for w in ocr.words
         if _area(w.box) > 0
-        and _intersection_area(w.box, box) / _area(w.box) >= _SNAP_MIN_OVERLAP
+        and _intersection_area(w.box, box) / _area(w.box) >= _BOX_WORD_OVERLAP
     ]
     merged = _union([padded, *snapped]) if snapped else padded
     left = max(merged.left, 0)
@@ -373,24 +648,24 @@ def _fallback_box(box: Box, ocr: RecognizerInput) -> Box:
 
 
 def _overlap(
-    ocr: RecognizerInput, start: int, end: int, box: Box | None
+    ocr: RecognizerInput,
+    spans: tuple[tuple[int, int], ...],
+    box: Box | None,
 ) -> float:
     """How much of `box` and the candidate's pixels coincide, as a fraction of
     the smaller — tolerant of a box that clips (smaller than the value) and of
-    one that bloats (larger), both of which are measured behaviours."""
+    one that bloats (larger), both of which are measured behaviours. Over ALL
+    the candidate's spans: an assembled value is one candidate, and scoring
+    only part of it would rank it below a lesser match."""
     if box is None:
         return 0.0
-    boxes = ocr.boxes_for_span(start, end)
+    boxes = [b for start, end in spans for b in ocr.boxes_for_span(start, end)]
     if not boxes:
         return 0.0
     candidate_area = sum(_area(b) for b in boxes)
     shared = sum(_intersection_area(b, box) for b in boxes)
     smaller = min(candidate_area, _area(box))
     return shared / smaller if smaller > 0 else 0.0
-
-
-def _intersects(a: Box, b: Box) -> bool:
-    return _intersection_area(a, b) > 0
 
 
 def _intersection_area(a: Box, b: Box) -> int:
@@ -572,7 +847,7 @@ def borrowed_budget(need_sq: str) -> float:
 
 def locate_borrowed(
     needles: Sequence[tuple[str, str]], ocr: RecognizerInput
-) -> list[tuple[int, int, str]]:
+) -> list[tuple[int, int, str, str | None]]:
     """Every occurrence on this page of a value the DOCUMENT knows about.
 
     This is what makes a value the model named on page 1 and missed on page 4
@@ -582,22 +857,26 @@ def locate_borrowed(
     value on top. Overlaps between the two are unioned by
     `PiiPipeline._merge_overlaps` like any other pair of spans.
 
-    Three tiers, in two passes over the needles. Exact and squash run first for
-    ALL needles, then fuzzy — so textual certainty always outranks edit
-    distance no matter which needle gets there first.
+    Four tiers, in three passes over the needles. Exact and squash run first
+    for ALL needles, then wrapped, then fuzzy — so textual certainty always
+    outranks edit distance no matter which needle gets there first.
 
-    Fuzzy is **additive, not a fallback**: a page carrying a value's full form
-    exactly AND a truncated form would otherwise find the exact one, skip the
-    fuzzy tier, and leak the truncation. That is a real specimen, not a
-    hypothetical (2026-08-11, `SK BUSINESS TRUS`).
+    Wrapped and fuzzy are both **additive, not fallbacks**: a page carrying a
+    value's full form exactly AND a damaged or wrapped form would otherwise
+    find the exact one, skip the later tiers, and leak the other. That is a
+    real specimen, not a hypothetical (2026-08-11, `SK BUSINESS TRUS`;
+    2026-08-13, an address printed twice on one page and wrapped both times).
 
     `needles` is `(value, entity_type)` LONGEST FIRST — two needles can land on
     one span ('John' inside 'John Smith') and the wider one must claim it.
-    Returns `(start, end, entity_type)` triples in document order.
+    Returns `(start, end, entity_type, full_value)` in document order, where
+    `full_value` is set only on the pieces of a wrapped value: they are ONE
+    value and must collect one placeholder, which the span text alone cannot
+    say (see `image_mode`).
     """
     text = ocr.text
     squashed: tuple[str, list[int]] | None = None
-    claimed: dict[tuple[int, int], str] = {}
+    claimed: dict[tuple[int, int], tuple[str, str | None]] = {}
     for value, entity_type in needles:
         spans = _bounded_occurrences(text, value)
         if not spans:
@@ -605,7 +884,21 @@ def locate_borrowed(
                 squashed = squash_map(text)
             spans = _bounded_squash_occurrences(squashed, text, value)
         for span in spans:
-            claimed.setdefault(span, entity_type)
+            claimed.setdefault(span, (entity_type, None))
+
+    for value, entity_type in needles:
+        need_sq, _ = squash_map(value)
+        if len(need_sq) < _MIN_SQUASH_CHARS:
+            continue
+        for spans in _wrapped_occurrences(ocr, need_sq):
+            free = [span for span in spans if span not in claimed]
+            # The whole value only names itself when the whole of it is this
+            # pass's to claim; where another needle already owns a piece, the
+            # rest is claimed on its own terms rather than half-labelled with
+            # a value it no longer accounts for.
+            full = value if len(free) == len(spans) else None
+            for span in free:
+                claimed[span] = (entity_type, full)
 
     fuzzy_needles = [
         (value, entity_type, squash_map(value)[0])
@@ -655,13 +948,15 @@ def locate_borrowed(
                     for t_start, t_end in taken
                 ):
                     continue
-                claimed[(start, end)] = entity_type
+                claimed[(start, end)] = (entity_type, None)
                 taken.append((start, end))
 
     return [
-        (start, end, entity_type)
-        for (start, end), entity_type in sorted(claimed.items())
+        (start, end, entity_type, full_value)
+        for (start, end), (entity_type, full_value) in sorted(claimed.items())
     ]
+
+
 
 
 def _word_runs(

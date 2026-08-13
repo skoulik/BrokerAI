@@ -292,3 +292,49 @@ def test_a_value_named_once_is_painted_at_every_occurrence(pipeline):
         result.ocr.text[s.start : s.end] for s in result.spans
     ] == ["SERGEI KULIK", "SERGEI KULIK"]
     assert len(result.borrowed) == 1
+
+
+def test_a_wrapped_value_collects_one_placeholder(pipeline):
+    """A two-column page bands both cards into one line, so an address that
+    wraps inside one column is one value in TWO ranges of the page string
+    (2026-08-13). It is still ONE address, so it must not fork into ADDRESS_1
+    and ADDRESS_2 — the pieces are keyed on the whole of it."""
+    from pii.core.vlm import VlmFinding
+
+    page = _page(
+        [
+            [
+                ("Expiry", Box(10, 20, 60, 14), 90.0),
+                ("date", Box(80, 20, 40, 14), 90.0),
+                ("24", Box(260, 20, 20, 14), 90.0),
+                ("Stacey", Box(290, 20, 60, 14), 90.0),
+                ("Dr", Box(360, 20, 20, 14), 90.0),
+            ],
+            [
+                ("Product", Box(10, 50, 70, 14), 90.0),
+                ("Gold", Box(90, 50, 40, 14), 90.0),
+                ("Carrickalinga", Box(200, 50, 130, 14), 90.0),
+                ("SA", Box(340, 50, 20, 14), 90.0),
+                ("5204", Box(370, 50, 40, 14), 90.0),
+            ],
+        ],
+        width=440, height=80,
+    )
+    ocr = linearize(page)
+    result = strip_from_vlm(
+        Image.new("RGB", (440, 80), "white"),
+        [
+            VlmFinding(
+                text="24 Stacey Dr Carrickalinga SA 5204",
+                entity_type="ADDRESS",
+                # (260,20)-(410,64) in model space on a 440x80 page.
+                box=(591, 250, 932, 800),
+            )
+        ],
+        pipeline, PseudonymMap(), ocr=ocr,
+    )
+    painted = [ocr.text[s.start : s.end] for s in result.spans]
+    assert painted == ["24 Stacey Dr", "Carrickalinga SA 5204"]
+    # The left card's row-mate is between them and stays out of the plan.
+    assert "Product Gold" not in " ".join(painted)
+    assert {segment.label for segment in result.segments} == {"ADDRESS_1"}

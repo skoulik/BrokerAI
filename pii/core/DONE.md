@@ -2373,3 +2373,87 @@ the move; new completed tasks append to the matching section with their records.
       retired. Smoke test over 4 real pages: localize prefill 59 s → ~0.5 s on every page,
       ~237 s saved on one document. Not yet compared against the stock server — the outstanding
       check is a determinism diff over the corpus, not a recall score.
+
+- [x] **A value that wraps inside one column of a two-column page was reachable by no search**
+      *(2026-08-13. Distilled design in [ARCHITECTURE.md](ARCHITECTURE.md) "A value is one span
+      or several"; invariant in [../CLAUDE.md](../CLAUDE.md); corpus probe `ADDRESS_WRAPPED`.)*
+
+      **The specimen.** Page 2 of an insurance certificate (`116832820_7_...`), reported by
+      Sergei: layer 0 found the postal address, spanning two lines, with a box tight around
+      both, and OCR read both lines perfectly — and the locator placed it `kind="box"`, tier 3.
+      Open as a TODO since the first `--debug` run (an address and a vehicle description, both
+      landing on tier 3 with the text plainly on the page); the guess recorded there —
+      "the linearized page interleaves other column content between the value's parts" — was
+      right, and the two fixes it proposed were both rejected on measurement, see below.
+
+      **Cause, and it is not in either input.** `ocr_page._rows` bands a page VISUALLY, which is
+      what puts a label beside its value and is load-bearing for context promotion. The page is
+      two cards side by side, so every band holds both, and the assembled string reads:
+
+          7 | Start date 13 March 2024 12:00am AEST Postal address 24 Stacey Dr
+          8 | Expiry date 12 March 2025 11:59pm AEST Carrickalinga SA 5204
+
+      Forty characters of the left-hand card sit between `Dr` (ends 471) and `Carrickalinga`
+      (starts 511). Exact misses; squash misses, because the interloper is alphanumeric and the
+      squash only collapses separators; `_fuzzy_windows` built contiguous word runs, so any
+      window holding both halves also held the expiry date and blew the length guard. Replayed
+      against the real OCR with a *perfect* box, all three transcriptions the model might return
+      (`, ` / space / newline between the halves) resolved to tier 3, and `locate_borrowed`
+      returned nothing at all. `test_a_value_wrapped_across_lines_is_one_span` had passed
+      throughout — its fixture is single-column, where squash bridges the newline.
+
+      **It cost both directions on the one page.** Tier 3 pads by 0.6x box height, and a
+      two-line-tall box padded that far, painted after the plan, swallowed the phone number's
+      own correctly-placed `PHONE_NUMBER` box — the Contact number row came out blank. And the
+      same address printed again at `Usually parked at` (lines 19/20, wrapped identically) was
+      matched by nothing and stayed fully legible in the output.
+
+      **Fix: the needle drives the search, not a scan of the page.** Inside a box there is only
+      one column, so a wrapped match is assembled per line — each line contributing one run of
+      whole words that continues the needle exactly. Two shapes were built and the first was
+      wrong:
+
+      - A flat box-local assembly (covered words joined into one string, scanned for the
+        needle) fixes the perfect-box case and *breaks* on a clipped one. Slack has to come from
+        somewhere: at the outer ends only, a box that drops the word at the END of the value's
+        first line (`Dr`) leaves it interior to the assembly and unreachable; per-line slack
+        splices `11:59pm AEST` into the seam and kills the match outright. Measured on the real
+        page — a box clipped by 12 model-units resolved to `24 Stacey` + `Carrickalinga SA`,
+        which is a partial paint and therefore a leak where tier 3 had at least over-painted.
+      - The needle-driven walk has no such tension: a run only ever *starts* where the needle's
+        next character does, so it can be offered the whole line and pick nothing up from it.
+        Per-line slack becomes free, and the clipped box recovers the whole value.
+
+      The flat assembly survives as the fuzzy tier's window source (character-for-character the
+      old page slice wherever nothing is spliced in, and now able to span a wrap as well).
+
+      **One value, one placeholder.** The halves are separate ranges of the page string, so they
+      are separate `Detection`s; `Detection.full_value` carries the whole value as the pseudonym
+      key, or one address forks into `ADDRESS_1` and `ADDRESS_2`. `_merge_overlaps` takes the
+      winning member's key with the rest of its identity.
+
+      **`locate_borrowed` needed the same tier** or the second printing keeps leaking, and with
+      no box the constraint is geometric: consecutive lines whose pieces share an x-column —
+      verified to be the load-bearing guard by disabling it, at which point `24 Stacey Dr` in
+      the left card joins `Carrickalinga SA 5204` in the right. Squash-equality only there:
+      unanchored plus wrapped plus fuzzy is three liberties at once. Additive, not a fallback,
+      for the same reason the fuzzy tier is.
+
+      **A regression the first cut shipped, caught on the specimen (same day).** A word of
+      pure punctuation squashes to nothing, and `need_sq.startswith("", at)` is true at every
+      position — so such a word joined any piece anywhere for free, and a piece of ONE of them
+      consumed none of the needle while still counting as a proper prefix. The walk then
+      carried it to the next line, where the real value completed the match. Every needle
+      claimed whatever stray glyph sat on the line above it: `Sk Management Victoria Pty Ltd`
+      took the hyphen out of the heading `Policy number - 116832820 07`, `Mr Sergei Kulik` took
+      a card's `?` help icon, and both were painted and given placeholders of their own
+      (`ORG_3 = "-"`). Found by Sergei asking why layer-1 boxes had no layer-0 counterpart —
+      they had none because they were neither: they were borrowed. The risk was noticed while
+      designing the walk and judged negligible; it is not. Every piece must earn at least one
+      character of the needle.
+
+      **One ranking change fell out of it.** `_place` ordered free candidates by overlap
+      magnitude before edit distance, which hands a clipped box to whichever candidate fits
+      *inside* it — a truncation of the value beating the whole of it. Being in the box at all
+      is the positional agreement; how much of it a candidate fills is not. Exact and squash
+      score distance 0, so this only ever reorders the fuzzy tier.

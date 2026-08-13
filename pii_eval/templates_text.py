@@ -52,11 +52,19 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
         doc.raw(addressee)
     doc.pad_to(46).raw("Account Number   : ")
     doc.pii(acct.number, "AU_BANK_ACCOUNT").nl()
-    doc.raw(" " * 8).pii(p.street.upper(), "ADDRESS")
+    # The addressee block is TWO COLUMNS, and the address wraps inside the
+    # left one — so on the rendered image the right column's field lands
+    # between its halves in the page string, which is what an OCR page banded
+    # visually looks like. Its own truth type per the convention for
+    # known-hard forms: no contiguous search reaches across the splice, and
+    # before 2026-08-13 a perfectly boxed, perfectly read address fell all the
+    # way through to the model's own geometry. Reprinted, wrapped the same
+    # way, by `_statement_continuation`.
+    doc.raw(" " * 8).pii(p.street.upper(), "ADDRESS_WRAPPED")
     doc.pad_to(46).raw(f"Statement Period : {_date(rng, year)}").nl()
     doc.raw(" " * 8).pii(
         f"{p.suburb.upper()}{' ' * max(24 - len(p.suburb), 1)}{p.state} {p.postcode}",
-        "ADDRESS",
+        "ADDRESS_WRAPPED",
     )
     doc.pad_to(46).raw(f"Statement Number :{rng.randrange(1, 60):>8}").nl(2)
 
@@ -110,8 +118,8 @@ def _statement_continuation(
 ) -> None:
     """The header a real statement reprints on every continuation page.
 
-    Two probes live here, and both exist because a corpus printing one surface
-    form per entity would pass whether or not the matching works:
+    Three probes live here, and all three exist because a corpus printing one
+    surface form per entity would pass whether or not the matching works:
 
     - the holder's name in TITLE case, where page 1 has it in caps — the
       case-folded comparison in `pii.core.grouping`;
@@ -123,11 +131,23 @@ def _statement_continuation(
       marker the org policy keyed on as well, which is what made this probe a
       leak rather than a geometry question; since 2026-08-11 an unrecognized
       name strips either way, so it now isolates the fuzzy borrowed tier alone.
+    - the address WRAPPED inside the left column, as page 1 prints it, with
+      the right column's field between its halves. Layer 0 is far less likely
+      to name it again this far into a document, so this printing is what the
+      wrapped tier of `locator.locate_borrowed` has to reach — and it has no
+      box to lean on, only the column its two lines share.
     """
     doc.raw("ACCOUNT STATEMENT").pad_to(46).raw("Account Number   : ")
     doc.pii(acct.number, "AU_BANK_ACCOUNT").nl()
     doc.raw(" " * 8).pii(p.full, "PERSON")
     doc.pad_to(46).raw(f"Page {page} of {pages}").nl()
+    doc.raw(" " * 8).pii(p.street.upper(), "ADDRESS_WRAPPED")
+    doc.pad_to(46).raw("A/C TYPE         : SAVINGS").nl()
+    doc.raw(" " * 8).pii(
+        f"{p.suburb.upper()}{' ' * max(24 - len(p.suburb), 1)}{p.state} {p.postcode}",
+        "ADDRESS_WRAPPED",
+    )
+    doc.pad_to(46).raw("CURRENCY         : AUD").nl()
     doc.raw(" " * 8).raw("A/C NAME: ")
     doc.pii(account_of[:-_TRUNCATE_BY], "ORGANIZATION_TRUNCATED").nl(2)
 

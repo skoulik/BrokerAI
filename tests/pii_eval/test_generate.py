@@ -217,3 +217,35 @@ def test_the_account_name_is_reprinted_truncated(tmp_path):
         # not a different name that merely looks similar.
         assert any(name.startswith(probe["value"]) for name in full), probe
         assert probe["value"] not in full
+
+
+def test_the_statement_wraps_its_address_inside_a_two_column_block(tmp_path):
+    """The 2026-08-13 fail mode: a value that wraps inside ONE column of a
+    two-column block. `ocr_page._rows` bands such a page visually, so the
+    other column's field lands between the address's halves and no contiguous
+    search reaches across it. The probe needs both halves to be a truth entity
+    of their own type, and the right column's field to sit between them on the
+    line — otherwise the corpus renders an ordinary one-column address and
+    measures nothing.
+    """
+    corpus = generate(str(tmp_path / "c"), seed=42, docs=3)
+    truth = json.loads((corpus / "truth.json").read_text("utf-8"))
+    statement = next(d for d in truth["docs"] if d["file"].startswith("legacy"))
+    text = (corpus / statement["file"]).read_text("utf-8")
+
+    wrapped = [e for e in statement["entities"] if e["type"] == "ADDRESS_WRAPPED"]
+    # Page 1 prints the pair, and every continuation page reprints it — the
+    # borrowed half of the fix is only measurable on the second printing.
+    assert len(wrapped) >= 4 and len(wrapped) % 2 == 0
+    for probe in wrapped:
+        assert probe["strip_expected"] is True
+
+    street, suburb = wrapped[0], wrapped[1]
+    between = text[street["end"] : suburb["start"]]
+    assert "\n" in between, "the address does not wrap"
+    assert between.strip(), "no second column between the halves"
+    # Both halves start in the same column, which is what the borrowed tier's
+    # x-overlap guard keys on once this is rendered.
+    assert text.rfind("\n", 0, street["start"]) - street["start"] == (
+        text.rfind("\n", 0, suburb["start"]) - suburb["start"]
+    )

@@ -408,6 +408,11 @@ def _merge_overlaps(results):
                 start=start,
                 end=end,
                 score=best.score,
+                # The union takes the winner's identity whole, pseudonym key
+                # included. Where the winner has none the key is the merged
+                # text, which is the honest answer: the extent is no longer
+                # the piece the key described.
+                full_value=best.full_value,
             )
         )
     return merged

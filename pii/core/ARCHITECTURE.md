@@ -771,6 +771,34 @@ Geometry then resolves in three tiers, in descending confidence:
    Counted separately on the result as `box_geometry`: stochastic geometry, and with no OCR
    text layer 1 never sees the value, so it carries no checksum and no `*_INVALID` shadow.
 
+**A value is one span or several — the page string does not always hold it whole
+(2026-08-13).** `ocr_page._rows` bands a page **visually**, which is what puts a label beside
+its value and is load-bearing for context promotion. The price is that two cards side by side
+share every band, so a value that WRAPS inside one column has the other card's row-mate
+spliced between its halves: an insurance certificate printed `24 Stacey Dr` /
+`Carrickalinga SA 5204` in the right-hand card, and the assembled page string reads
+`24 Stacey Dr\nExpiry date 12 March 2025 11:59pm AEST Carrickalinga SA 5204`. No contiguous
+search reaches across that — the interloper is alphanumeric, so the squash does not collapse
+it, and a word window has to swallow it whole. Layer 0 boxed the address perfectly and OCR
+read both lines perfectly, and the value still fell through to tier 3: painted from a
+two-line-tall padded box that swallowed the phone number's own placeholder, while the second
+printing of the same address, further down the page, stayed fully legible.
+
+So tiers 1 and 2 search two strings. Inside a box there is only one column, and the search is
+driven by the NEEDLE rather than by a scan of the covered words: each line contributes one run
+of whole words that continues the needle exactly, and a run only ever starts where the needle's
+next character does — which is what lets the walk be offered a whole line without picking
+anything up from it. `Placement.spans` is therefore a tuple, and `Detection.full_value` carries
+the whole value as the pseudonym key so two halves of one address collect one `ADDRESS_1`
+rather than forking into `ADDRESS_1` and `ADDRESS_2`.
+
+`locate_borrowed` needs the same tier — the second printing has no box of its own — and takes
+its constraint from geometry instead: pieces must sit on **consecutive lines** and **share an
+x-column**, the same primitive `_rows` bands with, which is exactly what separates
+`Carrickalinga SA 5204` from the `AEST` printed to its left on the same assembled line. It
+stays squash-equality there, never edit distance: unanchored plus wrapped plus fuzzy is three
+liberties at once. Corpus probe `ADDRESS_WRAPPED`.
+
 **Fuzzy matching is admissible only under a box.** The rule that governs `locator.py` is
 *fuzzy matching is permitted exactly where a box constrains the candidate set; unconstrained
 search stays at exact-or-squash* — edit distance over a whole page always finds something,

@@ -98,6 +98,34 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   WRONG region, so `--geometry ocr` stays at exact-or-squash. The confusion table in
   `fuzzy.py` is a *discount inside* the edit distance, never a gate in front of it — folding
   both sides through confusion classes fails on unlisted damage and on dropped characters.
+- **One value is not always one span, and the page string is why.** `_rows` bands a page
+  VISUALLY, so two cards side by side share every band and a value that WRAPS inside one
+  column has the other card's row-mate spliced between its halves — 40 characters of an expiry
+  date between `24 Stacey Dr` and `Carrickalinga SA 5204`, reachable by no contiguous search
+  (2026-08-13). Keep `Placement.spans` a tuple and `Detection.full_value` as the pseudonym key:
+  without the second, one address forks into ADDRESS_1 and ADDRESS_2.
+- **The wrapped search is driven by the NEEDLE, never by a scan of the covered words.** A run
+  only ever starts where the needle's next character does, which is what lets a line be offered
+  whole and picked from safely. A flat box-local assembly was built first and cannot work: with
+  outer-only slack a box that clips the word ending the value's FIRST line leaves it interior
+  and unreachable, and with per-line slack the neighbouring column lands in the seam. Measured
+  — the flat version resolved a clipped box to `24 Stacey` + `Carrickalinga SA`, a partial
+  paint, which is a leak where tier 3 had at least over-painted.
+- **A wrapped borrowed match is guarded by the COLUMN, and stays squash-exact.** No box means
+  no anchor, so pieces must sit on consecutive lines and share an x-column — remove that guard
+  and `24 Stacey Dr` in the left card joins `Carrickalinga SA 5204` in the right. Do not extend
+  the fuzzy tier across a wrap there: unanchored plus wrapped plus fuzzy is three liberties at
+  once.
+- **Every piece of a wrapped match must earn a character of the needle.** A punctuation-only
+  OCR word squashes to nothing and `startswith("")` is true everywhere, so it joins any piece
+  at any position for free — and a piece of one such word is a "proper prefix" that carries the
+  walk to the next line, where the real value finishes the match. Shipped for a few hours in
+  the first cut: every needle claimed the stray `-` or `?` on the line above it, painted with
+  its own placeholder (2026-08-13).
+- **Being in the box is the positional agreement; how MUCH of it a candidate fills is not.**
+  `_place` ranks free candidates by kind, then edit distance, then overlap. Ranking by overlap
+  magnitude first hands a clipped box to whichever candidate fits inside it — a truncation of
+  the value beating the whole of it.
 - **A page is not the unit of truth.** Every page is READ before any page is REDACTED, so a
   value layer 0 names on page 1 and misses on page 4 strips on both. Do not restore a
   streaming per-page loop in `strip_pdf`: it is what made that leak invisible.

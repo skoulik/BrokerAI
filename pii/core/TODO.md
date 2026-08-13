@@ -120,20 +120,29 @@ below gets picked up against the old shape of the tool.
       - Whether it runs on every page or only as a backstop where the vision pass found little
         — cheaper, but unpredictable in exactly the cases that matter.
 
-- [ ] **A value wrapped across lines/columns falls to tier 3 instead of matching** (same run).
-      The model returned an address and a vehicle description as single long strings; both
-      landed on tier 3, i.e. painted from the model's box rather than exact word boxes, even
-      though the text is on the page and OCR read it. The likely cause is that the linearized
-      page interleaves other column content between the value's parts, so no *contiguous*
-      word window matches — `_fuzzy_windows` only considers contiguous slices of the source
-      map, by design (a non-contiguous window would let a span swallow unrelated text). Worth
-      confirming against `strip --debug=ocr,layer-0` on that page before choosing a fix — the
-      layer-0 chips name the tier, so a tier-3 fallback is visible as `box` next to the OCR
-      lines that should have matched it. Options: allow a
-      window to skip a bounded number of intervening words when the skipped text is itself
-      part of no other finding; or split a long layer-0 value on its own line breaks and
-      locate the pieces independently, which fits the "one box per line" painting model
-      already in use. Recall is not lost either way — this is exact geometry vs approximate.
+- [ ] **Layer 0 names values with no alphanumeric character, and they propagate document-wide**
+      *(2026-08-13, `116832820_7_Insurance_Certificate.pdf`)*. The model returned `-` — the
+      hyphen in the heading `Policy number - 116832820 07` — as PII_COMPANY, and `?`, a card's
+      help icon, as a name. Both came back with no `bbox_2d`, so neither is visible on ANY debug
+      layer: the layer-0 overlay draws the model's own box and there is none. They surface only
+      downstream, where the damage compounds — grouping turns each into a document-wide needle;
+      `locate_borrowed`'s exact tier has no length floor (deliberate: `Wu`, `Ng`, `NAB`, `ANZ`)
+      and its word-edge guard does not apply to a needle whose edge characters are not
+      alphanumeric; so every occurrence of that character in the document is painted and given a
+      placeholder of its own (`ORG_3 = "-"`, and the hyphen INSIDE `Gt-Line`). Grouping also
+      fuses all punctuation-only values into one entity, since `_related` short-circuits on an
+      empty squash and calls two of them the same — contained to junk-with-junk, because a real
+      value's squash is never empty, but they can re-type each other. Cost is over-strip and a
+      polluted map, not a leak.
+
+      Proposed fix: drop a finding carrying no alphanumeric character where layer-0 responses
+      are PARSED (`vlm.py`), so nothing downstream ever sees it — placement, grouping, needles,
+      placeholders, map. It cannot cost recall: a name, address, organization, DOB or identifier
+      always carries at least one alphanumeric, which is also why the guard cannot be argued
+      into a length floor and does not need measuring. Two open questions: whether a
+      single-alphanumeric finding (`A`) should go the same way — the no-floor rule was argued
+      for two- and three-character values, not one — and whether the drops should be counted
+      rather than silent.
 
 - [ ] **A painted box started INSIDE its word and left two characters legible** *(seen
       2026-08-11 on the first `--debug` run, `pii_eval/corpora/image/s123/loan_04.png` at 150 dpi,

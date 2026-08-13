@@ -68,7 +68,7 @@ def _debug():
     return PageDebug(
         ocr=ocr,
         placements=(
-            Placement(finding=finding, kind="exact", start=start, end=end),
+            Placement(finding=finding, kind="exact", spans=((start, end),)),
         ),
         spans=(
             Detection(entity_type="PERSON", start=start, end=end, score=1.0),
@@ -190,8 +190,8 @@ def test_layer0_draws_the_models_own_box_not_the_located_geometry():
     out = draw_layers(_blank(), debug, ["layer-0"])
     assert out.getpixel((200, 180)) == _LAYER0_COLOR
     # The located span's own word boxes belong to `locate`, not here.
-    located = debug.ocr.boxes_for_span(debug.placements[0].start,
-                                       debug.placements[0].end)[0]
+    ((start, end),) = debug.placements[0].spans
+    located = debug.ocr.boxes_for_span(start, end)[0]
     assert out.getpixel((located.left, located.top)) != _LAYER0_COLOR
 
 
@@ -203,8 +203,7 @@ def test_layer0_draws_nothing_when_the_model_gave_no_boxes():
     boxless = Placement(
         finding=VlmFinding(text="SERGEI KULIK", entity_type="PERSON"),
         kind="exact",
-        start=debug.placements[0].start,
-        end=debug.placements[0].end,
+        spans=debug.placements[0].spans,
     )
     page = PageDebug(ocr=debug.ocr, placements=(boxless,))
     assert _LAYER0_COLOR not in _colors(draw_layers(_blank(), page, ["layer-0"]))
@@ -214,8 +213,8 @@ def test_layer0_draws_nothing_when_the_model_gave_no_boxes():
 
 def test_locate_draws_the_resolved_span_not_the_model_box():
     debug = _debug()
-    box = debug.ocr.boxes_for_span(debug.placements[0].start,
-                                   debug.placements[0].end)[0]
+    ((start, end),) = debug.placements[0].spans
+    box = debug.ocr.boxes_for_span(start, end)[0]
     out = draw_layers(_blank(), debug, ["locate"])
     assert out.getpixel((box.left, box.top)) == _LOCATE_COLOR
     assert out.getpixel((200, 180)) != _LOCATE_COLOR  # the model's box

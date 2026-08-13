@@ -274,8 +274,15 @@ def _locate_segments(debug: PageDebug, size: tuple[int, int]) -> list[Segment]:
         tier = _TIERS.get(p.kind)
         if tier is None:
             continue
-        if p.start is not None and debug.ocr is not None:
-            boxes = debug.ocr.boxes_for_span(p.start, p.end)
+        if p.spans and debug.ocr is not None:
+            # One value, possibly several ranges — a wrapped value on a
+            # two-column page draws a box per line, which is what makes the
+            # column step visible against the layer-0 rectangle underneath.
+            boxes = [
+                box
+                for start, end in p.spans
+                for box in debug.ocr.boxes_for_span(start, end)
+            ]
         elif p.box is not None:
             boxes = [p.box]
         elif p.finding.box is not None:
@@ -322,8 +329,9 @@ def span_provenance(span, debug: PageDebug) -> str:
     (`L1`). The last one is the interesting reading — it is what the semantic
     detector missed on this page and a deterministic rule caught."""
     if any(
-        p.start is not None and _overlaps(span, p.start, p.end)
+        _overlaps(span, start, end)
         for p in debug.placements
+        for start, end in p.spans
     ):
         return "L0"
     if any(_overlaps(span, b.start, b.end) for b in debug.borrowed):

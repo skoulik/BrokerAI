@@ -158,7 +158,14 @@ also reprints the account name **truncated** to a fixed-width field
 matching outright, so the probe isolates the fuzzy borrowed tier and
 nothing else. (Until 2026-08-11 the truncation also removed the legal-form
 marker the organization policy keyed on, which made this an outright leak;
-keeping is now a keep-list decision — `pii/core/entity_keep.py`.) `render` writes
+keeping is now a keep-list decision — `pii/core/entity_keep.py`.) The
+addressee block is **two columns with the address wrapped inside the left
+one** (`ADDRESS_WRAPPED`, 2026-08-13), printed on page 1 and reprinted on
+every continuation page: once rendered, `ocr_page._rows` bands both columns
+into one line, so the right column's field lands between the address's
+halves and no contiguous search reaches across it. Page 1 tests the
+box-guided wrapped tier, the reprints test the borrowed one — which has only
+the column its two lines share to go on. `render` writes
 one PNG per page *and* assembles them into a PDF per document, so both
 modalities run over identical pixels.
 

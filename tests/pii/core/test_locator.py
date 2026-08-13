@@ -46,6 +46,59 @@ def _page(*lines: str):
     )
 
 
+def _two_columns(*rows: tuple[str, str, str]):
+    """A page of two cards side by side: `(left, right label, right value)`
+    per visual row, the value right-aligned as a statement field is.
+
+    `_rows` bands such a page into ONE line per row — deliberately, it is what
+    puts a label beside its value — and the consequence under test is that a
+    value which WRAPS inside the right-hand column has the left card's
+    row-mate spliced between its halves in the page string.
+    """
+    out = []
+    for row_index, (left, label, value) in enumerate(rows):
+        top = row_index * _LINE_GAP
+        row = []
+
+        def place(text: str, x: int) -> int:
+            for token in text.split(" "):
+                width = _CHAR_W * len(token)
+                row.append((token, Box(x, top, width, _LINE_H), 99.0))
+                x += width + _CHAR_W
+            return x
+
+        if left:
+            place(left, 0)
+        if label:
+            place(label, _PAGE_W // 2)
+        if value:
+            # Tokens are `_CHAR_W` per character with a `_CHAR_W` gap between
+            # them, so a phrase is exactly `_CHAR_W * len(phrase)` wide.
+            place(value, _PAGE_W - _CHAR_W - _CHAR_W * len(value))
+        out.append(row)
+    return linearize(
+        build_page(out, OcrFrame(width=_PAGE_W, height=_PAGE_H, page=1))
+    )
+
+
+def _span_of(ocr, needle: str) -> tuple[int, int]:
+    at = ocr.text.find(needle)
+    assert at != -1, f"{needle!r} not on the page"
+    return (at, at + len(needle))
+
+
+def _box_spanning(ocr, *needles: str):
+    """The model-space box a well-behaved model returns for a value the page
+    wrapped: ONE rectangle around all of its pieces."""
+    boxes = [_box_over(ocr, needle) for needle in needles]
+    return (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+
+
 def _box_over(ocr, needle: str, occurrence: int = 0):
     """The model-space (0-1000) box a well-behaved model would return for the
     `occurrence`-th appearance of `needle` in the page text."""
@@ -71,7 +124,11 @@ def _place(ocr, *findings):
 
 
 def _text_of(ocr, placement) -> str:
-    return ocr.text[placement.start : placement.end]
+    """The placed value as it reads on the page. A placement carries a TUPLE
+    of spans — a value the page wraps inside one column of a two-column layout
+    is one value in several ranges — joined here by the newline the page put
+    between them."""
+    return "\n".join(ocr.text[start:end] for start, end in placement.spans)
 
 
 # ------------------------------------------------- no box: the old behaviour
@@ -97,7 +154,7 @@ def test_formatting_differences_are_absorbed_without_a_box():
 def test_a_missing_value_is_reported_not_guessed():
     ocr = _page("nothing relevant")
     (p,) = _place(ocr, VlmFinding("Sergei Kulik", "PERSON")).placements
-    assert p.kind is None and p.start is None
+    assert p.kind is None and p.spans == ()
 
 
 def test_repeated_value_maps_to_successive_occurrences_without_a_box():
@@ -108,7 +165,7 @@ def test_repeated_value_maps_to_successive_occurrences_without_a_box():
         VlmFinding("24 Stacey Dr", "ADDRESS"),
     )
     first, second = result.placements
-    assert (first.start, first.end) != (second.start, second.end)
+    assert first.spans != second.spans
     assert _text_of(ocr, second) == "24 Stacey Dr"
 
 
@@ -128,7 +185,7 @@ def test_box_picks_the_right_occurrence_of_a_repeated_value():
     ocr = _page("24 Stacey Dr billing", "posted to 24 Stacey Dr")
     box = _box_over(ocr, "24 Stacey Dr", occurrence=1)
     (p,) = _place(ocr, VlmFinding("24 Stacey Dr", "ADDRESS", box=box)).placements
-    assert p.start == ocr.text.rfind("24 Stacey Dr")
+    assert p.spans[0][0] == ocr.text.rfind("24 Stacey Dr")
 
 
 def test_box_beats_a_squash_collision_elsewhere_on_the_page():
@@ -163,7 +220,7 @@ def test_nested_finding_is_recognized_as_already_covered():
     )
     wide, narrow = result.placements
     assert _text_of(ocr, wide) == "John Smith"
-    assert narrow.kind == "redundant" and narrow.start is None
+    assert narrow.kind == "redundant" and narrow.spans == ()
 
 
 def test_a_nested_value_elsewhere_is_still_found():
@@ -176,8 +233,8 @@ def test_a_nested_value_elsewhere_is_still_found():
         VlmFinding("John", "PERSON"),
     )
     wide, narrow = result.placements
-    assert narrow.start == ocr.text.rfind("John")
-    assert narrow.start != wide.start
+    assert narrow.spans[0][0] == ocr.text.rfind("John")
+    assert narrow.spans != wide.spans
 
 
 # ------------------------------------------------------ the box licenses fuzzy
@@ -200,7 +257,8 @@ def test_fuzzy_span_paints_exact_word_boxes_not_the_model_box():
         ocr, VlmFinding("162-097111-4", "IDENTIFIER_GENERIC", box=box)
     ).placements
     assert p.box is None  # nothing falls back to model geometry
-    assert ocr.boxes_for_span(p.start, p.end) == ocr.boxes_for_span(
+    ((start, end),) = p.spans
+    assert ocr.boxes_for_span(start, end) == ocr.boxes_for_span(
         ocr.text.find("162-09711-4"), ocr.text.find("162-09711-4") + 11
     )
 
@@ -226,6 +284,77 @@ def test_a_value_wrapped_across_lines_is_one_span():
     assert _text_of(ocr, p) == "PAKENHAM\nVIC 3810"
 
 
+# ------------------------------------- a wrapped value in a two-column layout
+#
+# The page string is banded VISUALLY, so two cards side by side share every
+# band. A value that wraps inside one column therefore has the other card's
+# row-mate spliced between its halves, and no contiguous search can reach
+# across it: the interloper is alphanumeric, so squashing does not collapse
+# it, and a word window has to swallow it whole. Specimen 2026-08-13, an
+# insurance certificate: layer 0 boxed the postal address perfectly, OCR read
+# both lines perfectly, and the locator still fell through to tier 3.
+
+
+def _wrapped_page():
+    return _two_columns(
+        ("Start date 13 March 2024", "Postal address", "24 Stacey Dr"),
+        ("Expiry date 12 March 2025", "", "Carrickalinga SA 5204"),
+    )
+
+
+def test_a_value_wrapped_inside_one_column_is_located_not_dropped():
+    ocr = _wrapped_page()
+    assert "24 Stacey Dr\nExpiry date" in ocr.text  # the splice under test
+    box = _box_spanning(ocr, "24 Stacey Dr", "Carrickalinga SA 5204")
+    (p,) = _place(
+        ocr,
+        VlmFinding("24 Stacey Dr Carrickalinga SA 5204", "ADDRESS", box=box),
+    ).placements
+    assert p.kind == "squash"
+    assert _text_of(ocr, p) == "24 Stacey Dr\nCarrickalinga SA 5204"
+
+
+def test_a_wrapped_value_steps_over_the_neighbouring_column():
+    # One value, two ranges — and the left card's row-mate between them is
+    # NOT one of them. Painting it would strip an expiry date to redact an
+    # address, and the placeholder would be keyed on the pair.
+    ocr = _wrapped_page()
+    box = _box_spanning(ocr, "24 Stacey Dr", "Carrickalinga SA 5204")
+    (p,) = _place(
+        ocr,
+        VlmFinding("24 Stacey Dr Carrickalinga SA 5204", "ADDRESS", box=box),
+    ).placements
+    assert p.spans == (
+        _span_of(ocr, "24 Stacey Dr"),
+        _span_of(ocr, "Carrickalinga SA 5204"),
+    )
+
+
+def test_a_box_clipping_a_line_end_still_takes_the_whole_wrapped_value():
+    # The clip that matters here is not at the value's outer edges but at the
+    # END of its first line — interior to the assembly and unreachable from
+    # either end of it. Recovering it is why the wrapped search is driven by
+    # the needle rather than by a substring scan of the covered words.
+    ocr = _wrapped_page()
+    x1, y1, x2, y2 = _box_spanning(ocr, "24 Stacey Dr", "Carrickalinga SA 5204")
+    clipped = (x1, y1, x2 - round(_CHAR_W * 3 / _PAGE_W * 1000), y2)
+    (p,) = _place(
+        ocr,
+        VlmFinding("24 Stacey Dr Carrickalinga SA 5204", "ADDRESS", box=clipped),
+    ).placements
+    assert _text_of(ocr, p) == "24 Stacey Dr\nCarrickalinga SA 5204"
+
+
+def test_a_wrapped_match_still_needs_the_box_to_point_at_it():
+    # The floor from the no-box tests holds here too: without a constraint the
+    # halves are two unrelated runs of page text, and joining them is a guess.
+    ocr = _wrapped_page()
+    (p,) = _place(
+        ocr, VlmFinding("24 Stacey Dr Carrickalinga SA 5204", "ADDRESS")
+    ).placements
+    assert p.kind is None
+
+
 # --------------------------------------------------------- tier 3 and the residue
 
 
@@ -235,7 +364,7 @@ def test_a_box_over_pixels_with_no_text_falls_back_to_model_geometry():
     (p,) = _place(
         ocr, VlmFinding("Budget Direct", "ORGANIZATION", box=(600, 600, 800, 700))
     ).placements
-    assert p.kind == "box" and p.start is None and p.box is not None
+    assert p.kind == "box" and p.spans == () and p.box is not None
 
 
 def test_the_fallback_box_is_padded_for_the_tail():
@@ -334,7 +463,7 @@ def test_denormalize_maps_model_space_onto_pixels(box, expected):
 def _borrowed(ocr, *needles):
     return [
         (ocr.text[start:end], entity_type)
-        for start, end, entity_type in locate_borrowed(needles, ocr)
+        for start, end, entity_type, _ in locate_borrowed(needles, ocr)
     ]
 
 
@@ -407,6 +536,87 @@ def test_a_nested_borrowed_value_keeps_its_own_span():
 def test_a_borrowed_value_absent_from_the_page_yields_nothing():
     ocr = _page("nothing to see here")
     assert _borrowed(ocr, ("Sergei Kulik", "PERSON")) == []
+
+
+def test_a_borrowed_value_is_found_where_the_page_wraps_it():
+    # The other half of the 2026-08-13 specimen. The page prints the address
+    # twice and wraps it both times; the model boxed one of them, and without
+    # this the second printing stays legible in the output.
+    ocr = _two_columns(
+        ("Permitted use of car", "Usually parked at", "24 Stacey Dr"),
+        ("Registration number", "", "Carrickalinga SA 5204"),
+    )
+    assert _borrowed(ocr, ("24 Stacey Dr Carrickalinga SA 5204", "ADDRESS")) == [
+        ("24 Stacey Dr", "ADDRESS"),
+        ("Carrickalinga SA 5204", "ADDRESS"),
+    ]
+
+
+def test_the_pieces_of_a_borrowed_wrapped_value_name_the_whole_of_it():
+    # They are ONE value, so they must collect ONE placeholder — which the
+    # span text alone cannot say. `full_value` is what carries it.
+    ocr = _two_columns(
+        ("Permitted use of car", "Usually parked at", "24 Stacey Dr"),
+        ("Registration number", "", "Carrickalinga SA 5204"),
+    )
+    value = "24 Stacey Dr Carrickalinga SA 5204"
+    assert [full for _, _, _, full in locate_borrowed([(value, "ADDRESS")], ocr)] == [
+        value,
+        value,
+    ]
+
+
+def test_a_borrowed_wrapped_match_must_stay_in_one_column():
+    # Consecutive lines are not enough: the halves have to stand in the same
+    # column, or the tier would join any two runs the page happens to print
+    # above one another. Here they are in opposite cards.
+    ocr = _two_columns(
+        ("paid 24 Stacey Dr", "ref", "9911"),
+        ("nothing here", "", "Carrickalinga SA 5204"),
+    )
+    assert _borrowed(ocr, ("24 Stacey Dr Carrickalinga SA 5204", "ADDRESS")) == []
+
+
+def test_a_wrapped_piece_must_earn_its_place_in_the_needle():
+    """A word of pure punctuation squashes to nothing, and every needle starts
+    with the empty string — so a piece of one such word consumes NONE of the
+    needle while still counting as a proper prefix, and the walk carries it to
+    the next line where the real value completes the match. Left unguarded,
+    EVERY needle claims whatever stray '-' or '?' sits on the line above it
+    (2026-08-13: an insurance heading's hyphen painted as ORGANIZATION and a
+    card's help icon as PERSON, both from unrelated needles)."""
+    ocr = _page("ref -", "ref Sk Business Trust")
+    assert _borrowed(ocr, ("Sk Business Trust", "ORGANIZATION")) == [
+        ("Sk Business Trust", "ORGANIZATION")
+    ]
+
+
+def test_punctuation_after_a_wrapped_piece_does_not_break_the_match():
+    # The guard above stops a piece at a word that spells nothing, which must
+    # not cost the wrap itself: the piece is already complete by then.
+    ocr = _two_columns(
+        ("Permitted use of car", "Usually parked at", "24 Stacey Dr ,"),
+        ("Registration number", "", "Carrickalinga SA 5204"),
+    )
+    assert _borrowed(ocr, ("24 Stacey Dr Carrickalinga SA 5204", "ADDRESS")) == [
+        ("24 Stacey Dr", "ADDRESS"),
+        ("Carrickalinga SA 5204", "ADDRESS"),
+    ]
+
+
+def test_a_wrapped_borrowed_value_is_additive_not_a_fallback():
+    # Same reasoning as the fuzzy tier: a page carrying the value on one line
+    # AND wrapped would otherwise find the contiguous one and leak the other.
+    ocr = _two_columns(
+        ("on file", "Postal address", "24 Stacey Dr Carrickalinga SA 5204"),
+        ("Permitted use of car", "Usually parked at", "24 Stacey Dr"),
+        ("Registration number", "", "Carrickalinga SA 5204"),
+    )
+    assert _borrowed(ocr, ("24 Stacey Dr Carrickalinga SA 5204", "ADDRESS")) == [
+        ("24 Stacey Dr Carrickalinga SA 5204", "ADDRESS"),
+        ("24 Stacey Dr", "ADDRESS"),
+        ("Carrickalinga SA 5204", "ADDRESS"),
+    ]
 
 
 # --------------------------------- the tier-3 residue and the "NOT redacted"

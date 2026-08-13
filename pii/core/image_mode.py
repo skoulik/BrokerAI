@@ -316,22 +316,35 @@ def strip_from_vlm(
         )
 
     placed = locate_findings(findings, ocr, image.size)
+    # One detection per RANGE, but a value that occupies more than one keeps
+    # its whole self as the pseudonym key: a page that wraps an address across
+    # two lines splices the neighbouring column's row-mate between its halves
+    # (see `pii.core.locator`), and keying each half on its own text would
+    # fork one address into ADDRESS_1 and ADDRESS_2.
     detected = [
         Detection(
             entity_type=p.finding.entity_type,
-            start=p.start,
-            end=p.end,
+            start=start,
+            end=end,
             score=1.0,
+            full_value=p.finding.text if len(p.spans) > 1 else None,
         )
         for p in placed.located
+        for start, end in p.spans
     ]
     # What the document knows, applied to this page: every occurrence of every
     # known value, including ones layer 0 said nothing about here. Runs BESIDE
     # the box-guided placement above, never instead of it — that is the only
     # path to the fuzzy tier and to tier-3 geometry.
     borrowed = [
-        Detection(entity_type=entity_type, start=start, end=end, score=1.0)
-        for start, end, entity_type in locate_borrowed(
+        Detection(
+            entity_type=entity_type,
+            start=start,
+            end=end,
+            score=1.0,
+            full_value=full_value,
+        )
+        for start, end, entity_type, full_value in locate_borrowed(
             grouping.needles(), ocr
         )
     ]
@@ -492,7 +505,9 @@ def _paint_plan(
     3) and are painted alongside."""
     segments = [
         Segment(
-            label=pmap.placeholder_for(r.entity_type, ocr.text[r.start : r.end]),
+            label=pmap.placeholder_for(
+                r.entity_type, r.full_value or ocr.text[r.start : r.end]
+            ),
             boxes=ocr.painted_boxes_for_span(r.start, r.end),
         )
         for r in spans
