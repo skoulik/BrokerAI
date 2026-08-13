@@ -52,7 +52,13 @@ from typing import Callable, Iterator
 import pymupdf
 from PIL import Image
 
-from pii.core.debug_overlay import DebugSpec, draw_layers, page_debug
+from pii.core.debug_overlay import (
+    DebugSpec,
+    draw_layers,
+    findings_record,
+    page_debug,
+    write_findings,
+)
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import get_ocr_page
 from pii.core.vlm import Incomplete
@@ -216,6 +222,10 @@ def strip_pdf(
             if debug is not None
             else []
         )
+        # Collected across pages rather than written per page: the listing is
+        # one document-wide artifact, and its summary counts what the overlays
+        # cannot draw at all.
+        debug_findings: list[dict] = []
         for index, read in enumerate(reads):
             number = index + 1
             if progress:
@@ -233,11 +243,12 @@ def strip_pdf(
             cached.unlink()
             width, height = sizes[index]
             _embed_page(out_doc, result.image, width, height)
-            if debug_docs:
+            if debug is not None:
                 # Drawn on `image`, the page as rendered — NOT on result.image,
                 # which is the redacted copy. The whole point is to read the
                 # original text under the boxes.
                 record = page_debug(result)
+                debug_findings.append(findings_record(record, number))
                 for layer, _, doc in debug_docs:
                     _embed_page(
                         doc,
@@ -270,6 +281,8 @@ def strip_pdf(
             doc.set_metadata({})
             doc.save(path, garbage=4, deflate=True)
             doc.close()
+        if debug is not None:
+            write_findings(debug.findings_path(), debug_findings)
     return PdfStripResult(pages=pages, groups=grouping.groups)
 
 

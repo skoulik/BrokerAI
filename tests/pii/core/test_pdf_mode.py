@@ -429,3 +429,42 @@ def test_the_page_cache_does_not_outlive_the_run(tmp_path, pipeline,
     # out — nothing survives the run.
     assert not any(path.exists() for path in cached)
     assert not any(path.parent.exists() for path in cached)
+
+
+def test_strip_pdf_writes_a_findings_listing_beside_the_overlays(
+    tmp_path, pipeline, monkeypatch
+):
+    """A finding the model returns with no box appears on no overlay — the
+    layer-0 layer draws the model's own box and there is none. It still
+    reaches the plan and, through grouping, every other page, which is how a
+    hallucinated value once painted a heading's hyphen with a placeholder of
+    its own (2026-08-13). The listing is where those are visible, so it is
+    written for the whole document, not per layer."""
+    import json
+
+    from pii.core.debug_overlay import DebugSpec
+    from pii.core.vlm import VlmFinding
+
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr)
+    src = tmp_path / "doc.pdf"
+    out = tmp_path / "doc.clean.pdf"
+    _make_marked_pdf(src, pages=2)
+    spec = DebugSpec(layers=("layer-0",), path=str(out.with_suffix(".debug.pdf")))
+    detector = _FakeDetector(
+        [VlmFinding(text="olga@example.com", entity_type="IDENTIFIER_GENERIC")]
+    )
+    strip_pdf(src, pipeline, PseudonymMap(), out, dpi=72,
+              detector=detector, debug=spec)
+
+    path = Path(spec.findings_path())
+    assert path.name == "doc.clean.debug.findings.json"
+    payload = json.loads(path.read_text("utf-8"))
+    assert payload["summary"]["pages"] == 2
+    # _FakeDetector adds no boxes, which is also the real fallback when the
+    # model declines to place a value.
+    assert payload["summary"]["without_box"] == payload["summary"]["findings"] == 2
+    assert payload["summary"]["unplaced"] == 0
+    assert [p["page"] for p in payload["pages"]] == [1, 2]
+    (finding,) = payload["pages"][0]["findings"]
+    assert finding["text"] == "olga@example.com" and finding["box"] is None
+    assert finding["spans"][0]["text"] == "olga@example.com"

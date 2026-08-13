@@ -663,6 +663,20 @@ purpose, which is why it is as small as it is — the layout/segmenter half of i
   `DebugSpec`): the model's boxes live in that raster's coordinate space, and annotating a
   re-render would reintroduce the assumption the page cache exists to kill. The companion file is
   the original page with boxes on top — *not* redacted, a near-PII local artifact like the map.
+- **A findings LISTING beside the layers, because geometry cannot show a boxless finding
+  (2026-08-13).** Every overlay draws rectangles, so a value the model named and returned no
+  `bbox_2d` for appears on none of them — layer-0 draws the model's own box and there is none,
+  and its located span is the locator's answer, not layer 0's. It still reaches the plan and,
+  through grouping, every other page: a hallucinated `-` was painted over a heading's hyphen
+  with a placeholder of its own, and nothing in four overlays could say where it came from. So
+  `--debug` also writes `<base>.findings.json` — every layer-0 finding per page with its class,
+  text, model-space box or `null`, placing tier and resolved spans, plus the page's borrowed
+  spans, which likewise have no geometry to draw *here* because the value was named elsewhere.
+  Deliberately NOT a fifth layer and deliberately not a change to the layer-0 drawer (Sergei,
+  2026-08-13): that layer means "what the VLM said **and boxed**", and widening it to substitute
+  the locator's geometry would file the locator's answer under layer 0's name. The summary
+  counts the two states an operator scans for — `without_box`, which no overlay will show, and
+  `unplaced`, which is a detection that was not redacted.
 
 **Why the layout/segmenter layer went (2026-08-09, Sergei).** `OcrBlock`, the two layout backends
 (PP-StructureV3 and PP-DocLayoutV3), the reconstructed line→block linkage, orphan clustering and

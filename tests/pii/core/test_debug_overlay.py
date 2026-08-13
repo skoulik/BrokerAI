@@ -295,3 +295,107 @@ def test_page_debug_gathers_a_strip_result():
     assert gathered.placements == ("p",)
     assert gathered.spans == ("s",)
     assert gathered.borrowed == ("b",)
+
+
+# --- the findings listing --------------------------------------------------
+#
+# The overlays are geometry, so a finding the model returned with no bbox_2d
+# appears on none of them — while still reaching the plan and, through
+# grouping, every other page. That is exactly how a hallucinated '-' came to
+# be painted over a heading's hyphen with a placeholder of its own before
+# anyone could see where it came from (2026-08-13). This listing is where it
+# is visible.
+
+
+def _boxless_debug():
+    ocr = _ocr()
+    start = ocr.text.index("SERGEI")
+    end = start + len("SERGEI KULIK")
+    return PageDebug(
+        ocr=ocr,
+        placements=(
+            Placement(
+                finding=VlmFinding(
+                    text="SERGEI KULIK", entity_type="PERSON",
+                    box=(500, 600, 750, 700),
+                ),
+                kind="exact",
+                spans=((start, end),),
+            ),
+            # Named by the model, never boxed, placed by text alone.
+            Placement(
+                finding=VlmFinding(text="Client", entity_type="ORGANIZATION"),
+                kind="exact",
+                spans=((0, 6),),
+            ),
+            # Named by the model and placed nowhere at all — unredacted.
+            Placement(
+                finding=VlmFinding(text="ghost", entity_type="PERSON"),
+                kind=None,
+            ),
+        ),
+        borrowed=(
+            Detection(
+                entity_type="PERSON", start=start, end=end, score=1.0,
+                full_value="SERGEI KULIK",
+            ),
+        ),
+    )
+
+
+def test_findings_listing_carries_what_the_overlays_cannot_draw():
+    from pii.core.debug_overlay import findings_record
+
+    debug = _boxless_debug()
+    # The layer-0 drawing is deliberately unchanged: model boxes only, so the
+    # boxless findings are absent from it.
+    assert len(_layer0_boxes(debug)) == 1
+
+    record = findings_record(debug, page=4)
+    assert record["page"] == 4
+    assert [(f["text"], f["box"] is None, f["placed"]) for f in record["findings"]] == [
+        ("SERGEI KULIK", False, "exact"),
+        ("Client", True, "exact"),
+        ("ghost", True, None),
+    ]
+    # A located finding carries the text it actually landed on, so a value the
+    # model transcribed loosely can be compared with what was painted.
+    assert record["findings"][1]["spans"] == [
+        {"start": 0, "end": 6, "text": "Client"}
+    ]
+    assert record["findings"][2]["spans"] == []
+
+
+def _layer0_boxes(debug):
+    from pii.core.debug_overlay import _layer0_segments
+
+    return _layer0_segments(debug, (400, 300))
+
+
+def test_the_findings_summary_counts_the_two_states_worth_finding(tmp_path):
+    import json
+
+    from pii.core.debug_overlay import findings_record, write_findings
+
+    path = tmp_path / "page.clean.debug.findings.json"
+    write_findings(path, [findings_record(_boxless_debug(), page=1)])
+    payload = json.loads(path.read_text("utf-8"))
+    assert payload["summary"] == {
+        "pages": 1, "findings": 3, "without_box": 2, "unplaced": 1
+    }
+
+
+def test_the_findings_listing_records_the_borrowed_half_of_the_locator():
+    """Borrowed spans have no geometry to draw on THIS page by construction —
+    the value was named on another one — so the listing is the only place the
+    document-wide half of the locator is visible per page."""
+    from pii.core.debug_overlay import findings_record
+
+    (borrowed,) = findings_record(_boxless_debug())["borrowed"]
+    assert borrowed["text"] == "SERGEI KULIK"
+    assert borrowed["value"] == "SERGEI KULIK"
+
+
+def test_the_findings_listing_lands_beside_the_overlays():
+    spec = DebugSpec(layers=("layer-0",), path="statement.clean.debug.pdf")
+    assert spec.findings_path() == "statement.clean.debug.findings.json"

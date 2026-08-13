@@ -250,12 +250,17 @@ def _debug_note(spec) -> None:
     breach, not an inconvenience."""
     paths = spec.paths()
     print(
-        f"wrote {len(paths)} debug overlay(s) — NOT redacted, they show the "
-        f"original page; keep them local, like the map file:",
+        f"wrote {len(paths)} debug overlay(s) + 1 findings listing — NOT "
+        f"redacted, they show the original page; keep them local, like the "
+        f"map file:",
         file=sys.stderr,
     )
     for layer, path in paths:
         print(f"  {layer:<8} -> {path}", file=sys.stderr)
+    # Named apart from the layers because it is not one: it carries every
+    # layer-0 finding, including the ones with no box, which no overlay can
+    # draw. See pii.core.debug_overlay.findings_record.
+    print(f"  {'findings':<8} -> {spec.findings_path()}", file=sys.stderr)
 
 
 def _strip_media(args, pipeline, detector):
@@ -280,13 +285,16 @@ def _strip_media(args, pipeline, detector):
             from pii.core.debug_overlay import (
                 DebugSpec,
                 draw_layers,
+                findings_record,
                 page_debug,
+                write_findings,
             )
 
             spec = DebugSpec(layers=args.debug, path=args.debug_out)
             record = page_debug(result)
             for layer, path in spec.paths():
                 draw_layers(image, record, [layer]).save(path)
+            write_findings(spec.findings_path(), [findings_record(record)])
             _debug_note(spec)
         if args.report:
             if result.ocr is not None:

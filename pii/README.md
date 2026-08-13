@@ -234,6 +234,32 @@ Files are named from the clean output with `.debug` and the layer inserted befor
 `--debug-out` overrides the base. Each PDF is a fresh image-only document with every page
 annotated, the same reassembly as `--pdf` strip.
 
+### The findings listing
+
+`--debug` also writes `statement.clean.debug.findings.json`, and it is not a fifth layer — it is
+what the layers structurally cannot show. Every overlay is geometry, so a value the model named
+but returned **no box** for appears on none of them, while still reaching the plan and, through
+document-wide grouping, every other page. The listing carries every layer-0 finding for every
+page — class, text, `box` (model space, `null` when the model gave none), the tier that placed
+it, and the spans it landed on — plus the page's `borrowed` spans, which have no geometry to
+draw here by construction because the value was named on another page:
+
+```json
+{"summary": {"pages": 6, "findings": 44, "without_box": 2, "unplaced": 0},
+ "pages": [{"page": 2,
+            "findings": [{"type": "ADDRESS", "text": "24 Stacey Dr Carrickalinga SA 5204",
+                          "box": [747, 247, 888, 274], "placed": "squash",
+                          "spans": [{"start": 459, "end": 471, "text": "24 Stacey Dr"},
+                                    {"start": 511, "end": 532, "text": "Carrickalinga SA 5204"}]},
+                         {"type": "PERSON", "text": "-", "box": null, "placed": "exact",
+                          "spans": [{"start": 246, "end": 247, "text": "-"}]}],
+            "borrowed": [{"type": "ADDRESS", "start": 1034, "end": 1046, "text": "24 Stacey Dr",
+                          "value": "24 Stacey Dr Carrickalinga SA 5204"}]}]}
+```
+
+`summary.without_box` and `summary.unplaced` are the two counts worth scanning first: the former
+is what no overlay will show you, the latter is what was detected and **not redacted**.
+
 **The overlay is not redacted.** It is drawn on the original page — that is the point, you are
 reading the text under the boxes — so it is near-PII: keep it local, like the map file.
 

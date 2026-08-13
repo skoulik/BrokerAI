@@ -29,6 +29,15 @@ annotating the SAME pixels the run processed, and each written to ITS OWN file
   was added — the state an operator is looking at when a value they expected
   redacted is still readable.
 
+Alongside the four overlays, a run also writes a **findings listing**
+(`write_findings`, `<base>.findings.json`). It is not a fifth layer — it is
+what the layers structurally cannot show. Every artifact above is geometry, so
+a finding the model returned with no `bbox_2d` appears on none of them, while
+still reaching the plan and, through `grouping`, every other page. Deliberate:
+the layer-0 overlay draws the model's box and nothing else (Sergei,
+2026-08-13), which keeps the layer honest and leaves the boxless findings to be
+read here.
+
 The layer-0 / locate split is load-bearing rather than tidiness (Sergei,
 2026-08-11): layer 0 is the VLM alone with its rough boxes, and which tier
 placed a value is a decision made AFTER it, from the OCR text with that box as
@@ -53,6 +62,7 @@ paint toolkit, nothing that loads a model, so a GUI can render a page without
 the strip stack.
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -117,6 +127,10 @@ class DebugSpec:
             (layer, str(base.with_suffix(f".{layer}{base.suffix}")))
             for layer in self.layers
         ]
+
+    def findings_path(self) -> str:
+        """Where `write_findings` puts the run's layer-0 listing."""
+        return str(Path(self.path).with_suffix(".findings.json"))
 
 
 @dataclass(frozen=True)
@@ -210,6 +224,77 @@ def draw_layers(
             color=_LAYER1_COLOR, width=3,
         )
     return out
+
+
+def findings_record(debug: PageDebug, page: int = 1) -> dict:
+    """One page's layer-0 output as data — including what no layer can draw.
+
+    The overlays are geometry, so a finding the model gave no `bbox_2d` for
+    appears on NONE of them: layer-0 draws the model's own box and there is
+    none, and its located span belongs to the locator's layer. Such a finding
+    is nonetheless real, reaches the plan, and — through
+    `grouping` — becomes a needle applied to every page. One was painted over
+    a heading's hyphen and given a placeholder of its own before anybody could
+    see where it came from (2026-08-13). This listing is where it is visible.
+
+    `box` stays in MODEL space (0-1000), the coordinates the model actually
+    answered in, so a `null` here means "the model returned no box" and never
+    "the renderer had nothing to draw".
+    """
+    text = debug.ocr.text if debug.ocr is not None else ""
+    return {
+        "page": page,
+        "findings": [
+            {
+                "type": p.finding.entity_type,
+                "text": p.finding.text,
+                "box": list(p.finding.box) if p.finding.box is not None else None,
+                "placed": p.kind,
+                "spans": [
+                    {"start": start, "end": end, "text": text[start:end]}
+                    for start, end in p.spans
+                ],
+            }
+            for p in debug.placements
+        ],
+        # The other half of the locator, and the half with nothing to draw on
+        # this page: these spans exist because some OTHER page's finding named
+        # the value. `value` is set only where the pieces of one wrapped value
+        # must collect one placeholder.
+        "borrowed": [
+            {
+                "type": d.entity_type,
+                "start": d.start,
+                "end": d.end,
+                "text": text[d.start : d.end],
+                "value": getattr(d, "full_value", None),
+            }
+            for d in debug.borrowed
+        ],
+    }
+
+
+def write_findings(path: str | Path, records: Sequence[dict]) -> None:
+    """Write the run's layer-0 listing, plus a count of what has no geometry.
+
+    Near-PII exactly like the overlays — it carries the values verbatim — so
+    it lands beside them and is warned about with them.
+    """
+    findings = [f for record in records for f in record["findings"]]
+    payload = {
+        "summary": {
+            "pages": len(records),
+            "findings": len(findings),
+            # The two an operator is looking for: named but never boxed, and
+            # named but placed nowhere at all (which is unredacted).
+            "without_box": sum(1 for f in findings if f["box"] is None),
+            "unplaced": sum(1 for f in findings if f["placed"] is None),
+        },
+        "pages": list(records),
+    }
+    Path(path).write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def _word_segments(ocr: RecognizerInput) -> list[Segment]:
