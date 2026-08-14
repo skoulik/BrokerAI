@@ -539,7 +539,17 @@ class PhoneRule(Rule):
 
     name = "PhoneRule"
     entity = "PHONE_NUMBER"
-    context = ("phone", "number", "telephone", "cell", "cellphone", "mobile", "call")
+    # `enquir` / `inquir` are STEMS, not words — context matching is
+    # substring-based, so one entry covers enquiry/enquiries/enquire and the
+    # US spellings. "Account enquiries 13 22 66" is how a bank prints its
+    # service line, and the label is the only thing separating that number
+    # from a grouped account number: AuAccountNumberRule matches the same run
+    # and promotes it to 0.5 off the word "Account", while this rule's base
+    # score is 0.4, so without a phone label of its own the account candidate
+    # wins the merge and the service line strips as ACCOUNT_n
+    # (2026-08-14, Sergei, on AmplifyBusiness-...-24Sep2023.pdf p1).
+    context = ("phone", "number", "telephone", "cell", "cellphone", "mobile",
+               "call", "enquir", "inquir")
     SCORE = 0.4
     REGIONS = ("AU",)
     LENIENCY = 1

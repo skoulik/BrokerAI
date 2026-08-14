@@ -205,6 +205,25 @@ def test_afsl_matches_the_half_abbreviated_label_a_real_footer_prints(pipeline):
     assert "AFS Lic. No AFSL_" in out, out
 
 
+def test_a_service_line_labelled_enquiries_types_as_a_phone(pipeline):
+    """`enquir` earns its place by DECIDING a collision, not by detecting.
+
+    A bank's service number is also a grouped digit run, so
+    AuAccountNumberRule matches it and the word "Account" beside it promotes
+    that candidate to 0.5 — above PhoneRule's flat 0.4. Whichever scores
+    higher takes the span, so without a phone label of its own the service
+    line strips as an account number. Third case: with no phone label at all
+    the account candidate SHOULD win, which is what makes this a label test
+    rather than a thumb on the scale.
+    """
+    for text in ("Account enquiries 13 22 66", "Statement Enquiries 13 22 66"):
+        found = {(d.entity_type, text[d.start:d.end]) for d in pipeline.analyze(text)}
+        assert found == {("PHONE_NUMBER", "13 22 66")}, (text, found)
+    bare = "Account 13 22 66"
+    found = {(d.entity_type, bare[d.start:d.end]) for d in pipeline.analyze(bare)}
+    assert found == {("AU_BANK_ACCOUNT", "13 22 66")}, found
+
+
 def test_credit_licence_abbreviates_its_label_like_its_afsl_sibling(pipeline):
     # The siblings label the same kind of number in the same kind of footer, so
     # a spelling one accepts and the other does not is a gap waiting to be
