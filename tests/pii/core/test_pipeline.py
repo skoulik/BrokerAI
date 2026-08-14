@@ -151,20 +151,42 @@ def test_atf_tail_stripped_including_truncated_forms(pipeline):
         assert out.endswith("Statement starts 22 February"), out
 
 
-def test_corporate_licence_numbers_detected_and_kept(pipeline):
-    # Issue #8c / other-finding #1: AFSL and Australian Credit Licence
-    # numbers are public corporate identifiers — detected under their own
-    # classes for report discrimination, KEPT by default.
+def test_corporate_licence_numbers_strip_under_their_own_classes(pipeline):
+    # Issue #8c / other-finding #1: AFSL and Australian Credit Licence numbers
+    # are public corporate identifiers, KEPT until 2026-08-14 and stripped
+    # since (Sergei, "for now"). They keep their own classes either way, so a
+    # report still discriminates them from AU_DRIVERS_LICENCE and the reversal
+    # stays an operator keep-list section rather than a code change.
     text = ("ANZ ABN 11 005 357 522. Australian Credit Licence 234527. "
             "Advice under AFSL 233714.")
     detections = {
         (r.entity_type, text[r.start:r.end]) for r in pipeline.analyze(text)
     }
-    assert any(t == "AU_CREDIT_LICENCE" for t, _ in detections), detections
-    assert any(t == "AU_AFSL" for t, _ in detections), detections
+    assert ("AU_CREDIT_LICENCE", "234527") in detections, detections
+    assert ("AU_AFSL", "233714") in detections, detections
     out, _, _ = pipeline.strip(text, PseudonymMap())
-    assert "Australian Credit Licence 234527" in out, out  # kept
-    assert "AFSL 233714" in out, out                       # kept
+    assert "234527" not in out, out
+    assert "233714" not in out, out
+    # The LABEL is evidence, not part of the value: it is matched as a
+    # lookbehind, so it survives and the map keys on the bare number. A span
+    # covering "AFSL 233714" would fork one licence into AFSL_1 and AFSL_2 the
+    # moment the same number appeared unlabelled.
+    assert "Australian Credit Licence ACL_1" in out, out
+    assert "AFSL AFSL_1" in out, out
+
+
+def test_a_corporate_licence_is_reversible_by_the_keep_list(tmp_path):
+    """The stated escape hatch for "reconsidered later" — an operator section,
+    no code change. Written through the real file path, since that is what an
+    operator would actually do."""
+    from pii.core import PiiPipeline
+    from pii.core.entity_keep import load_keep
+
+    keep = tmp_path / "keeps.txt"
+    keep.write_text("[AU_AFSL]\n\\d{5,6}\n", encoding="utf-8")
+    p = PiiPipeline(entity_keep=load_keep(str(keep)))
+    text = "Advice under AFSL 233714."
+    assert p.strip(text, PseudonymMap())[0] == text
 
 
 def test_phone_au_only_regions_keep_all_real_forms(pipeline):

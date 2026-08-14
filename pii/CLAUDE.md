@@ -73,7 +73,8 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   before it, 2026-07-13); both are in git history. Layer 0 — a local LLM over HTTP — is the
   only semantic detector, in every input mode. Do not re-add an NER model to the registry:
   `tests/pii/core/test_registry_policy.py` fails if anything there claims ADDRESS or
-  DATE_OF_BIRTH, or claims PERSON without being the mechanical `JointNameRule`.
+  DATE_OF_BIRTH or PERSON at all — a joint name is derived from people already known
+  (`pii/core/derived.py`, layer 1 pass 2), not guessed from a shape.
 - **A strip entry point always takes a detector.** `strip_text` / `strip_csv` / `strip_image` /
   `strip_pdf` require one, with no default. `PiiPipeline.detect` stays public as a *layer*,
   which is what `merge_detections` consumes.

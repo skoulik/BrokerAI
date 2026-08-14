@@ -16,6 +16,7 @@ from pathlib import Path
 # Presidio entity type -> placeholder prefix
 PLACEHOLDER_PREFIXES = {
     "PERSON": "PERSON",
+    "PERSON_JOINT": "JOINT",
     "EMAIL_ADDRESS": "EMAIL",
     "PHONE_NUMBER": "PHONE",
     "AU_TFN": "TFN",
@@ -34,6 +35,10 @@ PLACEHOLDER_PREFIXES = {
     "AU_BSB": "BSB",
     "AU_BANK_ACCOUNT": "ACCOUNT",
     "AU_PAYID": "PAYID",
+    # Corporate licence numbers. Without an entry here the fallback is the raw
+    # entity type ("AU_AFSL_1"), off-style beside TFN/ABN/ACN.
+    "AU_AFSL": "AFSL",
+    "AU_CREDIT_LICENCE": "ACL",
     "CREDIT_CARD": "CARD",
     "ADDRESS": "ADDRESS",
     "DATE_OF_BIRTH": "DOB",

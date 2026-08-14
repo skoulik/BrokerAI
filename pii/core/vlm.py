@@ -631,7 +631,8 @@ class NullDetector:
     layer 1 alone, and the image path still OCRs, linearizes and paints.
 
     **This is a knowingly reduced redaction, not a free speedup.** Layer 1 owns
-    no PERSON beyond the mechanical `JointNameRule` and no ADDRESS,
+    no PERSON of its own (its joint-name rule derives from people another
+    layer detected) and no ADDRESS,
     ORGANIZATION or DATE_OF_BIRTH at all, so a run under this detector redacts
     identifiers and leaves names and addresses on the page. The front-end says
     so on every run, and the debug findings listing records the regime, because

@@ -77,7 +77,16 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
     # without this the caps form appears on page 1 only two seeds in three and
     # the caps-vs-title-case grouping probe would be luck. The continuation
     # header prints the same person in title case.
-    doc.raw("HELD BY:    ").pii(p.caps, "PERSON").nl(2)
+    doc.raw("HELD BY:    ").pii(p.caps, "PERSON").nl()
+    # Both account holders in full, which is what makes the initials form in
+    # the transaction lines DERIVABLE (pii.core.derived, 2026-08-14): the joint
+    # rule pairs people some layer already detected, so a document that never
+    # names them cannot produce 'E & J CHAVEZ'. Ground-truthed PERSON_JOINT —
+    # the value IS a joint name, and layer 0 reads it as one span.
+    holder_a, holder_b = pool.holders
+    doc.raw("JOINT ACCOUNT: ").pii(
+        f"{holder_a.full} and {holder_b.full}".upper(), "PERSON_JOINT"
+    ).nl(2)
 
     balance = round(rng.uniform(100, 90000), 2)
     for page in range(1, pages + 1):
@@ -319,16 +328,16 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     doc.raw("  Security property is in ")
     doc.pii(rng.choice(TOWNS), "LOCATION", strip_expected=False)
     doc.raw(".").nl(2)
-    # Corporate-licence keep-probes (issue #8c / other-finding #1): AFSL
-    # and Australian Credit Licence numbers are public corporate
-    # identifiers — kept classes AU_AFSL/AU_CREDIT_LICENCE — and the bare
-    # number must not strip as a driver licence (GLiNER2's footer
-    # mislabel, suppressed by its corporate-licence context guard).
-    doc.raw(f"Credit services arranged by {acct.bank} ")
-    doc.pii(f"AFSL {rng.randrange(10**5, 10**6)}", "AU_AFSL",
-            strip_expected=False)
-    doc.raw(", ")
-    doc.pii(f"Australian Credit Licence {rng.randrange(10**5, 10**6)}",
-            "AU_CREDIT_LICENCE", strip_expected=False)
+    # Corporate-licence probes (issue #8c / other-finding #1): AFSL and
+    # Australian Credit Licence numbers. Public corporate identifiers, kept
+    # until 2026-08-14 and stripped since (Sergei, "for now") — under their
+    # OWN classes either way, which is what keeps them distinguishable from a
+    # driver licence in a report. The label is matched as a lookbehind, so the
+    # probe value is the bare number: a span covering the label would key the
+    # map on a different string than an unlabelled occurrence of it.
+    doc.raw(f"Credit services arranged by {acct.bank} AFSL ")
+    doc.pii(f"{rng.randrange(10**5, 10**6)}", "AU_AFSL")
+    doc.raw(", Australian Credit Licence ")
+    doc.pii(f"{rng.randrange(10**5, 10**6)}", "AU_CREDIT_LICENCE")
     doc.raw(".").nl()
     return doc

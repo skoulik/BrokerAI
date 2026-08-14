@@ -393,19 +393,26 @@ class PayIdRule(PatternRule):
 
 
 class AuAfslRule(PatternRule):
-    """AFSL (Australian Financial Services Licence) numbers — a KEPT class:
-    public corporate identifiers from bank document footers, analytical value,
-    not personal PII (AU_AFSL is not in DEFAULT_STRIP_ENTITIES). Detected so
-    reports discriminate them from AU_DRIVERS_LICENCE. The label word is the
-    AFSL-vs-credit-licence discriminator; both are 5-6 digit numbers with no
-    public checksum."""
+    """AFSL (Australian Financial Services Licence) numbers — public corporate
+    identifiers from bank document footers, stripped since 2026-08-14 (Sergei:
+    "for now, can be reconsidered later"). Its own class rather than a generic
+    identifier so reports discriminate it from AU_DRIVERS_LICENCE, and so the
+    decision can be reversed by an operator with an `[AU_AFSL]` keep section
+    rather than by code. The label word is the AFSL-vs-credit-licence
+    discriminator; both are 5-6 digit numbers with no public checksum.
+
+    The label is a LOOKBEHIND, so the span is the digits alone — see the module
+    docstring: a span covering "AFSL 233714" would key the pseudonym map on a
+    different string than a bare occurrence of the same number and fork one
+    licence into AFSL_1 and AFSL_2."""
 
     entity = "AU_AFSL"
     patterns = (
         Pattern(
             "afsl labeled",
-            r"\b(?:afsl|(?:australian\s+)?financial\s+services\s+licen[cs]e)"
-            r"\s*(?:no\.?|number|#)?\s*:?\s*\d{5,6}\b",
+            r"(?<=\b(?:afsl|(?:australian\s+)?financial\s+services\s+"
+            r"licen[cs]e)\s{0,4}(?:no\.?|number|#)?\s{0,4}:?\s{0,4})"
+            r"\d{5,6}\b",
             0.7,
         ),
     )
@@ -413,66 +420,18 @@ class AuAfslRule(PatternRule):
 
 class AuCreditLicenceRule(PatternRule):
     """Australian Credit Licence numbers — the sibling of AuAfslRule (same
-    rationale, same footer habitat, discriminated by label word). KEPT class."""
+    rationale, same footer habitat, same label-as-lookbehind rule,
+    discriminated by label word)."""
 
     entity = "AU_CREDIT_LICENCE"
     patterns = (
         Pattern(
             "credit licence labeled",
-            r"\b(?:(?:australian\s+)?credit\s+licen[cs]e|acl)"
-            r"\s*(?:no\.?|number|#)?\s*:?\s*\d{5,6}\b",
+            r"(?<=\b(?:(?:australian\s+)?credit\s+licen[cs]e|acl)"
+            r"\s{0,4}(?:no\.?|number|#)?\s{0,4}:?\s{0,4})\d{5,6}\b",
             0.7,
         ),
     )
-
-
-class JointNameRule(PatternRule):
-    """Joint-account INITIALS form as a layer-1 pattern: 'E & J Moore' /
-    'J & E LAWRENCE'.
-
-    Single letters carry no name signal for a model to latch onto, so the
-    mechanical initials form is owned here — a deterministic floor under a
-    stochastic detector. The shared-surname FULL-name form ('Julie and Brian
-    Summers') is deliberately NOT a pattern (2026-07-21, issue #4): matching
-    three words joined by 'and' is indistinguishable from prose by any lexical
-    rule, so layer 0 owns it.
-
-    Only guard left: an initials pair whose surname slot is a corporate marker
-    ('E & J HOLDINGS') is an organization, not a couple — rejected in
-    `validate`, and a corporate-tail lookahead keeps 'E & J MOORE LAWYERS'-style
-    names off the pattern too. The flags drop IGNORECASE so the initials and
-    surname classes stay case-sensitive (uppercase initials are the real form;
-    this keeps lowercase noise like 'r & d team' from matching).
-    """
-
-    entity = "PERSON"
-    flags = regex.MULTILINE | regex.DOTALL
-
-    # A name word: capitalised, 2+ chars, allows O'Brien / Smith-Jones /
-    # McDonald and their ALL-CAPS forms.
-    _NAME = r"[A-Z][A-Za-z'’-]+"
-    CORPORATE_WORDS = frozenset({
-        "PTY", "LTD", "LIMITED", "CO", "GROUP", "TRUST", "HOLDINGS",
-        "SERVICES", "CONSULTING", "MANAGEMENT", "PARTNERS", "ASSOCIATES",
-        "LAWYERS", "SOLICITORS", "ACCOUNTANTS", "BROTHERS", "SONS",
-        "TRADING",
-    })
-    _NO_CORP_TAIL = rf"(?!\s+(?i:{'|'.join(sorted(CORPORATE_WORDS))})\b)"
-    patterns = (
-        Pattern(
-            "joint initials",
-            rf"\b[A-Z]\s?&\s?[A-Z]\s+{_NAME}\b{_NO_CORP_TAIL}",
-            0.5,
-        ),
-    )
-
-    def validate(self, matched: str) -> bool | None:
-        """Reject an initials pair whose surname slot is a corporate marker
-        ('E & J HOLDINGS' is an org). None (not True) on pass — True would
-        boost the score to 1.0 and erase the pattern's deliberate score."""
-        if matched.split()[-1].upper() in self.CORPORATE_WORDS:
-            return False
-        return None
 
 
 class AtfTailRule(PatternRule):
@@ -646,7 +605,6 @@ def build_rules(invalid_identifiers: str = "likely") -> list[Rule]:
         # AU_DRIVERS_LICENCE.
         AuAfslRule(),
         AuCreditLicenceRule(),
-        JointNameRule(),
         AtfTailRule(),
         EmailRule(),
         IbanRule(),

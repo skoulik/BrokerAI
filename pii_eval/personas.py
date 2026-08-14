@@ -68,6 +68,8 @@ class Pool:
     businesses: list[Business]
     accounts: list[Account]
     merchants: list[str] = field(default_factory=list)
+    # Cache for `holders` — one account-holder couple per run.
+    _holders: tuple = field(default=None, repr=False)
 
     def person(self) -> Person:
         return self.rng.choice(self.people)
@@ -78,6 +80,46 @@ class Pool:
         a, b = self.rng.sample(self.people, 2)
         b = Person(**{**b.__dict__, "last": a.last})
         return a, b
+
+    @property
+    def holders(self) -> tuple[Person, Person]:
+        """The account-holder couple, STABLE for the whole run.
+
+        Joint names are derived from people already detected (pii.core.derived,
+        2026-08-14), so a joint form is only reachable when the document names
+        its constituents somewhere. A fresh `couple()` per transaction line put
+        an initials form in the text whose full names appeared nowhere —
+        measured on seed 42: 'E & J MOORE' resolved because ERIC and JOSEPH
+        MOORE happened to be printed, 'R & E ROCHA' could not, that surname
+        appearing exactly once in the document, inside the joint form itself.
+        One couple per run, printed in the statement header, is also what a
+        real joint account looks like.
+
+        The evidence-less case is not deleted, it is MEASURED — see
+        `unknown_couple`.
+        """
+        if self._holders is None:
+            self._holders = self.couple()
+        return self._holders
+
+    def unknown_couple(self) -> tuple[Person, Person]:
+        """A couple whose surname appears NOWHERE else in the pool.
+
+        The deliberately unsupported case: a joint name with no constituents to
+        derive it from, which the current design cannot detect. Drawn from a
+        reserved surname list rather than at random so the probe means the same
+        thing on every seed — a random draw would sometimes collide with a real
+        person and quietly become detectable.
+        """
+        known = {p.last.casefold() for p in self.people}
+        surname = next(
+            s for s in UNRELATED_SURNAMES if s.casefold() not in known
+        )
+        a, b = self.rng.sample(self.people, 2)
+        return (
+            Person(**{**a.__dict__, "last": surname}),
+            Person(**{**b.__dict__, "last": surname}),
+        )
 
     def business(self) -> Business:
         return self.rng.choice(self.businesses)
@@ -108,6 +150,15 @@ TOWNS = [
 ]
 
 _TRUST_KIND = ["FAMILY", "BUSINESS", "PROPERTY", "INVESTMENT"]
+
+# Surnames reserved for `Pool.unknown_couple` — they must not belong to any
+# person in the pool, so the evidence-less joint-name probe means the same
+# thing on every seed. Faker's en_AU last_name() can in principle produce
+# any of them, which is why the draw checks rather than assumes.
+UNRELATED_SURNAMES = [
+    "Kowalczyk", "Vasquez-Ortiz", "Nakagawa", "Oyelaran", "Bergqvist",
+    "Papadopoulos", "Hutchinson-Reid", "Karimzadeh",
+]
 
 
 def make_pool(seed: int, n_people: int = 8, n_businesses: int = 3) -> Pool:

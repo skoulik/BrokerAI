@@ -81,7 +81,17 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
               "PERSON_JOINT", "PERSON_REVERSED", "CONTEXTUAL_ID",
               "PERSON_COMMA", "PERSON_PARTICLE", "PERSON_MULTIWORD",
               "ORGANIZATION_PRIVATE", "PERSON_COLLIDING",
-              "ORGANIZATION_ATF"):
+              "ORGANIZATION_ATF",
+              # Corporate licences moved keep -> strip 2026-08-14 (Sergei,
+              # "for now"). Not gated: the decision is provisional, so it
+              # must not become a release blocker.
+              "AU_AFSL", "AU_CREDIT_LICENCE",
+              # The joint name with no constituents anywhere in the document
+              # (2026-08-14). SHOULD strip and cannot: joint names are derived
+              # from people already detected, and nothing names these two. It
+              # stays in the corpus, strip-expected and non-gated, so the loss
+              # is scored on every run instead of being deleted from it.
+              "PERSON_JOINT_NO_EVIDENCE"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(e["strip_expected"] for e in by_type[t]), t
         gated = t in ("PERSON_JOINT", "PERSON_REVERSED")
@@ -100,8 +110,7 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     # post-validation unstripped.
     for t in ("LOCATION", "ORGANIZATION_AND", "ORGANIZATION_AND_BARE",
               "PROSE_AND", "AMOUNT_COLUMN", "REFERENCE_NUMBER",
-              "DIGITS_OVERLONG", "CARD_LAST4", "TRAILING_AMOUNT", "AU_AFSL",
-              "AU_CREDIT_LICENCE"):
+              "DIGITS_OVERLONG", "CARD_LAST4", "TRAILING_AMOUNT"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(not e["strip_expected"] and not e["critical"]
                    for e in by_type[t]), t

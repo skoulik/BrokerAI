@@ -380,8 +380,9 @@ Three guardrails, built with it rather than after it:
   is naming the modality (`vision` / `text`) once both can run.
 
 What it costs is specific, and pinned by a test rather than left to prose: layer 1 owns no
-PERSON beyond the mechanical `JointNameRule` and no ADDRESS, ORGANIZATION or DATE_OF_BIRTH at
-all, so identifiers are redacted and names and addresses stay on the page.
+PERSON of its own — its pass-2 joint-name rule derives from people another layer detected —
+and no ADDRESS, ORGANIZATION or DATE_OF_BIRTH at all, so identifiers are redacted and names
+and addresses stay on the page.
 
 One layer-1 rule outlived the retirement and should not be mistaken for NER leftovers:
 `AuAccountNumberRule`'s >=5-digit floor (`validate`). It was introduced alongside
@@ -407,41 +408,75 @@ PERSON spans across line breaks on OCR text, date-as-PERSON false positives), an
 itself went with the chassis on 2026-08-09 — decision above.
 
 Layer-1 composition is regression-tested in `tests/pii/core/test_registry_policy.py`: no rule
-claims ADDRESS or DATE_OF_BIRTH, PERSON is claimed only by the mechanical `JointNameRule`, the
+claims ADDRESS, DATE_OF_BIRTH or PERSON, the
 retired detectors stay absent by name, and a **subprocess** probe asserts that building a
 pipeline — front-ends included — imports neither presidio, spaCy, thinc nor torch.
 
-### Mechanical joint-name forms are layer-1 patterns, not an NER problem (2026-07-15)
+### Joint names are DERIVED from known people, not matched by shape (2026-08-14)
 
-`JointNameRule` (pii/core/recognizers.py, emits PERSON) owns the joint-account name
-shapes: initials-pair 'E & J Moore' (@0.5) and shared-surname 'Julie and Brian Summers' /
-'JULIE AND BRIAN SUMMERS' (@0.45). Rationale from the raw-emission diagnostic (DONE.md):
-the NER model of the day labelled these forms confidently (0.93+) in clean context but lost
-*span segmentation* when adjacent ref-codes/keywords crowded them in transaction lines — glue
-spans, dropped initials, split pairs. The very regularity that broke the model makes the forms
-pattern-matchable, so the rule belongs in layer 1. It outlived the layer-2 retirement as a
-deterministic floor under a stochastic detector, which is layer 1's standing job.
+A joint-account name (`E & J Moore`) is detected by `pii/core/derived.py` — **layer 1, pass 2**
+— from people some other layer already found. It replaced `JointNameRule`, a standalone pattern
+that ran from 2026-07-15 and is deleted.
 
-Two design points:
+**Why the pattern could not work.** Sergei's ruling: *"it is impossible to implement with
+regexps only without an external knowledge."* Measured on the shipped rule — it fired on every
+two-initial token followed by a capitalised word, so `P&O Cruises`, `H&M Stores`, `R&D Team`,
+`Q&A Session` and `M & S Food` all stripped as PERSON, and `Paid H&M Stores 42.00` became
+`Paid PERSON_1 42.00`. Its four guards (single-letter sides, dropped IGNORECASE, a
+corporate-word list, a corporate-tail lookahead) were each an attempt to buy back precision the
+approach never had, and none of them could reach a brand whose second word is an ordinary noun.
+The shipped keep list could not recover it either: its sections are ORGANIZATION, PHONE_NUMBER
+and ADDRESS, while these surfaced as PERSON.
 
-- **Confident scores, no context gating.** The context boost only looks *backward*, over a
-  short window (60 characters now; 5 tokens under the Presidio enhancer this was tuned
-  against), and on statement lines the joint name routinely trails a payee/ref tail longer
-  than that. A context-promoted sub-threshold pattern — the account-number idiom — would
-  systematically miss exactly the lines this rule exists for.
-- **Precision guard is a positional stop-vocabulary, not a floor.** 'X AND Y Z' caps
-  triples collide with statement phrases ('PRINCIPAL AND INTEREST PAYMENT') and org names
-  ('TAYLOR AND SCOTT LAWYERS PTY LTD'). `validate` checks by slot (reworked in the
-  2026-07-15 review round — the first any-position version sacrificed real surnames like
-  Fee/Card): given-name slots reject statement vocabulary (phrases carry their giveaway
-  word there), the surname slot rejects only corporate markers, and a corporate-tail
-  lookahead on the patterns keeps '... LAWYERS PTY LTD' orgs intact. Remaining accepted
-  trade-offs, recall-first, each pinned by a pytest test AND measured by a dedicated eval
-  keep-probe: orgs in the joint-name shape with no corporate marker anywhere ('P & O
-  CRUISES') strip — `ORGANIZATION_AND_BARE`, expected over-strips; guarded org forms must
-  stay kept — `ORGANIZATION_AND` (7/7 kept on both seeds at ship time); colliding-surname
-  couples ('Julie and Brian Fee') are drawn as ordinary critical PERSON, so a guard
-  regression trips the gate.
+**The rule now.** For every ORDERED pair of known people (A, B), A ≠ B:
+the surname is their longest common TRAILING word sequence (multi-word surnames — `van der
+Berg` — fall out for free, and it avoids the degenerate reading where `John Smith` + `John
+Brown` share `John` and send us hunting for `S & B John`); the first initial must begin some
+non-surname word of A, the second some non-surname word of B; the text is then searched for
+that initials form. Ordered, because `E & J Moore` and `J & E Moore` name the same couple in
+different positions.
+
+Evidence replaces every guard. `P&O Cruises` is unreachable unless a detected person is surnamed
+Cruises; `E & J HOLDINGS` needs two people surnamed Holdings. No word list, no case trickery.
+
+**It consumes DETECTIONS, never "layer 0's output"** (Sergei's correction, and the reason pass 2
+exists as a concept rather than as a merge-time fixup). Layer 1 may grow a PERSON source of its
+own later — an NER recognizer, an allow/deny list — and it must feed this rule with no rewiring.
+`merge_detections` is the only place every layer's spans exist together, so it is the only
+production caller; `PiiPipeline.detect` and `strip` stay pass 1.
+
+**Three steps, each feeding the next.** CLASSIFY: a person whose *value* is itself a joint form
+is re-typed to `PERSON_JOINT`. DECOMPOSE: its constituents join the pool — `Emily and John
+Moore` yields two people; an initials form yields none, because `E Moore` names nobody and
+pairing two such back would only re-derive the form we started from. DERIVE: the pairing search
+above. Parsing a value is safe where *detecting* one was not — a detector already drew the span
+and called it a person (the retired issue-#4 problem was finding `Julie and Brian Summers` in
+raw prose, which no lexical rule can do), so a mistake here costs a placeholder label, not a
+leak.
+
+**Every joint form also contributes its surname as a PERSON** (Sergei, 2026-08-14), so a bare
+`MOORE` in a transaction line strips — nothing else in the stack catches that. Keyed to the
+form, `E & J MOORE` would have given better bare-surname recall than `Emily and John Moore`,
+which tells us strictly more; so both contribute. Accepted cost, explicitly: a surname that is
+also document vocabulary (`Fee`, `Card` — the corpus's `PERSON_COLLIDING` probe) strips every
+occurrence of the word. Over-strip, not a leak, and the eval's over-strip axis is where it shows.
+
+**`PERSON_JOINT` is its own class** (`JOINT_n`) rather than a third PERSON: the span names two
+people at once, and emitting PERSON would put a third identity in the map for two humans with
+nothing marking it as the compound of the other two. It also keeps the reversal cheap — an
+operator keep section disables it without code — and lets a report show what the derived pass
+contributed. Each surface form still takes its own placeholder (`Emily Moore and John Moore` →
+`JOINT_1`, `E & J MOORE` → `JOINT_2`), consistent with how every other class keys the map on the
+value; giving one couple one placeholder would mean rehydration restoring a different surface
+form than the document had.
+
+Consequence, accepted: **layer 1 pass 1 has no PERSON source at all**, so under `--layer0 off`
+no joint name is detected. `test_registry_policy` enforces the stronger invariant this creates —
+no registry rule may claim ADDRESS, DATE_OF_BIRTH *or* PERSON.
+
+History — the 2026-07-15 rationale for the pattern (NER of the day lost span segmentation on
+transaction lines; the slot-based stop-vocabulary guard; the `ORGANIZATION_AND` /
+`ORGANIZATION_AND_BARE` keep-probes it needed) is in [DONE.md](DONE.md).
 
 **Accepted as a standing loss (2026-08-09, Sergei).** When the shared surname is *also* a
 banking word the given names strip and the surname survives — `LOAN REPAYMENT PERSON_5 FEE` —
@@ -451,7 +486,6 @@ like Fee in bank-statement context is not worth further precision engineering, s
 failure is a known trade-off, not an open regression. Record:
 [reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md).
 
-With this, `PERSON_JOINT` moved into the eval's CRITICAL gate (100% on seeds 42/123).
 `PERSON_REVERSED` ('MOORE OLGA') stays a per-form probe — two bare caps words admit no
 pattern, so it never had a layer-1 owner and never will — but the residual that kept it out of
 the gate **closed with the layer-2 retirement**: layer 0 scores 100% on seeds 42/123/7 where
@@ -495,6 +529,25 @@ two lists.
 
 One special case died with it: ORGANIZATION is now an ordinary member of `DEFAULT_STRIP_ENTITIES`
 and `_in_strip_plan` has one rule for every class — on the strip list, and not exempted by value.
+
+**Corporate licence numbers strip too, provisionally (2026-08-14).** `AU_AFSL` and
+`AU_CREDIT_LICENCE` (AFSL / Australian Credit Licence, 5-6 digits, no public checksum, habitat
+the document footer) were a kept class from 2026-07-22: public corporate identifiers with
+analytical value rather than personal PII. Sergei moved them onto the strip list — *"for now,
+can be reconsidered later"* — so they pseudonymize as `AFSL_n` / `ACL_n`.
+
+Two properties make that reversible without touching code, which is what a provisional decision
+needs. They keep their **own classes** rather than folding into a generic identifier, so a
+report still discriminates them from `AU_DRIVERS_LICENCE` (that discrimination is why the rules
+were written). And because the keep list is sectioned by class, re-keeping them is an
+`[AU_AFSL]` section in an operator's `--entity-keep` file — regression-tested, not merely
+asserted.
+
+**Enabling them forced the label out of the span.** Both patterns matched their own label
+(`AFSL 233714`), harmless while nothing was replaced and a bug the moment it strips: the map
+would key on the labelled string, so an unlabelled occurrence of the same number forks into
+`AFSL_1` and `AFSL_2`, and the output loses the word that says what the number is. Rewritten as
+a lookbehind like every other labelled rule — a label is evidence, not part of the value.
 
 ### Checksum-invalid identifiers are surfaced, not silently dropped (2026-07-14; one-rule ownership 2026-08-09)
 
@@ -916,8 +969,9 @@ layer-1 spans**. That is not a detail: the prompt deliberately carries no instit
 carve-outs, so the model reports merchant and bank names by design, and this filter is where they
 are kept. Where the two layers disagree on a specific class the higher score wins,
 which is layer 0 (it detects at 1.0) — deliberate, it is the better semantic detector, and the
-failure that guards against (layer 1 typing the AFSL number `237502` as a phone) costs an
-over-strip, not a leak.
+failure that guards against (layer 1 typing the AFSL number `237502` as a phone) costs a
+mislabelled placeholder, not a leak — and since AFSL numbers strip in their own right
+(2026-08-14, decision below) not even an over-strip.
 
 **The prompt carries no institutional exclusions.** Over-strip is recoverable by the operator
 keep-list; under-strip is a breach. A prompt is the wrong home for a keep decision: a model

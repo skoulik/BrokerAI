@@ -112,7 +112,13 @@ def description(pool: Pool) -> list:
     """One random transaction description as Doc parts."""
     rng = pool.rng
     p = pool.person()
-    couple_a, couple_b = pool.couple()
+    # The account holders, STABLE for the run and printed in full in the
+    # statement header — a joint name is now DERIVED from people already
+    # detected, so an initials form whose constituents appear nowhere is
+    # unreachable by construction. That case is probed deliberately below
+    # rather than left to chance (personas.Pool.holders / unknown_couple).
+    couple_a, couple_b = pool.holders
+    unknown_a, unknown_b = pool.unknown_couple()
     acct = pool.account()
     biz = pool.business()
     joint, joint_type = rng.choice(
@@ -130,6 +136,12 @@ def description(pool: Pool) -> list:
             (f"{couple_a.first} and {couple_b.first} "
              f"{rng.choice(COLLIDING_SURNAMES)}",
              "PERSON_COLLIDING"),
+            # The evidence-less joint name: a surname belonging to nobody in
+            # the pool, so nothing can derive it. Expected to strip and
+            # expected to FAIL — non-gated, and the point is that the loss is
+            # scored rather than deleted from the corpus (2026-08-14).
+            (f"{unknown_a.first[0]} & {unknown_b.first[0]} {unknown_a.last}",
+             "PERSON_JOINT_NO_EVIDENCE"),
         ]
     )
     patterns = [

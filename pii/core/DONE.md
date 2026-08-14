@@ -2541,3 +2541,149 @@ the move; new completed tasks append to the matching section with their records.
       findings.json, and the note printed. Fast suite **573 passed** (+8: 4 CLI unit tests over
       `_debug_spec`/`_debug_note`, 4 in `test_debug_overlay.py`; the summary test written earlier
       that day was reframed from the "off" case onto modality naming).
+
+- [x] **Corporate licence numbers moved from kept to stripped** (Sergei, 2026-08-14, "for now,
+      can be reconsidered later"). `AU_AFSL` and `AU_CREDIT_LICENCE` are now in
+      `DEFAULT_STRIP_ENTITIES` and pseudonymize as `AFSL_n` / `ACL_n`. Design in
+      [ARCHITECTURE.md](ARCHITECTURE.md) under the keep-list decision.
+
+      **The change was blocked on something that had been invisible while the class was kept:
+      both patterns matched their own LABEL.** The span for `AFSL 233714` covered the word
+      `AFSL`. Harmless while nothing was replaced; a bug the instant it strips, and exactly the
+      one the standing invariant records — the pseudonym map would key on `"AFSL 233714"`, so an
+      unlabelled occurrence of the same number forks into `AFSL_1` and `AFSL_2`, and the output
+      loses the word that says what the number is (`Advice under AFSL_1`). Rewritten as a
+      lookbehind, matching the idiom every other labelled rule already used (TFN, Medicare, ABN,
+      ACN, card). Verified across all five label spellings — `AFSL n`, `AFSL number n`,
+      `ACL no. n`, `Australian Credit Licence n`, `Financial Services Licence n` — each yielding
+      a digits-only span with the label left standing.
+
+      **Kept reversible by construction**, because the decision is explicitly provisional. They
+      retain their own entity classes rather than folding into a generic identifier, so a report
+      still discriminates them from `AU_DRIVERS_LICENCE` — the reason the rules exist at all —
+      and re-keeping them is an `[AU_AFSL]` section in an operator's `--entity-keep` file.
+      Pinned by `test_a_corporate_licence_is_reversible_by_the_keep_list`, which writes the
+      section through the real file loader rather than constructing an `EntityKeep` by hand.
+
+      Placeholder prefixes `AFSL` / `ACL` (Sergei's pick; `acl` is already an accepted label
+      alias in the pattern). Without entries in `PLACEHOLDER_PREFIXES` the fallback is the raw
+      entity type — `AU_AFSL_1`, off-style beside `TFN` / `ABN` / `ACN`.
+
+      Dual coverage per the standing rule: `test_corporate_licence_numbers_detected_and_kept`
+      was inverted and renamed (it now asserts the digits go and the labels stay), and the
+      pii_eval probes in `templates_text.py` moved to `strip_expected=True` with the probe value
+      narrowed to the bare number to match the new span. In `tests/pii_eval/test_generate.py`
+      both types moved from the keep-probe loop to the strip loop, deliberately NOT gated: a
+      provisional decision must not become a release blocker. Fast suite 574 passed.
+
+      Noted while measuring this, NOT acted on (Sergei: "we'll come back to it later"):
+      `JointNameRule` fires on two-initial brands followed by a capitalised word — `P&O Cruises`,
+      `H&M Stores`, `R&D Team`, `Q&A Session`, `M & S Food` all detected as PERSON, and
+      `Paid H&M Stores 42.00` strips to `Paid PERSON_1 42.00`. The rule's guards (single-letter
+      sides, case sensitivity, corporate-word rejection, corporate-tail lookahead) hold against
+      `Smith & Jones`, `Marks & Spencer`, `Johnson & Johnson` and `AT&T Wireless`. Over-strip,
+      not a leak, and the shipped keep list cannot reach it — its sections are ORGANIZATION,
+      PHONE_NUMBER and ADDRESS, while these surface as PERSON. A `[PERSON]` keep section does
+      fix it (verified). Also stale and left alone: ARCHITECTURE.md's joint-name section still
+      describes a shared-surname pattern @0.45 that was removed 2026-07-21 (issue #4) and given
+      to layer 0 — the rule has one pattern today.
+
+- [x] **`JointNameRule` deleted; joint names are DERIVED from known people** (Sergei,
+      2026-08-14, *"it is impossible to implement with regexps only without an external
+      knowledge... start from scratch"*). New module `pii/core/derived.py` — layer 1, pass 2.
+      Current design in [ARCHITECTURE.md](ARCHITECTURE.md); this is how it was arrived at.
+
+      **What the old rule actually did, measured before deleting it.** It fired on every
+      two-initial token followed by a capitalised word: `P&O Cruises`, `H&M Stores`, `R&D Team`,
+      `Q&A Session`, `M & S Food` all detected as PERSON, and `Paid H&M Stores 42.00` stripping
+      to `Paid PERSON_1 42.00`. Its guards held only against the cases they were written for
+      (`Smith & Jones`, `Marks & Spencer`, `Johnson & Johnson`, `AT&T Wireless` — all correctly
+      untouched). The shipped keep list could not recover any of it: its sections are
+      ORGANIZATION, PHONE_NUMBER and ADDRESS, while these surfaced as PERSON — a `[PERSON]`
+      section does fix it (verified), which is what made the class of failure obvious.
+
+      **Three corrections from Sergei during design, each of which changed the code:**
+
+      1. *"this should be done as a second pass of level 1"* — my first proposal put the pass
+         inside `merge_detections` as a consumer of layer-0 output. Wrong framing: layer 1 may
+         grow a PERSON source of its own (an NER recognizer, an allow/deny list), and a rule
+         reaching for the VLM's findings specifically would need rewriting that day. Pass 2
+         consumes DETECTIONS, blind to which layer produced them. `merge_detections` remains the
+         only production caller because it is the only place both span sets exist.
+      2. *"surname is usable and can be converted to PERSON"* — I had written that an initials
+         form decomposes to nothing usable (`E Moore` names nobody). True of the constituents,
+         false of the surname: `E & J MOORE` proves MOORE is a person's surname, so a bare
+         `MOORE` in a transaction line strips, which nothing else in the stack catches. Widened
+         while implementing: EVERY joint form contributes its surname, not just the initials one
+         — keying it to the form gave `E & J MOORE` better bare-surname recall than
+         `Emily and John Moore`, which tells us strictly more. Backwards, so both contribute.
+      3. *"surnames can be multiple consecutive words"* — already satisfied by using the longest
+         common TRAILING word sequence rather than the last word, which was chosen for a
+         different reason (the literal reading "any word in both" breaks on `John Smith` +
+         `John Brown`, sharing `John` and hunting for `S & B John`). Verified on
+         `Emily and John van der Berg` → surname `van der Berg`, and the initials form
+         `J & E VAN DER BERG` found from it.
+
+      **A contract point a test flushed out.** `parse_joint("R&D Team")` returns a parse rather
+      than None, and that is correct: the function answers "what joint form is this value",
+      never "is this a person" — a detector already decided that. Deciding personhood at that
+      level is precisely what the deleted rule attempted and could not do. The protection lives
+      one level up, where nothing calls it on a value no layer detected.
+
+      **Placeholders.** `PERSON_JOINT` → `JOINT_n`, its own class because the span names two
+      people at once and PERSON would assert a third identity for two humans. Each surface form
+      still takes its own placeholder (`JOINT_1` for the header form, `JOINT_2` for the initials
+      form) — consistent with how every other class keys the map on the value, and the
+      alternative would have rehydration restore a different surface form than the document had.
+      Noted as a deliberate choice, not an oversight.
+
+      Verified end-to-end through `strip_text` with layer 0 naming only the header couple and
+      the two merchants:
+
+          STATEMENT - account holders JOINT_1
+          14 Jul  OSKO P12345678 JOINT_2 RENT
+          15 Jul  Loan Repayment JOINT_3
+          16 Jul  Direct debit PERSON_1
+          17 Jul  Paid ORG_1
+          18 Jul  Transfer to ORG_2
+
+      `test_registry_policy` tightened from "PERSON only via JointNameRule" to "no registry rule
+      claims ADDRESS, DATE_OF_BIRTH or PERSON". `test_joint_names.py` rewritten around
+      `merge_detections` (the production path; `pipeline.strip` is pass 1 and shows no joint
+      names). Fast suite **592 passed**.
+
+      **Left open — the corpus and the critical gate.** `personas.couple()` synthesizes the
+      second partner by overwriting their surname, so the two full names do not reliably appear
+      in the document: sampled seed 42, `E & J MOORE` has `ERIC MOORE` / `JOSEPH MOORE` present
+      and resolves, `R & E ROCHA` has the surname appearing exactly once — inside the joint form
+      itself — and cannot. `PERSON_JOINT` is one of two gated probes, so this is a gate decision
+      and it is Sergei's: (a) make the couple's full names appear in the document (a real
+      statement header names both holders) and keep the probe gated, adding a NON-gated probe for
+      the evidence-less form so the loss is measured; or (b) leave the corpus and drop
+      `PERSON_JOINT` off the gate. No `pii_eval` change made pending that call.
+
+      **Corpus and gate, settled (Sergei chose (a), 2026-08-14).** `Pool.holders` is now a
+      STABLE account-holder couple for the whole run, printed in full in the statement header
+      (`JOINT ACCOUNT: ERIC SMITH AND CASSANDRA SMITH`, ground-truthed PERSON_JOINT because the
+      value IS one and layer 0 reads it as a single span), and `txbank.description` draws its
+      joint forms from that couple instead of a fresh `pool.couple()` per transaction line. So
+      the initials form in the transactions is derivable by construction rather than by luck,
+      and `PERSON_JOINT` stays in the critical gate. It is also what a real joint account looks
+      like — the previous corpus put an initials form in the text whose constituents appeared
+      nowhere, which no reader would call realistic.
+
+      **The evidence-less case is measured, not deleted.** New non-gated probe
+      `PERSON_JOINT_NO_EVIDENCE`, built from `Pool.unknown_couple()` — a surname drawn from a
+      reserved list (`UNRELATED_SURNAMES`) and checked against every person in the pool, so the
+      probe means the same thing on every seed instead of sometimes colliding with a real person
+      and quietly becoming detectable. `strip_expected=True` and expected to FAIL: it is a leak,
+      just an accepted one, and marking it kept would hide it from the scorer entirely.
+
+      Verified on a regenerated seed-42 corpus, stripped with layer 0 naming only the header
+      joint form:
+
+          JOINT ACCOUNT: JOINT_1
+          20NOV22 OSKO PKTUPXPS87 JOINT_2 RENT              <- E & C SMITH, DERIVED
+          04JUL22 ONLINE ... J & D KOWALCZYK                <- no evidence, survives
+
+      Fast suite 592 passed.

@@ -4,7 +4,7 @@
 pii.core.recognizers, run by pii.core.engine. AU_TFN / AU_MEDICARE /
 AU_ABN / AU_ACN and payment cards each come from ONE rule that emits the
 valid class or its `*_INVALID` shadow from a single checksum call; plus
-BSB, account numbers, PayID, joint-account initials, ATF trustee clauses,
+BSB, account numbers, PayID, corporate licences, ATF trustee clauses,
 email, IBAN and AU-region phones. URL/IP detection is deliberately absent
 (not relevant to financial documents), as is anything US-specific.
 
@@ -37,6 +37,7 @@ treat any log of them as a local-only artifact, like the pseudonym map.
 
 from dataclasses import dataclass
 
+from pii.core.derived import apply as derive
 from pii.core.detection import Detection
 from pii.core.engine import Analyzer
 from pii.core.mapping import PseudonymMap
@@ -56,6 +57,9 @@ from pii.core.recognizers import (
 # DATE_OF_BIRTH is stripped separately) is kept by not being listed at all.
 DEFAULT_STRIP_ENTITIES = {
     "PERSON",
+    # A span naming two people at once (pii.core.derived) — not a third
+    # person, which is what emitting PERSON would assert.
+    "PERSON_JOINT",
     "ORGANIZATION",
     "EMAIL_ADDRESS",
     "PHONE_NUMBER",
@@ -67,6 +71,13 @@ DEFAULT_STRIP_ENTITIES = {
     "AU_BANK_ACCOUNT",
     "AU_PAYID",
     "AU_DRIVERS_LICENCE",
+    # Corporate licence numbers (AFSL / Australian Credit Licence). Public
+    # identifiers rather than personal PII, kept until 2026-08-14 and stripped
+    # since (Sergei: "for now, can be reconsidered later"). They keep their own
+    # classes so a report still discriminates them from AU_DRIVERS_LICENCE, and
+    # so the reversal is an operator keep-list section rather than a code change.
+    "AU_AFSL",
+    "AU_CREDIT_LICENCE",
     "PASSPORT",
     "CREDIT_CARD",
     "ADDRESS",
@@ -177,10 +188,20 @@ class PiiPipeline:
         which is layer 0 (it detects at 1.0) — deliberate, it is the better
         semantic detector. The failure that protects against (layer 1 typing
         the AFSL number 237502 as a phone) costs an over-strip, not a leak.
+
+        LAYER 1 PASS 2 (`pii.core.derived`) runs last, and this is the only
+        place it can: it reads DETECTIONS rather than text, and this is the one
+        method where every layer's spans exist together. It is deliberately
+        blind to which layer supplied a name — layer 1 may grow a PERSON source
+        of its own later (Sergei, 2026-08-14), and such a source must feed
+        these rules without rewiring. Keep is applied to what pass 2 ADDS, and
+        only to that: everything it was handed has already been through it.
         """
         layer1, invalid = self.detect(text)
         stripped = [p for r in detected for p in self.apply_keep(r, text)[0]]
-        return _merge_overlaps(stripped + list(layer1)), invalid
+        spans, added = derive(stripped + list(layer1), text)
+        kept_added = [p for r in added for p in self.apply_keep(r, text)[0]]
+        return _merge_overlaps(spans + kept_added), invalid
 
     def strips_value(self, entity_type: str, value: str) -> bool:
         """Whether a bare (type, value) pair would be stripped AT ALL.

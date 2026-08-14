@@ -320,11 +320,12 @@ logged 44 noise findings over 11 docs.
    `pii/core/engine.py`) — `AU_TFN`, `AU_MEDICARE`, `AU_ABN`, `AU_ACN` and
    payment cards, each from ONE rule that emits the valid class or its
    `*_INVALID` shadow from a single checksum call; plus BSB (`AU_BSB`),
-   account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`), the joint-account
-   initials form ("E & J Moore" → `PERSON`), `ATF` trustee clauses, email,
-   IBAN and AU-region phones. Layer 1 is the deterministic floor under a
-   stochastic detector: it types identifiers, validates their checksums, and
-   catches what the model missed.
+   account numbers (`AU_BANK_ACCOUNT`), PayID (`AU_PAYID`), corporate licence
+   numbers (`AU_AFSL`, `AU_CREDIT_LICENCE` → `AFSL_n` / `ACL_n`), the
+   `ATF` trustee
+   clauses, email, IBAN and AU-region phones. Layer 1 is the deterministic
+   floor under a stochastic detector: it types identifiers, validates their
+   checksums, and catches what the model missed.
 2. ~~**Zero-shot NER**~~ — retired 2026-08-09; layer 0 replaced it. Bare place
    names are still not detected — a lone city/town name is acceptable verbatim
    in financial documents.
