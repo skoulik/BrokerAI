@@ -2687,3 +2687,54 @@ the move; new completed tasks append to the matching section with their records.
           04JUL22 ONLINE ... J & D KOWALCZYK                <- no evidence, survives
 
       Fast suite 592 passed.
+
+- [x] **An AFSL number labelled the way real footers label it was detected by nothing**
+      *(2026-08-14, found by Sergei on `116832820_7_Insurance_Certificate.pdf` p2)*. The page
+      footer carries two licence numbers — `AFS Licence No 285571` (the product issuer) and
+      `AFS Licence 241411` (the managing agent) — and layer 1 matched neither. `AuAfslRule`'s
+      label lookbehind accepted the acronym (`afsl`) or the full words
+      (`(australian )?financial services licen[cs]e`), but not the half-and-half spelling that
+      is arguably the most common one in print: `AFS` abbreviated, `Licence` spelled out. Fixed
+      by widening the label to `(?:financial\s+services|afs)\s+(?:licen[cs]e|lic\.?)`, the
+      second half on Sergei's call so the licence word may be abbreviated too (`AFS Lic 285571`,
+      `AFS Lic. No 285571`); the label stays a lookbehind, so the span is still the digits
+      alone. `lic` is admissible only because it is anchored to `afs` / `financial services` —
+      it cannot fire on a bare `lic` elsewhere in a footer.
+
+      **Mirrored onto `AuCreditLicenceRule`** (Sergei, same day), which now takes
+      `credit\s+(?:licen[cs]e|lic\.?)` with `lic` anchored to `credit` the same way. No
+      specimen prompted it: the two rules label the same kind of number in the same kind of
+      footer, so a spelling one accepts and the other does not is a gap waiting to be found on
+      a document rather than a distinction anyone intended — and the sibling docstring claims
+      they share a label rule, which was about to stop being true.
+
+      **The interesting part is why it survived a rule that already had dual coverage.** Both
+      the pytest case and the `pii_eval` probe were written against the same single spelling
+      (`AFSL <digits>`), so the test and the corpus agreed with each other and with the regex,
+      and no run could disagree with any of them. Structurally identical to the `_SEP` failure
+      of 2026-08-12 (`pii_eval/au.py` only ever emitted single-space groupings, so a
+      double-spaced valid TFN matched nothing) and found the same way — on a real document, not
+      by the harness. The recurring lesson is narrower than "add coverage": *a probe that
+      exercises one surface form of a labelled or separated pattern measures the regex against
+      itself.* Both new cases therefore add a spelling rather than swapping the old one.
+
+      Dual coverage: `test_afsl_matches_the_half_abbreviated_label_a_real_footer_prints` pins
+      six spellings (the two real specimens, the two abbreviated-word forms, and the two that
+      already worked — so the widening cannot cost them) and re-asserts the label survives in
+      each new form; `test_credit_licence_abbreviates_its_label_like_its_afsl_sibling` does the
+      same four ways for the sibling; `templates_text.py` gains two `AU_AFSL` probes
+      (`Product issuer AFS Licence No <n>`, `underwriter AFS Lic <n>`) and one
+      `AU_CREDIT_LICENCE` probe (`broking under Credit Lic <n>`). The plural forms
+      (`AFS Licences <n>`, `Australian Credit Licences <n>`) are deliberately still not matched
+      — they do not label a single number.
+
+      Verified end-to-end on the source PDF (`--layer0 off`, so layer 1 alone through the real
+      OCR path): `AFSL_1 = 241411`, `AFSL_2 = 285571` in the map, where before the run produced
+      no `AFSL` section at all. Under a full run the two were rescued by layer 0 as
+      `IDENTIFIER_GENERIC` (`ID_2` / `ID_3`) — stripped, but unrefined and only because the
+      model saw them. Fast suite 594 passed.
+
+      Noted on the same page, NOT acted on (Sergei: accept as is): the policy number
+      `116832820` clears the TFN mod-11 checksum, so `AuTfnRule`'s bare `\b\d{9}\b` pattern
+      types it `AU_TFN` at 1.0 — the documented ~1-in-11 rate, landing on a real value. It
+      strips either way; only the placeholder class is wrong.

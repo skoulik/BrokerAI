@@ -401,6 +401,14 @@ class AuAfslRule(PatternRule):
     rather than by code. The label word is the AFSL-vs-credit-licence
     discriminator; both are 5-6 digit numbers with no public checksum.
 
+    The alternation carries THREE label spellings, not one: the acronym
+    (`AFSL`), the words (`Australian Financial Services Licence`), and the
+    half-and-half form real footers print — `AFS` abbreviated with the licence
+    word following it, itself spelled out or abbreviated (`AFS Licence No
+    285571`, `AFS Lic 285571`). Do not collapse it back to the acronym: the
+    third form matched nothing at all until 2026-08-14, because the acronym was
+    the only spelling either the test or the `pii_eval` probe exercised.
+
     The label is a LOOKBEHIND, so the span is the digits alone — see the module
     docstring: a span covering "AFSL 233714" would key the pseudonym map on a
     different string than a bare occurrence of the same number and fork one
@@ -410,8 +418,8 @@ class AuAfslRule(PatternRule):
     patterns = (
         Pattern(
             "afsl labeled",
-            r"(?<=\b(?:afsl|(?:australian\s+)?financial\s+services\s+"
-            r"licen[cs]e)\s{0,4}(?:no\.?|number|#)?\s{0,4}:?\s{0,4})"
+            r"(?<=\b(?:afsl|(?:australian\s+)?(?:financial\s+services|afs)\s+"
+            r"(?:licen[cs]e|lic\.?))\s{0,4}(?:no\.?|number|#)?\s{0,4}:?\s{0,4})"
             r"\d{5,6}\b",
             0.7,
         ),
@@ -421,13 +429,17 @@ class AuAfslRule(PatternRule):
 class AuCreditLicenceRule(PatternRule):
     """Australian Credit Licence numbers — the sibling of AuAfslRule (same
     rationale, same footer habitat, same label-as-lookbehind rule,
-    discriminated by label word)."""
+    discriminated by label word). The licence word abbreviates the same way it
+    does there (`Credit Lic 234527`), and for the same reason: the siblings
+    label the same kind of number in the same kind of footer, so a spelling one
+    accepts and the other does not is a gap waiting to be found on a document
+    rather than a distinction anyone intended."""
 
     entity = "AU_CREDIT_LICENCE"
     patterns = (
         Pattern(
             "credit licence labeled",
-            r"(?<=\b(?:(?:australian\s+)?credit\s+licen[cs]e|acl)"
+            r"(?<=\b(?:(?:australian\s+)?credit\s+(?:licen[cs]e|lic\.?)|acl)"
             r"\s{0,4}(?:no\.?|number|#)?\s{0,4}:?\s{0,4})\d{5,6}\b",
             0.7,
         ),

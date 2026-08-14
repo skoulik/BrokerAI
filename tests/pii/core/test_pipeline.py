@@ -175,6 +175,57 @@ def test_corporate_licence_numbers_strip_under_their_own_classes(pipeline):
     assert "AFSL AFSL_1" in out, out
 
 
+def test_afsl_matches_the_half_abbreviated_label_a_real_footer_prints(pipeline):
+    # `AFS` abbreviated with `Licence` spelled out is what an insurance
+    # certificate footer actually prints, and it matched NOTHING until
+    # 2026-08-14: the acronym was the only spelling this test and the pii_eval
+    # probe ever exercised, so neither could see the gap. The first two numbers
+    # are the real specimen (116832820_7_Insurance_Certificate.pdf p2, where
+    # layer 1 found neither); the other two pin the spellings that already
+    # worked, so widening the alternation cannot cost them.
+    text = ("Auto & General Insurance Company Limited AFS Licence No 285571. "
+            "Auto & General Services Pty Ltd AFS Licence 241411. "
+            "Underwritten under AFS Lic 447985 and AFS Lic. No 511823. "
+            "Advice under AFSL 233714. "
+            "Australian Financial Services Licence No 244616.")
+    numbers = ("285571", "241411", "447985", "511823", "233714", "244616")
+    detections = {
+        (r.entity_type, text[r.start:r.end]) for r in pipeline.analyze(text)
+    }
+    for number in numbers:
+        assert ("AU_AFSL", number) in detections, (number, detections)
+    # The label is evidence, not value, in the new spellings too — the digits
+    # go and the words stay, or one licence forks into AFSL_1 and AFSL_2.
+    out, _, _ = pipeline.strip(text, PseudonymMap())
+    for number in numbers:
+        assert number not in out, out
+    assert "AFS Licence No AFSL_" in out, out
+    assert "AFS Licence AFSL_" in out, out
+    assert "AFS Lic AFSL_" in out, out
+    assert "AFS Lic. No AFSL_" in out, out
+
+
+def test_credit_licence_abbreviates_its_label_like_its_afsl_sibling(pipeline):
+    # The siblings label the same kind of number in the same kind of footer, so
+    # a spelling one accepts and the other does not is a gap waiting to be
+    # found on a document. `Lic` is anchored to `credit` here exactly as it is
+    # to `afs` there, so a bare `lic` elsewhere in a footer still matches
+    # nothing.
+    text = ("Broking under Credit Lic 234527, Australian Credit Lic. No 682144, "
+            "Australian Credit Licence 387892, ACL 917392.")
+    numbers = ("234527", "682144", "387892", "917392")
+    detections = {
+        (r.entity_type, text[r.start:r.end]) for r in pipeline.analyze(text)
+    }
+    for number in numbers:
+        assert ("AU_CREDIT_LICENCE", number) in detections, (number, detections)
+    out, _, _ = pipeline.strip(text, PseudonymMap())
+    for number in numbers:
+        assert number not in out, out
+    assert "Credit Lic ACL_" in out, out
+    assert "Australian Credit Lic. No ACL_" in out, out
+
+
 def test_a_corporate_licence_is_reversible_by_the_keep_list(tmp_path):
     """The stated escape hatch for "reconsidered later" — an operator section,
     no code change. Written through the real file path, since that is what an

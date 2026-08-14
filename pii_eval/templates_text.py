@@ -340,4 +340,17 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     doc.raw(", Australian Credit Licence ")
     doc.pii(f"{rng.randrange(10**5, 10**6)}", "AU_CREDIT_LICENCE")
     doc.raw(".").nl()
+    # The half-abbreviated label spellings a real insurance-certificate footer
+    # prints — `AFS` abbreviated, the licence word spelled out or abbreviated
+    # after it, and the same abbreviation on the credit-licence sibling. Their
+    # own probes rather than a swap of the spellings above, because the acronym
+    # being the corpus' ONLY spelling is precisely why these forms matched
+    # nothing (2026-08-14).
+    doc.raw("Product issuer AFS Licence No ")
+    doc.pii(f"{rng.randrange(10**5, 10**6)}", "AU_AFSL")
+    doc.raw(", underwriter AFS Lic ")
+    doc.pii(f"{rng.randrange(10**5, 10**6)}", "AU_AFSL")
+    doc.raw(", broking under Credit Lic ")
+    doc.pii(f"{rng.randrange(10**5, 10**6)}", "AU_CREDIT_LICENCE")
+    doc.raw(".").nl()
     return doc
