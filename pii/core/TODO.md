@@ -397,6 +397,137 @@ below gets picked up against the old shape of the tool.
 
 ## Detection pipeline
 
+- [ ] **The context boost has no model of attachment — replace the character window with
+      visual proximity** *(Sergei, 2026-08-14, on `AmplifyBusiness-…-24Sep2023.pdf` p1;
+      design agreed the same day)*. Two false positives on one page, both from `_boost`'s
+      60-character lookback. `013795`, the print/mail-house reference, typed `AU_BANK_ACCOUNT`
+      because the window reached back across a line break to the word `Account` in
+      `Account Number 4564 9427 0001 0443` — a label that already has an owner, itself detected
+      at 1.0. `13 22 66`, the bank's published service line, typed `AU_BANK_ACCOUNT` because
+      `_rows` interleaved the left column's `…with your cheque to Group Card Services` onto the
+      same assembled line as the right column's `Please call us on`, leaving `cheque` 48
+      characters before the value.
+
+      **The window models nothing, and says so.** `engine.py:48`: Presidio looked back five
+      tokens, this is "the char-level equivalent … deliberately generous in the recall-first
+      direction". Char-level *matching* was the right call (2026-07-15 source review) and stays;
+      60 undifferentiated characters is a recall knob that knows nothing about fields, lines,
+      columns or ownership.
+
+      **The same defect is what makes the page's OTHER `13 22 66` come out right**, which is why
+      shrinking the constant is not a fix. `PhoneRule.SCORE` is 0.40, exactly at threshold, and
+      at the top of the page the window happens to contain `Number` — from the credit card's
+      label, one line up and one column across — lifting it to 0.75, above the account
+      candidate's 0.50. Tighten the window alone and the top occurrence mistypes too.
+      (`enquir`/`inquir` joined `PhoneRule.context` on 2026-08-14 so a service line is decided by
+      its own label instead of a stray word; record in [DONE.md](DONE.md).)
+
+      **Attachment replaces distance.** For each candidate, gather two neighbourhoods from OCR
+      geometry — `left` (same line, to the left) and `above` (band within `V_ABOVE` line heights
+      that x-overlaps the value's column) — concatenate each in reading order, and *that string
+      is the boost context*. Search it for the rule's label spellings exactly as today. Left is
+      preferred over above. No box-intersection query is needed: reading order within a
+      neighbourhood already linearizes what sits between label and value.
+
+      **Two strengths, so that no rule ends up weaker than it is today.** `near` = the
+      neighbourhood contains a label. `strict` = `near` **and** everything between the label and
+      the value is separators and fillers only. Strength is a property of the **pattern**, not
+      the rule — several rules have both kinds: `AuTfnRule`'s labelled pattern is hard-gated
+      while its `context` list softly promotes the invalid shadow's bare tier, and
+      `AuAccountNumberRule` splits the same way.
+
+      - `strict` — the 8 word-label lookbehinds (TFN, Medicare ×2, ABN, ACN, card, AFSL, ACL)
+        plus the a/c family. Base score stays **sub-threshold**, so the gate is exactly as hard
+        as the lookbehind it replaces; the only new capability is seeing a label directly ABOVE
+        its value, which a linear lookbehind structurally cannot.
+      - `near` — bare/grouped account, BSB, PayID, phone, and the `*_INVALID` `context` tier.
+        These are the four things that live or die by the boost (threshold 0.4; their patterns
+        score 0.15–0.20), so they are also where a mistake costs recall.
+
+      **The test applies to the SUFFIX after the label, not the whole neighbourhood.** On
+      `Statement Enquiries    ABN: 51 824 753 556` the left neighbourhood is
+      `"Statement Enquiries ABN:"`; requiring the *whole* string to be label-plus-separators
+      would be stricter than today's lookbehind, which only ever saw the characters immediately
+      before the value — and would drop `AFS Licence No 285571` on the specimen page, whose left
+      neighbourhood begins `Auto & General Insurance Company Limited ABN 42 111 586 353`. Take
+      the rightmost label occurrence; only what follows it must be clean.
+
+      **Two neighbourhoods rather than one flat concatenation**, for the case that motivates the
+      whole change:
+
+          unrelated text1     ABN:
+          unrelated text2     12345
+
+      Flattened in reading order this is `unrelated text1 · ABN: · unrelated text2 · 12345`, so
+      the suffix carries `unrelated text2` and `strict` fails even though nothing sits between
+      the label and the value. Kept as two bands, the `above` band contains only `ABN:` —
+      `unrelated text1` does not x-overlap the value's column — and the suffix is empty.
+
+      **The left neighbourhood needs a word floor, not only a distance bound.** `Account Number`
+      at the left margin with the value right-aligned is the dominant statement layout and the
+      gap is arbitrarily wide, so the left band extends to whichever is larger: `H_LEFT`, or the
+      nearest **W** words on the line. `W` is derived per rule from its longest label spelling
+      plus the filler allowance (Sergei: "how much is needed by the regexp"), so
+      `australian financial services licence` gets a wider floor than `tfn` without a global
+      constant. If other text does sit between, the floor pulls it in and the suffix test fails —
+      which is the intended answer.
+
+      **Labels and fillers become data.** Each rule declares its label spellings once; the regex
+      matches the value shape only. The corridor's admissible content is one shared list —
+      separators plus a filler vocabulary (`no`, `no.`, `number`, `nbr`, `#`, `ref`, `card`) and
+      the table glyphs OCR leaves behind (`|`, `¦`, dashes). That deletes nine copies of
+      `\s{0,4}(?:no\.?|number|#)?\s{0,4}:?\s{0,4}` whose divergence nobody chose (`#` accepted by
+      TFN/AFSL/ACL/a-c-family, not by Medicare/ABN/ACN/card; `card` only by Medicare), and it
+      moves label spellings out of regex alternations — the 2026-08-14 AFSL miss was exactly a
+      spelling gap hidden inside one.
+
+      **The predicate returns the matched label, not a boolean.** For AFSL vs credit licence the
+      label word is the *only* discriminator (both 5–6 digits, no checksum), and BSB vs account
+      is the same shape, so label identity selects the entity type. This is why stage 4 is being
+      done with the predicate rather than after it.
+
+      **Make it auditable.** Carry the attachment (`term`, its span, `left`/`above`) onto the
+      `Detection` and into the CLI report and the `layer-1` debug overlay, so a stripped value
+      shows *which word promoted it*. Today the boost is invisible: diagnosing `013795` meant
+      reconstructing a 60-character window by hand. Same instinct as `EntityGroup.votes` reaching
+      the report — a mechanism that can change a class must not be silent.
+
+      **Parameters** — starting points, all to be settled by measurement, named in one place and
+      pinned by tests as `CONTEXT_BOOST`/`CONTEXT_FLOOR` are: `V_ABOVE` = 2 line heights (2 also
+      lets a wrapped label like `Australian Financial / Services Licence` concatenate),
+      x-overlap tolerance = half a line height, `H_LEFT` generous or line-bounded (the suffix
+      test is the real gate on a line), `W` derived per rule as above. The boost constants
+      themselves (+0.35, floor 0.4, cap 1.0) do **not** move in this change.
+
+      **Text and CSV.** Text mode is **left-only** (Sergei, 2026-08-14) — same line, the suffix
+      test against the linear gap; no vertical reasoning until there is a reason. `layout=None`
+      falls back to those semantics, so nothing silently inherits the old generous window. CSV
+      keeps per-cell detection; the header-above-column idea is postponed with it.
+
+      **Deliberate sacrifices.** A column header over twenty rows attaches to row 1 only (Sergei:
+      "we have to sacrifice this, do not chase" — no regression either way, those rows are far
+      past 60 characters today). The two value-lookbehinds (`account after bsb`,
+      `account after bare bsb`) stay as they are: their "label" is another value, a different
+      predicate. `_rows` banding stops being what carries context to a value beside its label,
+      so the invariant in [../CLAUDE.md](../CLAUDE.md) must be rewritten when the default flips —
+      banding itself is not touched here.
+
+      **Measurement, and probes BEFORE the change.** Keep the attachment mode switchable
+      (`window` | `layout`) for the duration so one corpus can be scored both ways and a
+      regression is attributable; delete the old path when the default flips. The text tier is
+      linear and cannot exercise any of this, so the probes are image-tier: label-above-column
+      (must now attach), label-across-column (the `cheque` case — must not), label-with-a-
+      detected-value-between (the `013795` case — must not), label-left-adjacent and
+      label-right-aligned (must be unchanged), plus the two real specimens. Then tier 1 at seeds
+      42/123/7 both ways, and a map-to-map diff over `sensitive/statements` so over-strip and
+      under-strip are both visible.
+
+      **Two risks on the record.** (1) This re-tunes every sub-threshold pattern at once — the
+      standing invariant warns about exactly that, and the switchable mode is the mitigation.
+      (2) Layer 1 currently has **no** dependency on geometry; afterwards a bad OCR line box
+      becomes a *detection* bug rather than only a paint bug. That coupling is the price of the
+      model being right, and belongs in ARCHITECTURE rather than being discovered later.
+
 - [ ] **The corpus cannot see a separator bug, and has now hidden the same one twice**
       *(2026-08-12)*. `pii_eval/au.py` emits every identifier in ONE canonical form —
       single-space groups. Both the 2026-08-09 split-ownership leak and the 2026-08-12
@@ -407,6 +538,15 @@ below gets picked up against the old shape of the tool.
       only in one spelling is a scored miss. Note the eval's `au.py` mirrors the checksum
       arithmetic and a coupling test pins the two together, so the change has to keep that
       seam honest.
+
+      **Third instance, different axis (2026-08-14): LABEL spellings.** `AFS Licence No 285571`
+      matched nothing because the corpus, the pytest case and the regex all exercised the single
+      spelling `AFSL <digits>` — three artefacts agreeing with each other, so no run could
+      disagree with any of them (record in [DONE.md](DONE.md)). The generalization is that a
+      probe exercising ONE surface form of a labelled or separated pattern measures the regex
+      against itself, so the varied-surface-form work above must cover label spellings as well as
+      separators. The context-attachment item above moves label spellings out of the regexes
+      into data, which is what makes varying them in the generator worth doing.
 
 - [ ] **The ACN inside an ABN can still capture it when OCR damages a DIGIT rather than a
       separator** *(remainder of the 2026-08-12 separator fix)*. The separator class fixed the
