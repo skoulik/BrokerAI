@@ -88,6 +88,35 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
         f"{holder_a.full} and {holder_b.full}".upper(), "PERSON_JOINT"
     ).nl(2)
 
+    # Label-attachment probes (2026-08-14). Both are about WHERE a label sits
+    # relative to its value, which is the whole of what the geometric
+    # attachment decides, and this document renders monospace (`legacy*` is a
+    # fixed-column doc) so the image tier sees real columns rather than
+    # reflowed prose.
+    #
+    # 1. The label sits directly ABOVE its value in the same column, with
+    #    unrelated text on both lines — the case a lookbehind structurally
+    #    cannot see. Expected to strip on the IMAGE tier and to MISS on the
+    #    text tier, because text mode is left-only by decision (Sergei,
+    #    2026-08-14) and has no vertical band. Non-gated, and left in the
+    #    corpus rather than deleted so the difference between the tiers is
+    #    scored on every run instead of being remembered.
+    doc.raw("Interest to date").pad_to(46).raw("Account Number").nl()
+    doc.raw(f"${round(rng.uniform(1, 400), 2)}").pad_to(46)
+    doc.pii(f"{rng.randrange(10**7, 10**8)}", "ACCOUNT_LABELLED_ABOVE").nl(2)
+    # 2. The mirror image, and the reason the word floor is a word COUNT: a
+    #    left column that happens to contain an account label, beside a right
+    #    column carrying an unrelated reference. The 60-character lookback
+    #    promotes it (`cheque` reached a bank's phone number 48 characters and
+    #    one column away on a real statement); the band must not. MUST NOT
+    #    strip, on either tier.
+    doc.raw("Mail this slip with your cheque to Group Card Services").pad_to(60)
+    doc.raw("Ref ").pii(
+        f"{rng.randrange(10**5, 10**6)}",
+        "REFERENCE_ACROSS_COLUMN",
+        strip_expected=False,
+    ).nl(2)
+
     balance = round(rng.uniform(100, 90000), 2)
     for page in range(1, pages + 1):
         if page > 1:

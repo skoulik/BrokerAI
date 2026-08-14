@@ -41,7 +41,9 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `__init__.py`, `constants.py` | Public API surface (`PiiPipeline`, `PseudonymMap`, `RECORD_SEPARATOR`, `DEFAULT_STRIP_ENTITIES`, `InvalidFinding`, `INVALID_ENTITY_TYPES`); `RECORD_SEPARATOR` lives in `constants.py` (zero-import, cycle-free) |
 | `pipeline.py` | `PiiPipeline` — **layer 1**: builds the rule set, runs one `Analyzer` pass, filters to the strip list and applies the keep list, union-merges overlaps, collects checksum-invalid findings. `merge_detections` folds layer 0 in on top |
 | `detection.py` | `Detection` — the record every layer emits and every consumer reads |
-| `engine.py` | `Rule` / `PatternRule` / `Analyzer` — the regex loop, the validation hook, the char-level context boost, thresholding and deduplication |
+| `engine.py` | `Rule` / `PatternRule` / `Analyzer` — the regex loop, the validation hook, label attachment and the score boost, thresholding and deduplication. Owns the `Layout` protocol and the two geometry-free layouts (`TextLayout`, and `WindowLayout` while the character window is retired) |
+| `layout.py` | `PageLayout` — a candidate's neighbourhoods on an OCR'd page (`left` band, `above` band). The only place layer 1 touches pixels |
+| `labels.py` | The shared label grammar: what may sit between a label and its value (separators, fillers), and `Exact` for spellings too short to be stems |
 | `recognizers.py` | **Every** layer-1 rule: the checksummed identifiers (each emitting its valid class OR its `*_INVALID` shadow from one checksum call), BSB, account, PayID, licences, joint names, ATF tails, email, IBAN, phone |
 | `checksums.py` | The identifier arithmetic — TFN, Medicare, ABN, ACN, Luhn. Single source of truth since Presidio went; `pii_eval/au.py` mirrors it under a coupling test |
 | `mapping.py` | `PseudonymMap` — placeholder allocation, JSON persistence, rehydration |
@@ -227,15 +229,76 @@ to the highest score. Pinned in `tests/pii/core/test_engine.py`.
 into three tokens while `TFN:123456782` stays one, so the label word never surfaced as a token
 either way, and the rule lemmatizer left HEADER-CASE labels unlemmatized on top. Its conclusion
 was "keep label/context matching char-level"; `AuAccountNumberRule` had already worked around
-the gap by matching `a/c` inside its own pattern. A 60-character window before the match,
-searched case-insensitively for the context term as a substring, is what that review asked for
-and needs no NLP engine.
+the gap by matching `a/c` inside its own pattern. Searching characters case-insensitively for
+the label as a substring is what that review asked for, needs no NLP engine, and is unchanged.
 
-**One label change came out of the merge**: a label is matched as a LOOKBEHIND, so it stays
-outside the span. The old shadows matched labels in-span and got away with it (an invalid
-candidate is reported, not aliased), but for a *valid* identifier a span covering "TFN: 123 456
-782" keys the pseudonym map on a different string than a bare occurrence — one identifier
-forking into TFN_1 and TFN_2 inside a document. Caught by the placeholder-consistency test.
+### A label reaches its value by being NEAR IT ON THE PAGE (2026-08-14)
+
+**Where those characters come from is geometry, not a character count.** The label used to be
+sought in a flat 60 characters before the match, which models nothing — not a field, not a
+line, not a column, and not whether the label already introduces some other value. On one real
+statement page that produced two false positives at once: a print-batch reference typed
+`AU_BANK_ACCOUNT` because the window crossed a line break to reach the `Account Number` label of
+a credit card, and a bank's published service line typed the same way because `_rows` had
+interleaved another column's `cheque` onto the assembled line. The same defect typed the page's
+*other* copy of that number correctly, off a `Number` that had drifted in from the card's label
+— outcomes that arbitrary are not a mechanism.
+
+A `Layout` (`pii/core/engine.py`) now supplies a candidate's **neighbourhoods**, and the engine
+knows nothing else about where text sits. Each neighbourhood is the words near the candidate,
+in reading order, **ending where the candidate begins** — so whatever follows a label inside it
+is exactly what sits between that label and the value, which is what makes the strict test below
+a suffix test. `pii/core/layout.py` has the pixels; the engine holds only the protocol, so
+layer 1 gains no import of the OCR stack.
+
+Two bands, kept separate rather than flattened into one string:
+
+- **`left`** — the last *n* words of the candidate's own line, `n` derived per rule from its own
+  longest label plus a filler allowance. A word count, not a distance: the dominant statement
+  layout puts a label at the left margin with its value right-aligned across the line, and
+  measured on the specimen page no distance separates the cases (the true label sits 462 px from
+  its value, the false promoter 748 px from its own). Word counts separate them cleanly — the
+  false promoter is nine words back and no rule's floor reaches that far.
+- **`above`** — the OCR detection REGIONS overhead, within two line heights and overlapping the
+  candidate's x-range. Regions rather than words, so a two-word label reaches a one-word value
+  under it. Two line heights rather than one so a label that wraps (`Australian Financial /
+  Services Licence`) assembles whole.
+
+They must stay separate because reading order flattens the page: with `unrelated / ABN:` above
+`unrelated / 12345`, one flat concatenation puts the *value's own left-neighbour* between the
+label and the value and no strict test could pass.
+
+**Two attachment strengths, so that no rule ended up weaker than before.** `NEAR` means a label
+is in a neighbourhood, and it boosts, exactly as the context word always did. `STRICT`
+additionally requires everything between label and value to be separators and fillers
+(`pii/core/labels.py`), and it behaves like the lookbehind it replaces: the match is **dropped**
+when unattached, and its declared score stands **unboosted** when attached. Those two together
+are what made the conversion score-neutral. Strength belongs to the PATTERN, not the rule —
+`AuTfnRule`'s labelled pattern is gated while its bare pattern is merely promoted.
+
+**Labels and the filler grammar are data.** Every labelled rule used to carry its own copy of
+`\s{0,4}(?:no\.?|number|#)?\s{0,4}:?\s{0,4}` — nine copies whose divergence nobody chose (`#`
+accepted by four of them, `card` only by Medicare) — and its label spellings inside a regex
+alternation, which is precisely where the 2026-08-14 AFSL miss hid. Spellings are now `context`
+and the corridor vocabulary is one shared list. A spelling is a stem (`account` matches
+`Accounts`, `afs lic` matches `AFS Licence`) and must begin at a word boundary; a spelling too
+short to be safe as a stem is wrapped in `labels.Exact` (`ac`).
+
+**The attachment is recorded and reported.** `Detection.attachment` carries the label, where it
+sat, and which band reached it, and `--report` prints it (`AU_BANK_ACCOUNT 0.50 '0007 3111 4'
+<- left 'Account'`). A mechanism that can change a value's class must not be silent about it —
+the same reason the group vote reaches the report.
+
+**A label is matched OUTSIDE the span, always.** It was a lookbehind before and it is `context`
+now, and either way a span covering "TFN: 123 456 782" would key the pseudonym map on a different
+string than a bare occurrence — one identifier forking into TFN_1 and TFN_2 inside a document.
+The a/c family was the one knowing exception (its label landed inside the placeholder) and this
+change ended it.
+
+**What layer 1 gave up for this:** it now depends on OCR geometry, where before it was pure
+text. A bad line box is now a *detection* bug and not only a paint bug. That is the price of the
+model being right rather than incidental, and it is why `_rows` banding is no longer what
+carries a label to a value beside it.
 
 **What it bought beyond correctness**: no spaCy, no thinc, no torch. That is what let the paddle
 worker subprocess be retired the same day (decision below) — the DLL conflict it isolated only

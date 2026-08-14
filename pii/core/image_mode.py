@@ -356,7 +356,8 @@ def strip_from_vlm(
     # a kept merchant name matched from another page would inflate the count
     # without being painted. The extra merge is a regex sweep over a page string
     # against minutes of model time per page.
-    alone, _ = pipeline.merge_detections(detected, ocr.text)
+    layout = pipeline.layout_for(ocr.text, ocr)
+    alone, _ = pipeline.merge_detections(detected, ocr.text, layout)
     borrowed_only = [
         d
         for d in borrowed
@@ -408,7 +409,7 @@ def strip_from_vlm(
             RuntimeWarning,
             stacklevel=2,
         )
-    spans, invalid = pipeline.merge_detections(detected + borrowed, ocr.text)
+    spans, invalid = pipeline.merge_detections(detected + borrowed, ocr.text, layout)
     # What was detected and then exempted by the keep list. Computed here from
     # the same predicate the plan uses, rather than inferred from what is
     # missing out of it — a span can also vanish into a wider one by merging,

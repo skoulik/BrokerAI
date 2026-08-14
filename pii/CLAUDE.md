@@ -52,9 +52,30 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   `pii/core/checksums.py` is the single source of truth; `pii_eval/au.py` mirrors it so the
   corpus generator and the detector agree.
 - **The context boost's constants are load-bearing.** +0.35, floored to 0.4, capped at 1.0,
-  from a window BEFORE the match only. Every sub-threshold pattern (bare account numbers, PayID
-  digit runs, the `context` invalid tier) exists only because that promotion exists, so changing
-  a constant silently re-tunes all of them. Pinned in `tests/pii/core/test_engine.py`.
+  from BEFORE the match only. Every sub-threshold pattern (bare account numbers, PayID digit
+  runs, the `context` invalid tier) exists only because that promotion exists, so changing a
+  constant silently re-tunes all of them. Pinned in `tests/pii/core/test_engine.py`.
+- **A label reaches a value by being near it ON THE PAGE, never by character distance.** A
+  `Layout` supplies the candidate's neighbourhoods and the engine knows nothing else about where
+  text sits; 60 characters of assembled string modelled no field, line, column or ownership, and
+  typed a print-batch reference as a bank account off a credit card's label (2026-08-14).
+- **The left band is a word COUNT, not a distance.** Measured: the true label sat 462 px from
+  its value and the false promoter 748 px from its own, so no threshold separates them — word
+  counts do. It is derived per rule from that rule's own longest label; never make it global.
+- **The `above` band selects detection REGIONS, not words.** Per-word x-overlap contributes only
+  the word directly overhead, so `Account Number` above a short value degrades to `Account` and
+  a wrapped licence label never assembles.
+- **STRICT gates, NEAR boosts.** A STRICT pattern is dropped when unattached and keeps its
+  declared score when attached — that is what made converting nine label lookbeheads
+  score-neutral, and it means a STRICT pattern must declare a score above threshold.
+- **A label spelling is a stem that must start at a word boundary**, and the gap to the value is
+  measured from the end of the label's own WORD. Wrap a spelling too short to be a safe stem in
+  `labels.Exact` (`ac` would otherwise match inside `across`).
+- **`rule.detect()` is half a labelled rule.** The label is `context` and attachment is the
+  Analyzer's, so test labelled patterns through `Analyzer.analyze`, never against `detect`
+  alone — the latter reports a labelled candidate with no label anywhere near it.
+- **Layer 1 now depends on OCR geometry**, where it used to be pure text: a bad line box is a
+  *detection* bug and not only a paint bug. Accepted as the price of the model being right.
 - **Keeping takes positive evidence; stripping takes none.** A detected value is replaced
   unless the keep list matches it (`entity_keep.py`, `data/entity_keep.txt`). Never invert this
   back into "strip only what looks private": the old rule needed a legal-form marker as
@@ -216,10 +237,11 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   lengths) on the source map.
 - **An OCR line is never dropped.** Every row carrying words becomes an `OcrLine`, with no
   filtering or scoring step in between. A dropped line is unredacted PII.
-- **`_rows` visual banding is load-bearing.** It is what puts a label and its value from two
-  side-by-side detection regions onto ONE assembled line, which is how context promotion reaches
-  a value in a column beside its own label. Keep the x-overlap guard (two regions sharing an
-  x-column are stacked lines, not one row).
+- **`_rows` visual banding is load-bearing, now for a different reason.** It defines what "the
+  same line" MEANS, and the left attachment band is a line — so a label beside its value in
+  another column of the same printed row is still reachable, while the neighbouring column is
+  held off by the word count rather than by the banding. Keep the x-overlap guard (two regions
+  sharing an x-column are stacked lines, not one row).
 - **A line box contains its glyph ink.** Build `OcrLine.box` only through
   `ocr_page._line_box` (word boxes ∪ their region boxes) — engine word boxes are inset from the
   ink, so a word-box union slices the first and last glyph.

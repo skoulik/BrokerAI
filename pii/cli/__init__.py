@@ -22,6 +22,7 @@ from pathlib import Path
 
 from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
 from pii.core.debug_overlay import DEBUG_LAYERS, parse_layers
+from pii.core.engine import ATTACH_MODES, ATTACH_WINDOW
 from pii.core.entity_keep import load_keep
 from pii.core.ocr import OCR_PAGE_BACKENDS
 # stdlib-only module, so importing it here costs nothing on the default path
@@ -147,11 +148,28 @@ def _warn_layer0_off(file=None) -> None:
 
 
 def _report(spans, text: str, file=None, prefix: str = "  ") -> None:
+    """List applied detections, each with the LABEL that promoted it.
+
+    The label is not decoration. A sub-threshold digit run only strips because
+    some word beside it says what it is, and until 2026-08-14 nothing recorded
+    which word that was: diagnosing a mail-house reference stripped as an
+    account number meant reconstructing the engine's lookback by hand. Same
+    reason the group vote reaches this report — a mechanism that can change a
+    value's class must not be silent about it.
+    """
     # sys.stderr resolved at call time, not bound at import (capsys).
     file = file if file is not None else sys.stderr
     for r in spans:
         value = text[r.start : r.end].replace("\n", "\\n")
-        print(f"{prefix}{r.entity_type:<20} {r.score:.2f}  {value!r}", file=file)
+        label = ""
+        attachment = getattr(r, "attachment", None)
+        if attachment is not None:
+            term = attachment.term.replace("\n", " ")
+            label = f"  <- {attachment.relation} {term!r}"
+        print(
+            f"{prefix}{r.entity_type:<20} {r.score:.2f}  {value!r}{label}",
+            file=file,
+        )
 
 
 def _report_geometry(box_geometry, unlocated, file=None, prefix: str = "",
@@ -485,6 +503,13 @@ def main(argv=None) -> int:
     )
     p_strip.add_argument("--threshold", type=float, default=0.4)
     p_strip.add_argument(
+        "--context-attach", choices=ATTACH_MODES, default=ATTACH_WINDOW,
+        help="TRANSITIONAL: how a label is judged to reach a value — "
+             "'window' the retiring 60-character lookback, 'layout' visual "
+             "proximity on the page. Exists so a corpus can be scored both "
+             "ways; goes when the default flips",
+    )
+    p_strip.add_argument(
         "--report", action="store_true",
         help="list applied detections on stderr",
     )
@@ -611,6 +636,11 @@ def main(argv=None) -> int:
     p_analyze.add_argument("input", help="input text file, or - for stdin")
     p_analyze.add_argument("--threshold", type=float, default=0.4)
     p_analyze.add_argument(
+        "--context-attach", choices=ATTACH_MODES, default=ATTACH_WINDOW,
+        help="TRANSITIONAL: how a label is judged to reach a value (see "
+             "`strip --help`)",
+    )
+    p_analyze.add_argument(
         "--invalid-identifiers",
         choices=["ignore", "all", "likely", "context"], default="likely",
     )
@@ -714,6 +744,7 @@ def main(argv=None) -> int:
         invalid_identifiers=args.invalid_identifiers,
         mask_invalid=mask_invalid,
         entity_keep=entity_keep,
+        attach=getattr(args, "context_attach", ATTACH_WINDOW),
     )
     detector = _build_detector(args)
     if getattr(detector, "layer0", None) == "off":

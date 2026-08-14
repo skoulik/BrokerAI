@@ -17,6 +17,28 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+@dataclass(frozen=True)
+class Attachment:
+    """The label that promoted a detection, and how it reached it.
+
+    Carried so the promotion is auditable: a value stripped as ACCOUNT_1 should
+    say WHICH word typed it. Before this existed, diagnosing a false positive
+    meant reconstructing a 60-character window by hand (2026-08-14). Same
+    reason `EntityGroup.votes` reaches the report — a mechanism that can change
+    a class must not be silent.
+
+    `relation` is where the label sat relative to the value: `left` (same line),
+    `above` (the column overhead), or `window` while the retiring
+    character-lookback layout is still in use.
+    """
+
+    term: str
+    relation: str
+    # The label's own span in the analyzed text, when the layout can place it.
+    start: int | None = None
+    end: int | None = None
+
+
 @dataclass
 class Detection:
     """One detected span. Offsets are into the analyzed string."""
@@ -35,6 +57,12 @@ class Detection:
     # is the pseudonym key, so both halves collect one placeholder instead of
     # forking one address into ADDRESS_1 and ADDRESS_2.
     full_value: str | None = None
+    # Name of the PATTERN that matched, within the rule. Provenance for the
+    # same reason `recognizer` is: the engine reads it back to learn how
+    # strictly this span must be attached to a label (`Rule.strength`).
+    pattern: str = ""
+    # The label that promoted this span, if one did.
+    attachment: Attachment | None = None
 
     def __post_init__(self) -> None:
         if self.start > self.end:

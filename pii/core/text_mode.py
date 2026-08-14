@@ -95,7 +95,9 @@ def detect_text(
             RuntimeWarning,
             stacklevel=2,
         )
-    spans, invalid = pipeline.merge_detections(detected, text)
+    spans, invalid = pipeline.merge_detections(
+        detected, text, pipeline.layout_for(text)
+    )
     return (
         spans,
         invalid,

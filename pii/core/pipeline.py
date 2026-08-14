@@ -39,7 +39,13 @@ from dataclasses import dataclass
 
 from pii.core.derived import apply as derive
 from pii.core.detection import Detection
-from pii.core.engine import Analyzer
+from pii.core.engine import (
+    ATTACH_MODES,
+    ATTACH_WINDOW,
+    Analyzer,
+    TextLayout,
+    WindowLayout,
+)
 from pii.core.mapping import PseudonymMap
 from pii.core.entity_keep import EntityKeep, load_keep
 from pii.core.recognizers import (
@@ -112,8 +118,17 @@ class PiiPipeline:
         invalid_identifiers: str = "likely",
         mask_invalid: bool = False,
         entity_keep=None,
+        attach: str = ATTACH_WINDOW,
     ):
         self.threshold = threshold
+        if attach not in ATTACH_MODES:
+            raise ValueError(f"attach={attach!r}, expected one of {ATTACH_MODES}")
+        # TRANSITIONAL (2026-08-14): which notion of "the label is near the
+        # value" this pipeline uses. Defaults to the retiring character window
+        # until the geometric one has been measured on the corpus both ways —
+        # a switch, so a regression is attributable to a cause rather than to
+        # a release. See `pii/core/TODO.md`.
+        self.attach = attach
         self.strip_entities = (
             set(strip_entities) if strip_entities is not None
             else set(DEFAULT_STRIP_ENTITIES)
@@ -132,12 +147,31 @@ class PiiPipeline:
             self.strip_entities |= INVALID_ENTITY_TYPES
         self.analyzer = Analyzer(build_rules(invalid_identifiers))
 
-    def analyze(self, text: str):
+    def layout_for(self, text: str, source=None):
+        """The `Layout` this pipeline's mode calls for.
+
+        Callers hand over the page they have (`source`, a `RecognizerInput`)
+        and stay out of the decision, so the mode switch lives in one place.
+        Without a page — plain text, a CSV cell — the fallback is left-only
+        proximity, never the character window: text has no columns to reason
+        about but it does have lines (Sergei, 2026-08-14).
+        """
+        if self.attach == ATTACH_WINDOW:
+            return WindowLayout(text)
+        if source is None:
+            return TextLayout(text)
+        from pii.core.layout import PageLayout  # deferred: pulls OCR types
+
+        return PageLayout(source)
+
+    def analyze(self, text: str, layout=None):
         """All detections above threshold, overlap-resolved, sorted by
         position — including entity types that strip() would keep."""
-        return _resolve_overlaps(self.analyzer.analyze(text, self.threshold))
+        return _resolve_overlaps(
+            self.analyzer.analyze(text, self.threshold, layout)
+        )
 
-    def detect(self, text: str) -> tuple[list, list[InvalidFinding]]:
+    def detect(self, text: str, layout=None) -> tuple[list, list[InvalidFinding]]:
         """One analyzer pass -> (strip plan, checksum-invalid findings).
 
         The plan is what strip() replaces: strip-listed entities only,
@@ -147,14 +181,14 @@ class PiiPipeline:
         a small high-score span (BSB, 0.55) must not evict a wider
         covering span (account number, 0.52) and expose the rest of it.
         """
-        results = self.analyzer.analyze(text, self.threshold)
+        results = self.analyzer.analyze(text, self.threshold, layout)
         plan = _merge_overlaps(
             [p for r in results for p in self.apply_keep(r, text)[0]]
         )
         return plan, _collect_invalid(results, text)
 
     def merge_detections(
-        self, detected: list, text: str
+        self, detected: list, text: str, layout=None
     ) -> tuple[list, list[InvalidFinding]]:
         """Fold layer-0 detections and a layer-1 pass over the same text into
         one strip plan.
@@ -197,7 +231,7 @@ class PiiPipeline:
         these rules without rewiring. Keep is applied to what pass 2 ADDS, and
         only to that: everything it was handed has already been through it.
         """
-        layer1, invalid = self.detect(text)
+        layer1, invalid = self.detect(text, layout)
         stripped = [p for r in detected for p in self.apply_keep(r, text)[0]]
         spans, added = derive(stripped + list(layer1), text)
         kept_added = [p for r in added for p in self.apply_keep(r, text)[0]]
@@ -277,13 +311,13 @@ class PiiPipeline:
         return self.detect(text)[0]
 
     def strip(
-        self, text: str, pmap: PseudonymMap
+        self, text: str, pmap: PseudonymMap, layout=None
     ) -> tuple[str, list, list[InvalidFinding]]:
         """Replace detected PII with consistent placeholders.
 
         Returns (stripped_text, applied_detections, invalid_findings).
         """
-        spans, invalid = self.detect(text)
+        spans, invalid = self.detect(text, layout)
         return apply_plan(text, spans, pmap), spans, invalid
 
 
@@ -434,6 +468,12 @@ def _merge_overlaps(results):
                 # text, which is the honest answer: the extent is no longer
                 # the piece the key described.
                 full_value=best.full_value,
+                recognizer=best.recognizer,
+                pattern=best.pattern,
+                # ...and the label that promoted it, or the report cannot say
+                # why a merged span is here — which is the whole point of
+                # recording an attachment.
+                attachment=best.attachment,
             )
         )
     return merged

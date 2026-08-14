@@ -53,8 +53,22 @@ gitignored and must never leave the machine.**
 Flags: `--entity-keep` / `--strip-orgs` (see [the keep
 list](#the-keep-list-what-survives) below), `--threshold` (default 0.4),
 `--layer0 off` (skip the semantic detector — fast, offline, [reduced
-redaction](#skipping-layer-0)), and the checksum-invalid
-identifier controls below.
+redaction](#skipping-layer-0)), `--context-attach` (see below), and the
+checksum-invalid identifier controls below.
+
+`--context-attach {window,layout}` decides how a label — `Account Number`,
+`ABN`, `AFSL` — is judged to belong to the value beside it. `layout` uses
+visual proximity on the page: the words to the left on the same line, and the
+column directly above. `window` is the older rule, a fixed count of characters
+back in the page's text, and it is still the default while the two are being
+compared; it can promote a value off a label that belongs to a different field
+or a different column. `--report` names the label that promoted each value, so
+a listing shows *why* a value was replaced:
+
+```
+  AU_BANK_ACCOUNT      0.50  '0007 3111 4'  <- left 'Account'
+  AU_AFSL              0.70  '233714'  <- left 'AFSL'
+```
 
 ## The keep list: what survives
 

@@ -11,7 +11,7 @@ is why the corpus probe added alongside these tests generates hyphenated ones.
 
 import pytest
 
-from pii.core.engine import Analyzer
+from pii.core.engine import Analyzer, TextLayout
 from pii.core.recognizers import (
     INVALID_ENTITY_TYPES,
     AuAbnRule,
@@ -34,7 +34,17 @@ CASES = [
 
 
 def _types(rule, text):
-    return {d.entity_type for d in rule.detect(text)}
+    """Through the ANALYZER, not `rule.detect` alone.
+
+    Since 2026-08-14 a labelled pattern carries no label of its own — the
+    regex is the value's shape and the label is `context`, attached by the
+    engine — so `detect()` is half the rule and testing against it would
+    report a labelled candidate as present with no label anywhere near it.
+    """
+    return {
+        d.entity_type
+        for d in Analyzer([rule]).analyze(text, 0.4, TextLayout(text))
+    }
 
 
 @pytest.mark.parametrize("rule_cls,entity,valid,_invalid", CASES)

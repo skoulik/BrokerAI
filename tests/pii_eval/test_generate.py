@@ -91,7 +91,13 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
               # from people already detected, and nothing names these two. It
               # stays in the corpus, strip-expected and non-gated, so the loss
               # is scored on every run instead of being deleted from it.
-              "PERSON_JOINT_NO_EVIDENCE"):
+              "PERSON_JOINT_NO_EVIDENCE",
+              # A label sitting directly ABOVE its value (2026-08-14). Strips
+              # on the image tier, where a page has columns; a known MISS on
+              # the text tier, which is left-only by decision. Non-gated for
+              # that reason, and kept so the difference is scored rather than
+              # remembered.
+              "ACCOUNT_LABELLED_ABOVE"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(e["strip_expected"] for e in by_type[t]), t
         gated = t in ("PERSON_JOINT", "PERSON_REVERSED")
@@ -108,9 +114,13 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     # trio (2026-07-22): letter+10-digit receipt refs, >16-digit runs and
     # masked last-4 card disclosures must survive identifier
     # post-validation unstripped.
+    # REFERENCE_ACROSS_COLUMN (2026-08-14): an unrelated reference in the
+    # right column of a line whose LEFT column happens to carry an account
+    # label. The 60-character lookback strips it; visual attachment must not.
     for t in ("LOCATION", "ORGANIZATION_AND", "ORGANIZATION_AND_BARE",
               "PROSE_AND", "AMOUNT_COLUMN", "REFERENCE_NUMBER",
-              "DIGITS_OVERLONG", "CARD_LAST4", "TRAILING_AMOUNT"):
+              "DIGITS_OVERLONG", "CARD_LAST4", "TRAILING_AMOUNT",
+              "REFERENCE_ACROSS_COLUMN"):
         assert by_type.get(t), f"probe type {t} missing from corpus"
         assert all(not e["strip_expected"] and not e["critical"]
                    for e in by_type[t]), t

@@ -115,7 +115,12 @@ def test_labeled_account_releases_trailing_amount_e2e(pipeline):
         text = f"Interest Charged From A/C 32-151-6825 {amount}"
         out, _, _ = pipeline.strip(text, PseudonymMap())
         assert "32-151-6825" not in out, out       # account stripped
-        assert "A/C" not in out, out               # label in-span, stripped
+        # The label SURVIVES (2026-08-14). It used to be matched in-span and
+        # swallowed by the placeholder — the one place the standing "a label is
+        # evidence, not part of the value" rule was knowingly broken, which is
+        # what forked one account into ACCOUNT_1 (labelled) and ACCOUNT_2 (a
+        # bare re-mention of the same digits).
+        assert "A/C ACCOUNT_" in out, out
         assert out.endswith(f" {amount}"), out     # amount released intact
 
 

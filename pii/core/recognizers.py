@@ -48,7 +48,8 @@ from pii.core.checksums import (
     tfn_checksum,
 )
 from pii.core.detection import Detection
-from pii.core.engine import MAX_SCORE, Pattern, PatternRule, Rule
+from pii.core.labels import Exact
+from pii.core.engine import MAX_SCORE, STRICT, Pattern, PatternRule, Rule
 
 TIERS = ("ignore", "likely", "context", "all")
 
@@ -101,14 +102,23 @@ class ChecksumRule(PatternRule):
     INVALID_ENTITY: str = ""
     RULE_TEXT: str = ""  # the failed rule, for the report
     DIGIT_COUNTS: tuple[int, ...] = ()
-    # In-span patterns carry their own evidence: canonical digit grouping, or
-    # a label matched as a LOOKBEHIND. The label must stay OUTSIDE the span —
-    # it is evidence, not part of the value. A span covering "TFN: 123 456 782"
-    # keys the pseudonym map on a different string than a bare occurrence of
-    # the same TFN, so one identifier forks into TFN_1 and TFN_2 inside a
-    # single document. (The old shadow recognizers matched the label in-span
-    # and got away with it: an invalid candidate is reported, not aliased.)
-    IN_SPAN_PATTERNS: tuple[tuple[str, str], ...] = ()
+    # Two kinds of evidence, and neither is ever part of the value:
+    #
+    # GROUPED  — canonical digit grouping, evidence inside the span itself.
+    # LABELLED — a looser digit shape that only counts when a LABEL is
+    #            attached to it. Until 2026-08-14 the label was spelled as a
+    #            regex lookbehind here; it is now `context` plus STRICT
+    #            attachment, which is the same gate judged on the page instead
+    #            of in the assembled string, so a label in the column ABOVE
+    #            its value now counts too. Scores did not move: a STRICT
+    #            pattern is gated by its label, not boosted by it.
+    #
+    # Either way the label stays OUTSIDE the span — it is evidence, not part
+    # of the value. A span covering "TFN: 123 456 782" keys the pseudonym map
+    # on a different string than a bare occurrence of the same TFN, so one
+    # identifier forks into TFN_1 and TFN_2 inside a single document.
+    GROUPED_PATTERNS: tuple[tuple[str, str], ...] = ()
+    LABELLED_PATTERNS: tuple[tuple[str, str], ...] = ()
     BARE_PATTERNS: tuple[tuple[str, str], ...] = ()
 
     def __init__(self, tier: str = "likely") -> None:
@@ -116,9 +126,13 @@ class ChecksumRule(PatternRule):
             raise ValueError(f"invalid_identifiers tier {tier!r}, expected one of {TIERS}")
         self.tier = tier
         self._bare = {name for name, _ in self.BARE_PATTERNS}
-        self.patterns = tuple(
-            Pattern(name, rx, _IN_SPAN_SCORE)
-            for name, rx in (*self.IN_SPAN_PATTERNS, *self.BARE_PATTERNS)
+        self.patterns = (
+            *(Pattern(n, rx, _IN_SPAN_SCORE) for n, rx in self.GROUPED_PATTERNS),
+            *(
+                Pattern(n, rx, _IN_SPAN_SCORE, attach=STRICT)
+                for n, rx in self.LABELLED_PATTERNS
+            ),
+            *(Pattern(n, rx, _IN_SPAN_SCORE) for n, rx in self.BARE_PATTERNS),
         )
         super().__init__()
 
@@ -155,14 +169,15 @@ class AuTfnRule(ChecksumRule):
     INVALID_ENTITY = "AU_TFN_INVALID"
     RULE_TEXT = "TFN mod-11 checksum failed"
     DIGIT_COUNTS = (9,)
-    IN_SPAN_PATTERNS = (
+    GROUPED_PATTERNS = (
         ("tfn grouped", r"\b\d{3}" + _SEP + r"\d{3}" + _SEP + r"\d{3}\b"),
+    )
+    LABELLED_PATTERNS = (
         ("tfn labeled",
-         r"(?<=\b(?:tfn|tax file (?:no\.?|number))\s{0,4}:?\s{0,4}#?\s{0,4})"
-         r"\d{3}" + _SEP_OPT + r"\d{3}" + _SEP_OPT + r"\d{3}\b"),
+         r"\b\d{3}" + _SEP_OPT + r"\d{3}" + _SEP_OPT + r"\d{3}\b"),
     )
     BARE_PATTERNS = (("tfn bare", r"\b\d{9}\b"),)
-    context = ("tax file number", "tfn")
+    context = ("tax file number", "tax file no", "tfn")
 
     def checksum(self, d: str) -> bool:
         return tfn_checksum(d)
@@ -173,12 +188,13 @@ class AuMedicareRule(ChecksumRule):
     INVALID_ENTITY = "AU_MEDICARE_INVALID"
     RULE_TEXT = "Medicare mod-10 checksum failed"
     DIGIT_COUNTS = (10,)
-    IN_SPAN_PATTERNS = (
+    GROUPED_PATTERNS = (
         ("medicare grouped",
          r"\b[2-6]\d{3}" + _SEP + r"\d{5}" + _SEP + r"\d\b"),
+    )
+    LABELLED_PATTERNS = (
         ("medicare labeled",
-         r"(?<=\bmedicare\s{0,4}(?:card|no\.?|number)?\s{0,4}:?\s{0,4})"
-         r"[2-6]\d{3}" + _SEP_OPT + r"\d{5}" + _SEP_OPT + r"\d\b"),
+         r"\b[2-6]\d{3}" + _SEP_OPT + r"\d{5}" + _SEP_OPT + r"\d\b"),
     )
     BARE_PATTERNS = (("medicare bare", r"\b[2-6]\d{9}\b"),)
     context = ("medicare",)
@@ -197,12 +213,13 @@ class AuMedicareMalformedRule(ChecksumRule):
     INVALID_ENTITY = "AU_MEDICARE_MALFORMED"
     RULE_TEXT = "Medicare first digit outside 2-6 (structurally impossible)"
     DIGIT_COUNTS = (10,)
-    IN_SPAN_PATTERNS = (
+    GROUPED_PATTERNS = (
         ("medicare malformed grouped",
          r"\b[017-9]\d{3}" + _SEP + r"\d{5}" + _SEP + r"\d\b"),
+    )
+    LABELLED_PATTERNS = (
         ("medicare malformed labeled",
-         r"(?<=\bmedicare\s{0,4}(?:card|no\.?|number)?\s{0,4}:?\s{0,4})"
-         r"[017-9]\d{3}" + _SEP_OPT + r"\d{5}" + _SEP_OPT + r"\d\b"),
+         r"\b[017-9]\d{3}" + _SEP_OPT + r"\d{5}" + _SEP_OPT + r"\d\b"),
     )
     BARE_PATTERNS = (("medicare malformed bare", r"\b[017-9]\d{9}\b"),)
     context = ("medicare",)
@@ -216,12 +233,13 @@ class AuAbnRule(ChecksumRule):
     INVALID_ENTITY = "AU_ABN_INVALID"
     RULE_TEXT = "ABN mod-89 checksum failed"
     DIGIT_COUNTS = (11,)
-    IN_SPAN_PATTERNS = (
+    GROUPED_PATTERNS = (
         ("abn grouped",
          r"\b\d{2}" + _SEP + r"\d{3}" + _SEP + r"\d{3}" + _SEP + r"\d{3}\b"),
+    )
+    LABELLED_PATTERNS = (
         ("abn labeled",
-         r"(?<=\babn\s{0,4}(?:no\.?|number)?\s{0,4}:?\s{0,4})"
-         r"\d{2}" + _SEP_OPT + r"\d{3}" + _SEP_OPT + r"\d{3}"
+         r"\b\d{2}" + _SEP_OPT + r"\d{3}" + _SEP_OPT + r"\d{3}"
          + _SEP_OPT + r"\d{3}\b"),
     )
     BARE_PATTERNS = (("abn bare", r"\b\d{11}\b"),)
@@ -236,11 +254,12 @@ class AuAcnRule(ChecksumRule):
     INVALID_ENTITY = "AU_ACN_INVALID"
     RULE_TEXT = "ACN complement checksum failed"
     DIGIT_COUNTS = (9,)
-    IN_SPAN_PATTERNS = (
+    GROUPED_PATTERNS = (
         ("acn grouped", r"\b\d{3}" + _SEP + r"\d{3}" + _SEP + r"\d{3}\b"),
+    )
+    LABELLED_PATTERNS = (
         ("acn labeled",
-         r"(?<=\bacn\s{0,4}(?:no\.?|number)?\s{0,4}:?\s{0,4})"
-         r"\d{3}" + _SEP_OPT + r"\d{3}" + _SEP_OPT + r"\d{3}\b"),
+         r"\b\d{3}" + _SEP_OPT + r"\d{3}" + _SEP_OPT + r"\d{3}\b"),
     )
     BARE_PATTERNS = (("acn bare", r"\b\d{9}\b"),)
     context = ("australian company number", "acn")
@@ -254,14 +273,13 @@ class CreditCardRule(ChecksumRule):
     INVALID_ENTITY = "CREDIT_CARD_INVALID"
     RULE_TEXT = "Luhn checksum failed"
     DIGIT_COUNTS = tuple(range(12, 20))
-    IN_SPAN_PATTERNS = (
+    GROUPED_PATTERNS = (
         ("card grouped 4-4-4-4",
          r"\b\d{4}" + _SEP + r"\d{4}" + _SEP + r"\d{4}" + _SEP + r"\d{4}\b"),
         ("card grouped amex",
          r"\b\d{4}" + _SEP + r"\d{6}" + _SEP + r"\d{5}\b"),
-        ("card labeled",
-         r"(?<=\bcard\s{0,4}(?:no\.?|number)?\s{0,4}:?\s{0,4})\d{12,19}\b"),
     )
+    LABELLED_PATTERNS = (("card labeled", r"\b\d{12,19}\b"),)
     BARE_PATTERNS = (("card bare", r"\b\d{15,16}\b"),)
     context = ("credit", "card", "visa", "mastercard", "amex", "debit")
 
@@ -361,16 +379,22 @@ class AuAccountNumberRule(PatternRule):
         # (?![.,]?\d) is the issue-#3 amount guard (issue #11): without it the
         # grouped alternative eats the integer part of a following amount
         # ('A/C 30-743-3257 148.74' -> '... 148').
+        # The a/c-family form. The label moved OUT of the span on 2026-08-14
+        # (it is `a/c` in `context` now, attached STRICTly): matching it in
+        # span put the label inside the placeholder, which is the one place
+        # the standing "a label is evidence, not part of the value" rule was
+        # knowingly broken. The digit shape is unchanged, including the
+        # issue-#3 amount guard.
         Pattern(
             "labeled account",
-            r"\b(?:a/?c|acct?)\b\.?\s*(?:no\.?|number|#)?\s*:?\s*"
-            r"(?:\d{5,10}|\d{1,6}(?:[ -]\d{1,6}){1,3})(?![.,]?\d)\b",
+            r"\b(?:\d{5,10}|\d{1,6}(?:[ -]\d{1,6}){1,3})(?![.,]?\d)\b",
             0.5,
+            attach=STRICT,
         ),
     )
     context = (
-        "account", "acct", "acc", "savings", "cheque", "offset", "loan",
-        "repayment", "redraw",
+        "account", "acct", "acc", "a/c", Exact("ac"), "savings", "cheque",
+        "offset", "loan", "repayment", "redraw",
     )
 
     def validate(self, matched: str) -> bool | None:
@@ -415,15 +439,14 @@ class AuAfslRule(PatternRule):
     licence into AFSL_1 and AFSL_2."""
 
     entity = "AU_AFSL"
-    patterns = (
-        Pattern(
-            "afsl labeled",
-            r"(?<=\b(?:afsl|(?:australian\s+)?(?:financial\s+services|afs)\s+"
-            r"(?:licen[cs]e|lic\.?))\s{0,4}(?:no\.?|number|#)?\s{0,4}:?\s{0,4})"
-            r"\d{5,6}\b",
-            0.7,
-        ),
-    )
+    patterns = (Pattern("afsl labeled", r"\b\d{5,6}\b", 0.7, attach=STRICT),)
+    # Three spellings, as data rather than as a regex alternation (2026-08-14).
+    # `afs lic` is a STEM: a label match runs to the end of its own word, so
+    # one entry covers `AFS Licence`, `AFS License`, `AFS Lic` and `AFS Lic.`,
+    # and `financial services lic` covers the spelled-out form with or without
+    # `Australian` in front. The filler between label and value (`No`, `#`) is
+    # the shared list in `pii.core.labels`, not this rule's business.
+    context = ("afsl", "afs lic", "financial services lic")
 
 
 class AuCreditLicenceRule(PatternRule):
@@ -437,13 +460,9 @@ class AuCreditLicenceRule(PatternRule):
 
     entity = "AU_CREDIT_LICENCE"
     patterns = (
-        Pattern(
-            "credit licence labeled",
-            r"(?<=\b(?:(?:australian\s+)?credit\s+(?:licen[cs]e|lic\.?)|acl)"
-            r"\s{0,4}(?:no\.?|number|#)?\s{0,4}:?\s{0,4})\d{5,6}\b",
-            0.7,
-        ),
+        Pattern("credit licence labeled", r"\b\d{5,6}\b", 0.7, attach=STRICT),
     )
+    context = ("acl", "credit lic")
 
 
 class AtfTailRule(PatternRule):

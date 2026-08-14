@@ -2738,3 +2738,82 @@ the move; new completed tasks append to the matching section with their records.
       `116832820` clears the TFN mod-11 checksum, so `AuTfnRule`'s bare `\b\d{9}\b` pattern
       types it `AU_TFN` at 1.0 — the documented ~1-in-11 rate, landing on a real value. It
       strips either way; only the placeholder class is wrong.
+
+- [x] **A label reaches its value by being near it ON THE PAGE — the character window is
+      replaced by visual attachment** *(Sergei, 2026-08-14; design in ARCHITECTURE, the item it
+      closes was written the same day in TODO.md)*. Built as one change rather than staged, on
+      Sergei's call ("I'd aim for all 1-4 from the beginning. It feels the right and honest
+      thing to do, and more generalizable"), with the attachment mode left switchable
+      (`--context-attach window|layout`) so one corpus could be scored both ways and a
+      regression attributed to a cause rather than to a release.
+
+      **What was built.** `Layout` protocol + `Context`/`Attachment` records in `engine.py`;
+      `TextLayout` (left-only, per Sergei — "let's only [use] left proximity for text now") and
+      the retiring `WindowLayout` beside it; `PageLayout` in the new `layout.py`; the shared
+      separator/filler vocabulary in the new `labels.py`; `attach=NEAR|STRICT` on `Pattern`;
+      the label spellings of nine rules moved out of regex lookbehinds into `context`.
+
+      **Four design points that only emerged while building it, all of them from real data:**
+
+      - **The left band is a word COUNT, not a distance.** Measured on the specimen page
+        (300 dpi, 34 px lines, 2396 px wide): the true label `Statement Enquiries` sits 462 px
+        from its value and the false promoter `cheque` 748 px from its own, so no threshold
+        separates them — but the false promoter is *nine words* back and the true one is two.
+        A distance limit was written first and deleted.
+      - **The `above` band selects REGIONS, not words.** Per-word x-overlap admits only the
+        label word directly overhead, so `Account Number` above a short value contributes
+        `Account` alone and a wrapped four-word licence label never assembles. OCR detection
+        regions are already the visually-grouped unit and `PlacedWord.region_box` carries them.
+      - **STRICT gates but does not boost.** A lookbehind's evidence is already priced into the
+        pattern's declared score; boosting on top would double-count it. Not boosting is what
+        made converting nine lookbeheads **score-neutral**, which is the only reason a change
+        this wide could be trusted without re-tuning every rule.
+      - **A label spelling is a stem, and must begin at a word boundary.** Open-ended stems keep
+        the lists short (`account` covers `Accounts`, `afs lic` covers `AFS Licence`, and the
+        gap is measured from the end of the label's own WORD so `ence` never lands in it), but
+        `ac` — a real a/c-family form — would then match inside `across` and report `Across` as
+        a label. Hence `labels.Exact` for spellings too short to be stems.
+
+      **Measured, layer 1 alone, window vs layout on the same inputs.** Text corpus (seed 42,
+      the eight generated documents): recall on strip-expected identifier truths **unchanged at
+      75/90** — the same fifteen misses either way, all pre-existing (drivers licences have no
+      layer-1 rule) — while false positives fell **54 → 39**. Real documents end to end
+      (`--layer0 off`, real OCR): `AmplifyBusiness-…-24Sep2023.pdf` lost exactly three map
+      entries, `ACCOUNT 013795`, `ACCOUNT 13 22 66` and `BSB 457 141` (the first two are the
+      reported bug, the third the BSB-inside-an-ABN false positive that has its own TODO item),
+      with the other eleven unchanged; `116832820_7_Insurance_Certificate.pdf` came out
+      **identical**, both AFSL numbers included, which is the check that the migrated licence
+      rule still works through OCR.
+
+      **The `above` band proven on a rendered page**, not only in unit geometry: a corpus
+      document rendered monospace, OCR'd, and detected both ways —
+
+          window  ACCOUNT_LABELLED_ABOVE   84593961  STRIPPED  <- window 'Account'
+          window  REFERENCE_ACROSS_COLUMN  794022    STRIPPED  <- window 'cheque'   (the bug)
+          layout  ACCOUNT_LABELLED_ABOVE   84593961  STRIPPED  <- above  'Account'  (the band)
+          layout  REFERENCE_ACROSS_COLUMN  794022    kept
+
+      Note the first row: the window got that one right *by luck*, the label happening to fall
+      inside 60 characters. The band gets it right by rule.
+
+      **Dual coverage.** `tests/pii/core/test_layout.py` (new, model-free — a page is a handful
+      of `PlacedWord`s laid out by hand) pins the bands, the region unit, the two-line vertical
+      reach, DPI-independence and strict attachment over a page; the attachment section of
+      `test_engine.py` pins the strengths, the word floor, score neutrality and the audit
+      record; `test_checksum_rules.py`'s helper now runs through the **Analyzer**, because since
+      this change `rule.detect()` is half a labelled rule and testing against it would report a
+      labelled candidate with no label anywhere near it. Corpus: `ACCOUNT_LABELLED_ABOVE`
+      (strip-expected, non-gated — an image-tier hit and a known text-tier miss, since text mode
+      is left-only by decision) and `REFERENCE_ACROSS_COLUMN` (keep-expected — 3/3 wrongly
+      stripped under the window, 0/3 under the band).
+
+      **The audit surface.** `Detection.attachment` reaches `--report`, so a promoted span says
+      which word promoted it and from where (`AU_BANK_ACCOUNT 0.50 '0007 3111 4' <- left
+      'Account'`). Diagnosing the original false positive meant reconstructing a 60-character
+      window by hand; that is the failure this closes. `_merge_overlaps` carries the winner's
+      attachment (and `recognizer`/`pattern`) onto the merged span, or the plan would arrive at
+      the report with the provenance stripped off.
+
+      Fast suite 619 passed. Accepted residual, named because it needs a specific layout rather
+      than being hypothetical: a two-column line whose LEFT column ENDS in a label word, beside
+      a right-column value with fewer than `word_floor` words before it, still attaches.
