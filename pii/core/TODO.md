@@ -459,6 +459,103 @@ below gets picked up against the old shape of the tool.
       rule is *"hopelessly ambiguous without context"* by its own docstring), so widening them
       buys recall against a much weaker guard. Measure before touching.
 
+      The two items below are the general answer to that damage, one for each half of the
+      corpus: repair from the document's own text layer where there is one, folding where there
+      is not.
+
+- [ ] **OCR repair from the PDF's own text layer** *(Sergei, 2026-08-14: "an OCR repair pass for
+      PDFs with text — match text blocks from the PDF and OCR and repair broken symbols")*.
+      A text PDF carries the true characters already; the OCR that layer 1 reads does not. On
+      `ServletRetrieve (6).pdf` p1 the OCR read the account number `018057571` as `O18057571`,
+      and **no rule matched anything at all** — `\b\d{5,10}\b` cannot start after a letter — so a
+      customer's account number survives a `--layer0 off` run unredacted. The text layer of that
+      same page has the digits.
+
+      **Measured before proposing it** (box overlap ≥ 0.4, PDF points × dpi/72):
+
+      | page | OCR words | matched to text layer | of those, differing |
+      |---|---|---|---|
+      | ServletRetrieve p1 | 194 | 183 (94%) | 23 |
+      | Amplify p1 | 353 | 314 (89%) | 2 |
+      | Amplify p3 | 227 | 192 (85%) | 1 |
+
+      and the differences are the bugs themselves: `O18057571` -> `018057571`, `O09` -> `009`.
+
+      **Similarity gating is part of the feature, not a refinement.** Tokenization diverges
+      between the two sources, and on that same page position alone picks the wrong partner:
+      OCR `944600` best-overlaps the text-layer word `000731114,`, and OCR `(from` overlaps
+      `944600,000731114,`. Swapping on position would replace a correct BSB with a different
+      account number — a repair that MANUFACTURES a value, which is worse than the damage. Gate
+      on a small edit distance under `fuzzy.py`'s confusion tables: `O18057571` vs `018057571`
+      passes, `944600` vs `000731114,` is nowhere near.
+
+      **"Text PDF" is not the boundary; "the part of the page the text layer covers" is.** The
+      Amplify p3 ABN would NOT be repaired — that footer has no text-layer counterpart at all
+      (`Westpac` and `457 141` are absent from the last page's text), it lives inside an
+      embedded image. The page still reports 85% coverage, which is the trap: a page-level
+      average hides WHICH words are missing, and here the missing ones are where the damage is.
+
+      **It does not overturn the treat-PDFs-as-images decision, provided the rule is: the text
+      layer is a repair source CONSTRAINED BY OCR GEOMETRY, never an independent detection
+      source.** Same shape as "a model box is a search constraint, not paint geometry" — an
+      untrusted source is admissible exactly where a trusted one pins it down. Only repair a
+      word the OCR already saw, only when positionally matched and similar, and never ADD words
+      the OCR missed. (Hidden text cannot leak into the output regardless: the output PDF is
+      rebuilt from pixels and has no text layer.)
+
+      **The seam is clean.** Repair at the `OcrPage` WORD level, before `linearize`: the source
+      map is then built from repaired words, so offsets, boxes, painting and the pseudonym map
+      stay consistent by construction with no remapping anywhere, and boxes stay OCR boxes,
+      which is what painting needs.
+
+      **The eval can already see this one** — rare here. The image tier renders pages from known
+      text, so "repaired OCR text vs the text it was rendered from" is a direct metric on data
+      that exists; no new probe is needed, unlike the folding item below.
+
+      Risks to design against: a text layer that does not match the pixels (a different
+      revision, or another tool's OCR baked in) — guard with a page-level match-rate and
+      similarity check and disable repair for THAT PAGE rather than the document; and the
+      coordinate transform, where dpi/72 held on these rotation-0 pages but rotation and cropbox
+      need the render matrix rather than a scalar. Worth stating in the record: this repairs
+      names, addresses and organizations too, not only digits — cleaner needles for
+      `locate_borrowed` and less work for every fuzzy tier.
+
+- [ ] **Fold OCR-confusable letters into digit runs, for content with no text layer**
+      *(2026-08-14; kept on Sergei's instruction — "yours still makes sense for non text
+      content"). Complementary to the repair item above, not an alternative to it*: repair
+      where the document carries the truth, fold where it does not — scans, and the parts of a
+      text PDF the text layer does not cover, of which the Amplify p3 footer is a live specimen
+      (`ABN 33 O07 457 141`, and in `ServletRetrieve (6).pdf` layer 0 read the same ABN as
+      `32 o09 656 74o`, so the glyphs really are ambiguous rather than the OCR being careless).
+
+      **The mechanism, and why it is not "widen the digit patterns".** Widening every regex to
+      admit letters changes every rule at once with no guard. Instead apply a strict **1:1
+      character substitution** (`O`->`0`, `I`/`l`->`1`, `S`->`5`, `B`->`8`, ...) to produce a
+      DETECTION VIEW of the page text, and run layer 1 on that. 1:1 is the whole point: offsets
+      are preserved exactly, so a span found on the folded view is that span on the real text
+      and nothing downstream — source map, boxes, painting, pseudonym map — is touched.
+
+      **The checksum is an oracle for the fold**, which no regex-widening approach can match:
+      `32 O09 656 74O` folds to `32 009 656 740` and PASSES the ABN checksum, which is about as
+      strong a confirmation as a guess can get. Fold speculatively, keep what validates, discard
+      what does not. For the classes with no checksum — accounts, the ones that actually leaked
+      here — the guard is an ATTACHED LABEL, which the 2026-08-14 attachment work made cheap to
+      express: `Account Number` sits directly left of `O18057571`.
+
+      **The unit is the separator-grouped numeric FIELD, not the token.** `O07` carries two
+      digits and one letter, so any token-level digit-ratio floor high enough to be safe misses
+      it; it is only obviously numeric as part of `33 O07 457 141`.
+
+      The real risk is folding a genuine alphanumeric reference, and the same documents are full
+      of them — `RHL-155634`, `FT231832FXL2`, `me0240.v02/202002/216436` must all survive.
+
+      **The corpus cannot see any of this**, which is now the fourth instance of that lesson
+      (separator forms, label spellings, and this): the generator emits clean text, so no eval
+      run could ever catch an OCR-damage bug. The probe comes first — damage injection into
+      truth-bearing values on the image tier. And if the repair item lands first, re-measure
+      what damage is actually left before tuning this: repair removes most of it on text PDFs,
+      and the remainder is what this item exists for.
+
 - [ ] **A keep entry is filed under a class the pipeline may not settle on** *(found
       2026-08-12 while looking at the 1.pdf false positives)*. `entity_keep.txt` is sectioned by
       entity type and the match runs against the class the value ENDS UP with, which need not
