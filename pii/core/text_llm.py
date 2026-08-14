@@ -158,6 +158,10 @@ class TextDetector:
     server.
     """
 
+    # See VlmDetector.layer0 — the modality this detector is, for the run to
+    # describe itself with.
+    layer0 = "text"
+
     def __init__(
         self,
         url: str = DEFAULT_URL,

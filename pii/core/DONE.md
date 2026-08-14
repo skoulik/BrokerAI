@@ -2457,3 +2457,87 @@ the move; new completed tasks append to the matching section with their records.
       *inside* it — a truncation of the value beating the whole of it. Being in the box at all
       is the positional agreement; how much of it a candidate fills is not. Exact and squash
       score distance 0, so this only ever reorders the fuzzy tier.
+
+- [x] **Skipping layer 0 entirely — `--layer0 off`** (Sergei, 2026-08-14). A mechanism to not
+      run the semantic detector at all, asked for with three uses: a fast dry run, less
+      sensitive data where speed is the priority, and debugging layer 1 in isolation. The
+      current design is in [ARCHITECTURE.md](ARCHITECTURE.md) ("Skipping layer 0 is an
+      explicit, reported downgrade"); this is the record of how it was decided.
+
+      **It is the `--no-ner` capability, and the 2026-07-15 ruling was narrowed rather than
+      reversed.** That ruling ("its name leaks made it unsafe") had been restated in five
+      places as "a strip entry point always takes a detector — patterns-only must not be
+      reachable by omitting an argument". Re-reading it before implementing anything: what
+      made `--no-ner` unsafe was not that patterns-only output can exist but that it was
+      reachable *silently*, and the harm is an operator who believes a document was
+      semantically redacted when it was not. So the rule today is that patterns-only must not
+      be reachable **by omission or by accident, and must never be silent**. Sergei's call on
+      the narrowing, and on the scope: `strip` as well as `analyze` — full end-to-end, just
+      skipping the VLM — because use case 2 produces a real output document.
+
+      **The seam is a detector object (`vlm.NullDetector`), not a `layer0=False` parameter.**
+      Considered and rejected: threading a boolean through `strip_text` / `strip_csv` /
+      `strip_image` / `strip_pdf` changes four signatures and re-creates the exact
+      reachable-by-omission risk the invariant exists to stop. A detector that answers nothing
+      leaves every entry point *unchanged* — they still require a detector, so the invariant
+      survives literally — and the degeneration was already correct and already tested:
+      `merge_detections([], text)` reduces to `PiiPipeline.detect`, pinned since 2026-08-09 by
+      `test_layer1_alone_when_the_detector_finds_nothing`. Total core change: one ~10-line
+      class plus a `layer0` class attribute on each of the three detectors.
+
+      **The image/PDF path was the pleasant surprise.** With no findings, `read_page` still
+      OCRs and linearizes, and the back end still paints and reassembles, so the mode becomes
+      OCR → linearize → layer 1 → paint with no code changes at all. That is regime 3 of the
+      TODO's vision/text switch item minus the text detector. Measured on a one-page synthetic
+      PDF: **36 s wall, of which ~30 s is the paddle model load**, against the ~300 s/page a
+      vision run costs — the speedup is real because the cost was model prefill, not OCR.
+      The `layer0` attribute is a string (`vision`/`text`/`off`) rather than a boolean or a
+      type check precisely so those two planned switches extend it without touching its readers.
+
+      **Three guardrails, built with it.** (1) `--geometry vlm` is refused in combination:
+      that path never runs OCR, so with layer 0 silent there is no text for layer 1 either and
+      the run would write an unredacted copy of the input — the one failure mode an operator
+      cannot see. (2) The warning is ungated by `--report`, because what a run did not look
+      for is not a reporting detail, and it is printed *before* the results so a plausible
+      list of redacted identifiers is never read innocently. (3) The debug findings listing
+      records `summary.layer0`, which is what disambiguates zero — an empty listing otherwise
+      reads as "the model found nothing", the same confusion `DetectorResult.incomplete`
+      exists to prevent one level up. Sergei ruled that `map.json` deliberately does NOT carry
+      it: the map is the rehydration contract, and run provenance belongs in the debug artifacts.
+
+      **Verification.** Fast suite **565 passed** (was 553: +4 `test_vlm.py`, +2
+      `test_text_mode.py`, +5 `test_cli.py`, +1 `test_debug_overlay.py`; one existing
+      findings-summary assertion updated for the new key). The CLI test that proves the point
+      stubs nothing — `test_layer0_off_needs_no_model_server` would fail if a server were
+      contacted, so passing is the assertion. The cost is pinned as a test rather than left to
+      prose: `test_layer0_off_redacts_identifiers_and_leaves_names` asserts the TFN goes and
+      "Olga Petrova" and "14 Bourke St" stay. End-to-end smoke runs (text, analyze, and a
+      1-page PDF with `--debug all`) confirmed the warning, the refused geometry combination,
+      `summary.layer0 == "off"`, and a `map.json` carrying only layer-1 classes.
+
+      **Refinement the same day, after Sergei asked whether layer-0 debug output is worth
+      generating at all under the flag.** It is not, and the reason is stronger than
+      redundancy: `_layer0_segments` and `_locate_segments` both iterate `PageDebug.placements`,
+      so with no detector `--debug all` wrote two overlays that were *unannotated copies of the
+      original page*, plus an empty findings listing. The debug set is near-PII by its own
+      warning (`_debug_note` says to keep it local, like the map file), so those were two extra
+      unredacted copies of the source document carrying no diagnostic information — a liability,
+      not clutter. `DebugSpec` gained a `findings` flag and `debug_overlay` a
+      `drop_layer0_layers` helper; `_debug_spec` in the CLI applies both once, so `--image` and
+      `--pdf` inherit one decision instead of two conditionals.
+
+      Distinct from the empty `layer-0` overlay under `--geometry ocr`, and the difference is
+      why this is not a general "never draw an empty layer" rule: there layer 0 RAN and only its
+      boxes are missing, `locate` is populated, and the emptiness is the truth about that regime.
+
+      Sergei left the explicit-request case to judgement (skip silently or warn); chosen: skip
+      with a note naming the dropped layers, always — including under `all`, where the note is
+      what explains a two-file list against the four that were asked for. If every requested
+      layer needed layer 0, no debug output is written at all rather than a blank render.
+      `summary.layer0` was kept but re-justified: with the off case no longer writing a listing,
+      its job is naming the modality (`vision`/`text`) for the switches in TODO.md.
+
+      Verified end-to-end on the same 1-page PDF: 2 overlays (`ocr`, `layer-1`), no
+      findings.json, and the note printed. Fast suite **573 passed** (+8: 4 CLI unit tests over
+      `_debug_spec`/`_debug_note`, 4 in `test_debug_overlay.py`; the summary test written earlier
+      that day was reframed from the "off" case onto modality naming).

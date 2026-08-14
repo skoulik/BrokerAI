@@ -119,9 +119,9 @@ There is no geometry leg — the model quotes from the very string it was handed
 value needs no reconciliation. See "Layer 0" below.
 
 Layer 1 on its own stays reachable as `PiiPipeline.detect` — as a *layer*, which is what
-`merge_detections` consumes — but never as a way to strip a document: `strip_text` and
-`strip_csv` require a detector, because a patterns-only strip is the `--no-ner` regime retired
-2026-07-15 as unsafe and must not be reachable by omitting an argument.
+`merge_detections` consumes. `strip_text` and `strip_csv` still *require* a detector, so a
+patterns-only strip can never happen by omitting an argument; asking for one explicitly is
+`--layer0 off`, which passes a `NullDetector` (decision below).
 
 `PiiPipeline` then: (1) filters to strip-listed entity types, (2) union-merges overlapping
 spans, (3) allocates placeholders in document order from the `PseudonymMap` and splices them
@@ -183,14 +183,15 @@ assigned, so the record and the code agree:
 | 3 | Local LLM audit (llama-server) | contextual identifiers ("the borrower's wife, a dentist in Wagga Wagga") | planned |
 
 **Layer 0 replaced layer 2 outright on 2026-08-09**; there is no detector choice left. Every
-strip mode runs layer 0 and merges layer 1 on top (`merge_detections` — refine, validate,
-extend), so a run is a union of 0 and 1. The mode entry points *require* a detector: layer 1
-alone is the `--no-ner` patterns-only regime retired 2026-07-15 as unsafe, and it must not be
-reachable by forgetting an argument. `PiiPipeline.detect` still exposes layer 1 on its own —
-as a *layer*, which is what `merge_detections` consumes, never as a way to strip a document.
+strip mode runs layer 0 by default and merges layer 1 on top (`merge_detections` — refine,
+validate, extend), so a run is a union of 0 and 1. The mode entry points *require* a detector:
+layer 1 alone is a knowingly reduced redaction, and it must not be reachable by forgetting an
+argument. `PiiPipeline.detect` still exposes layer 1 on its own — as a *layer*, which is what
+`merge_detections` consumes, never as a way to strip a document.
 
-Consequence, accepted knowingly: **every input mode now requires a llama-server**, including
-the tier-1 acceptance gate. There is no offline path.
+Consequence, accepted knowingly: **every input mode needs a llama-server** for a full-quality
+run, including the tier-1 acceptance gate. The one offline path is `--layer0 off`, which is an
+explicit, reported downgrade rather than a regime (decision below).
 
 Standalone `LOCATION` detection was retired 2026-07-23 (decision below) — bare place names
 pass verbatim.
@@ -327,6 +328,61 @@ live (measured 2026-08-09, when the paddle-worker retirement was attempted on th
 the wrong assumption). Retiring the chassis the same day is what finished the job — see the
 paddle worker decision below.
 
+### Skipping layer 0 is an explicit, reported downgrade — never an omission (2026-08-14)
+
+`--layer0 off` runs layer 1 alone: no model server is contacted, which is one to two orders of
+magnitude faster. Asked for by Sergei for three uses — a fast dry run, low-sensitivity
+documents where speed wins, and debugging layer 1 in isolation.
+
+This is the same *capability* as the `--no-ner` regime removed 2026-07-15, and that ruling is
+**narrowed rather than reversed**. Re-read, what made `--no-ner` unsafe was not that
+patterns-only output exists but that it was reachable *silently*: the danger is an operator who
+believes a document was semantically redacted when it was not. So the rule today is that
+patterns-only must not be reachable **by omission or by accident, and must never be silent** —
+which an explicit flag satisfies and a defaulted argument does not.
+
+**The seam is a detector object, not a `layer0=False` parameter.** `vlm.NullDetector` answers
+every `detect` with no findings. The strip entry points therefore keep requiring a detector
+*unchanged* — the invariant survives literally rather than by convention — and no mode
+signature moves: `merge_detections` folds an empty layer-0 set and degenerates to
+`PiiPipeline.detect`, which is a path the testbench already pinned. It also makes the regime a
+thing the run can *see*: each detector carries a `layer0` string (`vision` / `text` / `off`),
+which is what the warning and the debug listing read, and what the two planned vision/text
+switches ([TODO.md](TODO.md)) extend rather than replace.
+
+On the image and PDF paths the degeneration is more than "nothing happens": OCR, linearization,
+painting and reassembly all still run, so the mode becomes **OCR → linearize → layer 1 → paint**.
+That is regime 3 of the TODO's switch item minus the text detector, and it is where the speedup
+lives — the ~300 s/page is model prefill, not OCR.
+
+Three guardrails, built with it rather than after it:
+
+- **`--geometry vlm` is refused with it.** That path never runs OCR, so with layer 0 silent
+  there is no text for layer 1 either: the run would detect nothing at all and write an
+  unredacted copy of the input, which is the one failure an operator cannot see. Rejected, not
+  silently re-geometried — the same reasoning already written down for the planned text-only mode.
+- **Every run says so, ungated by `--report`.** What a run did not look for is not a reporting
+  detail. Printed before the results, so an operator reading a plausible list of redacted
+  identifiers has already been told that PERSON, ADDRESS, ORGANIZATION and DATE_OF_BIRTH were
+  never sought.
+- **The debug artifacts that describe layer 0 are not written at all** — the `layer-0` and
+  `locate` overlays and the findings listing (Sergei, 2026-08-14). All three are drawn from
+  `PageDebug.placements`, so with no detector they would be *blank*, and a blank overlay is
+  still a full unredacted render of the source page: the debug set is near-PII by its own
+  warning, so writing two extra copies of the document that carry no diagnostic information is
+  a liability rather than clutter. Distinct from the empty `layer-0` overlay under
+  `--geometry ocr`, where layer 0 *ran* and only its boxes are absent — `locate` is populated
+  there and the emptiness is the truth about that regime. Dropping is announced, never silent,
+  so a shorter file list is explained rather than puzzling; if every requested layer needed
+  layer 0, nothing is written. `map.json` deliberately records none of this (Sergei,
+  2026-08-14): the map is the rehydration contract, and how a run was performed belongs to the
+  debug artifacts. `summary.layer0` survives for the listings that *are* written, where its job
+  is naming the modality (`vision` / `text`) once both can run.
+
+What it costs is specific, and pinned by a test rather than left to prose: layer 1 owns no
+PERSON beyond the mechanical `JointNameRule` and no ADDRESS, ORGANIZATION or DATE_OF_BIRTH at
+all, so identifiers are redacted and names and addresses stay on the page.
+
 One layer-1 rule outlived the retirement and should not be mistaken for NER leftovers:
 `AuAccountNumberRule`'s >=5-digit floor (`validate`). It was introduced alongside
 the GLiNER2 guess floors on 2026-07-14 but is a property of the account *pattern*, not of any
@@ -349,10 +405,6 @@ retired 2026-07-23 when the policy above was adopted, taking its `LOCATION_MIN_C
 trade-off with it. spaCy's own NER had been retired as a detector earlier the same week (glue
 PERSON spans across line breaks on OCR text, date-as-PERSON false positives), and the library
 itself went with the chassis on 2026-08-09 — decision above.
-
-**The `--no-ner` patterns-only regime is gone** (Sergei, 2026-07-15): its name leaks made it
-unsafe. That ruling is why the mode entry points *require* a layer-0 detector today —
-patterns-only must not be reachable by forgetting an argument.
 
 Layer-1 composition is regression-tested in `tests/pii/core/test_registry_policy.py`: no rule
 claims ADDRESS or DATE_OF_BIRTH, PERSON is claimed only by the mechanical `JointNameRule`, the

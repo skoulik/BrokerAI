@@ -190,3 +190,36 @@ def test_detector_sees_the_whole_text(pipeline):
     text = "line one\nline two\n"
     strip_text(text, pipeline, PseudonymMap(), detector=detector)
     assert detector.seen == [text]
+
+
+# ------------------------------------------------- layer 0 turned off
+
+def test_null_detector_is_the_supported_way_to_skip_layer_0(pipeline):
+    """--layer0 off. The entry point still takes a detector — the patterns-only
+    regime must not be reachable by omitting the argument — so the plan is
+    exactly layer 1's and gets there through the ordinary merge."""
+    from pii.core.vlm import NullDetector
+
+    text = f"TFN {VALID_TFN} for Olga"
+    spans, invalid, unlocated, incomplete = detect_text(
+        text, pipeline, NullDetector()
+    )
+    plan, _ = pipeline.detect(text)
+    assert [(s.entity_type, s.start, s.end) for s in spans] == [
+        (p.entity_type, p.start, p.end) for p in plan
+    ]
+    assert unlocated == []
+    assert not incomplete
+
+
+def test_layer0_off_redacts_identifiers_and_leaves_names(pipeline):
+    """The cost of the flag, pinned so it cannot be forgotten: layer 1 owns no
+    PERSON beyond JointNameRule, so a name survives a --layer0 off run while
+    the checksummed identifier beside it does not."""
+    from pii.core.vlm import NullDetector
+
+    text = f"Olga Petrova, TFN {VALID_TFN}, of 14 Bourke St"
+    result = strip_text(text, pipeline, PseudonymMap(), NullDetector())
+    assert VALID_TFN not in result.text
+    assert "Olga Petrova" in result.text
+    assert "14 Bourke St" in result.text

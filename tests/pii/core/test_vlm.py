@@ -891,3 +891,46 @@ def test_strip_orgs_still_reaches_model_findings(make_pipeline):
         "paid WOOLWORTHS today", p,
     )
     assert [r.entity_type for r in result.spans] == ["ORGANIZATION"]
+
+
+# ------------------------------------------------- layer 0 turned off
+
+def test_null_detector_finds_nothing_and_asks_nobody():
+    """--layer0 off is a detector that answers nothing, not a missing
+    argument: the strip entry points still require one, so the patterns-only
+    regime stays unreachable by omission."""
+    from pii.core.vlm import NullDetector
+
+    detector = NullDetector()
+    result = detector.detect(object())
+    assert result.findings == []
+    assert detector.layer0 == "off"
+
+
+def test_null_detector_reports_nothing_incomplete():
+    """Nothing was asked, so nothing was cut off. A page whose answer was LOST
+    is a different fact and must not report the same way — an operator reading
+    `incomplete` is asking what went missing, not what was never requested."""
+    from pii.core.vlm import NullDetector
+
+    assert not NullDetector().detect(object()).incomplete
+
+
+def test_null_detector_localizes_without_a_server():
+    """Pass 2 runs unconditionally under the default hybrid geometry, so it
+    must be reachable with no transport at all."""
+    from pii.core.vlm import NullDetector
+
+    assert NullDetector().localize(object(), []).findings == []
+
+
+def test_the_detectors_name_their_own_modality():
+    """The run describes itself from the detector rather than from a flag the
+    front-end has to remember — a plain string, so the vision/text switches
+    planned in core/TODO.md extend it without touching its readers."""
+    from pii.core.text_llm import TextDetector
+    from pii.core.vlm import NullDetector, VlmDetector
+
+    assert VlmDetector.layer0 == "vision"
+    assert TextDetector.layer0 == "text"
+    assert NullDetector.layer0 == "off"

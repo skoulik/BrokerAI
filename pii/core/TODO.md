@@ -76,9 +76,12 @@ below gets picked up against the old shape of the tool.
 
       Guardrails that must be built with the switches, not after them:
 
-      - **Both off must be refused at the front-end**, loudly. It is the `--no-ner` patterns-only
-        regime retired 2026-07-15 as unsafe, and the standing rule is that a strip entry point
-        always takes a detector — it must not become reachable by turning two flags off.
+      - **Both off is `--layer0 off`, which now exists** (2026-08-14, decision in
+        [ARCHITECTURE.md](ARCHITECTURE.md)) — so the requirement is no longer "refuse it" but
+        "route to it": turning both modalities off must land on the same explicit, warned,
+        `NullDetector` path rather than becoming a second, quieter way to reach patterns-only.
+        The `layer0` string these switches extend (`vision`/`text`/`off`) is already carried by
+        each detector and read by the warning and the debug listing.
       - **Turning vision off is a knowingly reduced redaction, not a free speedup**, and the
         run output has to say so. What is given up is listed above (no-OCR-text content, native
         layout reading); an operator choosing speed should see that in the report, and a

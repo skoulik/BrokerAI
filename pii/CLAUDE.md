@@ -75,9 +75,20 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   `tests/pii/core/test_registry_policy.py` fails if anything there claims ADDRESS or
   DATE_OF_BIRTH, or claims PERSON without being the mechanical `JointNameRule`.
 - **A strip entry point always takes a detector.** `strip_text` / `strip_csv` / `strip_image` /
-  `strip_pdf` require one — layer 1 alone is the `--no-ner` regime retired 2026-07-15 as unsafe
-  (its name leaks), and it must not be reachable by omitting an argument. `PiiPipeline.detect`
-  stays public as a *layer*, which is what `merge_detections` consumes.
+  `strip_pdf` require one, with no default. `PiiPipeline.detect` stays public as a *layer*,
+  which is what `merge_detections` consumes.
+- **Patterns-only is reachable only by asking for it, and never silently.** `--layer0 off`
+  passes a `NullDetector`; that is the ONLY route. Layer 1 alone leaves names and addresses on
+  the page, so what made the retired `--no-ner` unsafe (2026-07-15) was its silence, not its
+  existence — keep both guards: the entry points still demand a detector object, and the run
+  warns ungated by `--report`. Never add a `layer0=False` parameter or a defaulted detector:
+  that is the omission the rule forbids.
+- **A debug artifact that would be blank is not written.** The `layer-0` and `locate` overlays
+  and the findings listing all come from `PageDebug.placements`, so `--layer0 off` would render
+  them as unannotated copies of the ORIGINAL page — and the whole debug set is near-PII. Two
+  extra unredacted copies of the document carrying no diagnostics is a liability, so
+  `_debug_spec` drops them and says so. Not the same as the empty `layer-0` overlay under
+  `--geometry ocr`, where layer 0 ran, `locate` is populated, and the emptiness is information.
 - **No standalone place-name detection.** A lone city/town name passes verbatim; `LOCATION` is
   not in `DEFAULT_STRIP_ENTITIES` or the placeholder map. Full addresses and suburb-postcode
   lines still strip, as layer-0 ADDRESS. Rationale in

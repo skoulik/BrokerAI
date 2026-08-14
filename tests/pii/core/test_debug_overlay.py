@@ -381,8 +381,49 @@ def test_the_findings_summary_counts_the_two_states_worth_finding(tmp_path):
     write_findings(path, [findings_record(_boxless_debug(), page=1)])
     payload = json.loads(path.read_text("utf-8"))
     assert payload["summary"] == {
-        "pages": 1, "findings": 3, "without_box": 2, "unplaced": 1
+        "layer0": "on", "pages": 1, "findings": 3,
+        "without_box": 2, "unplaced": 1,
     }
+
+
+def test_the_findings_summary_names_the_detector_that_produced_it(tmp_path):
+    """A listing says what was found, not what was ASKED — and the two diverge
+    once vision and text can run independently, because they fail differently.
+    'Found nothing' has to be readable off the artifact."""
+    import json
+
+    from pii.core.debug_overlay import write_findings
+
+    path = tmp_path / "page.clean.debug.findings.json"
+    write_findings(path, [], layer0="text")
+    payload = json.loads(path.read_text("utf-8"))
+    assert payload["summary"]["layer0"] == "text"
+    assert payload["summary"]["findings"] == 0
+
+
+def test_the_layer_0_dependent_overlays_are_named_and_separable():
+    """Both are drawn from placements, so with no layer 0 they render as
+    unannotated copies of the original page — near-PII files carrying nothing.
+    Splitting them out is what lets the front end decline to write them."""
+    from pii.core.debug_overlay import DEBUG_LAYERS, drop_layer0_layers
+
+    keep, dropped = drop_layer0_layers(DEBUG_LAYERS)
+    assert keep == ("ocr", "layer-1")
+    assert dropped == ("layer-0", "locate")
+
+
+def test_dropping_leaves_a_request_that_needs_no_layer_0_untouched():
+    from pii.core.debug_overlay import drop_layer0_layers
+
+    assert drop_layer0_layers(("ocr", "layer-1")) == (("ocr", "layer-1"), ())
+
+
+def test_a_spec_writes_its_findings_listing_by_default():
+    """The suppression is opt-in: a normal run must keep the listing, which is
+    the only record of a finding the model gave no box for."""
+    from pii.core.debug_overlay import DebugSpec
+
+    assert DebugSpec(layers=("ocr",), path="out.png").findings is True
 
 
 def test_the_findings_listing_records_the_borrowed_half_of_the_locator():

@@ -513,6 +513,12 @@ class VlmDetector:
     distribution, so it is an A/B axis rather than a serialization detail.
     """
 
+    # Which layer-0 modality this detector IS, for the run to describe itself
+    # with (the front-end banner, the debug findings listing). A plain string
+    # rather than a type check, so the vision/text switches planned in
+    # core/TODO.md can extend the vocabulary without touching its readers.
+    layer0 = "vision"
+
     def __init__(
         self,
         url: str = DEFAULT_URL,
@@ -612,6 +618,41 @@ class VlmDetector:
             # keeps the sampling parameters above out of a launch script.
             payload["grammar"] = grammar
         return self.transport(self.url, payload, self.timeout)
+
+
+class NullDetector:
+    """Layer 0 turned OFF by request (`--layer0 off`): detects nothing.
+
+    A strip entry point still REQUIRES a detector and always will — a
+    patterns-only run must not be reachable by forgetting an argument
+    (2026-07-15) — so skipping layer 0 is done by passing a detector that
+    answers nothing, not by making the argument optional. Every mode then runs
+    unchanged: `merge_detections` folds an empty layer-0 set and degenerates to
+    layer 1 alone, and the image path still OCRs, linearizes and paints.
+
+    **This is a knowingly reduced redaction, not a free speedup.** Layer 1 owns
+    no PERSON beyond the mechanical `JointNameRule` and no ADDRESS,
+    ORGANIZATION or DATE_OF_BIRTH at all, so a run under this detector redacts
+    identifiers and leaves names and addresses on the page. The front-end says
+    so on every run, and the debug findings listing records the regime, because
+    zero findings must never be mistakable for a clean document — the same
+    reasoning that made `DetectorResult` carry `incomplete`.
+
+    `incomplete` is always empty, and that is a claim rather than a default:
+    nothing was asked, so nothing was cut off. A page whose answer was LOST is
+    a different fact and must not report the same way.
+    """
+
+    layer0 = "off"
+
+    def detect(self, subject) -> DetectorResult:
+        return DetectorResult([])
+
+    def localize(self, image, findings: list[VlmFinding]) -> DetectorResult:
+        # Reached under the default hybrid geometry, where `read_page` calls
+        # pass 2 unconditionally. There is nothing to place and no request is
+        # made, which is why this detector needs no server at all.
+        return DetectorResult(list(findings))
 
 
 def attach_boxes(

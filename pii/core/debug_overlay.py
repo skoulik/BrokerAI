@@ -79,6 +79,16 @@ from pii.core.paint import Segment, paint_segments
 # returns this order whatever order the operator typed.
 DEBUG_LAYERS = ("ocr", "layer-0", "locate", "layer-1")
 
+# The layers that exist only because layer 0 ran: both are drawn from
+# `PageDebug.placements`, which IS a layer-0 finding placed on a page. With no
+# semantic detector (`--layer0 off`) there are no placements, so these two
+# would render as unannotated copies of the ORIGINAL page — near-PII artifacts
+# by the module docstring's own warning, carrying no diagnostic information at
+# all. Not the same as the empty `layer-0` overlay under `--geometry ocr`,
+# where layer 0 DID run and only its boxes are missing (`locate` is populated
+# there, and the emptiness is the truth about that regime).
+LAYER0_DEBUG_LAYERS = ("layer-0", "locate")
+
 _WORD_COLOR = (90, 90, 90)  # thin grey — word boxes
 _LINE_COLOR = (30, 120, 220)  # blue — assembled line boxes, numbered
 _LAYER0_COLOR = (190, 40, 190)  # magenta — the model's own view
@@ -119,6 +129,11 @@ class DebugSpec:
 
     layers: tuple[str, ...]
     path: str | Path
+    # Whether the layer-0 findings listing is written at all. False under
+    # `--layer0 off`, where it would be an empty file: nothing was detected
+    # because nothing was asked. Carried here rather than decided at each call
+    # site so `--image` and `--pdf` inherit ONE decision.
+    findings: bool = True
 
     def paths(self) -> list[tuple[str, str]]:
         """`(layer, path)` for every requested layer, in drawing order."""
@@ -131,6 +146,18 @@ class DebugSpec:
     def findings_path(self) -> str:
         """Where `write_findings` puts the run's layer-0 listing."""
         return str(Path(self.path).with_suffix(".findings.json"))
+
+
+def drop_layer0_layers(
+    layers: Sequence[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split requested layers into (drawable, dropped) for a run with no
+    layer 0. See LAYER0_DEBUG_LAYERS for why the dropped ones are not simply
+    rendered blank."""
+    return (
+        tuple(name for name in layers if name not in LAYER0_DEBUG_LAYERS),
+        tuple(name for name in layers if name in LAYER0_DEBUG_LAYERS),
+    )
 
 
 @dataclass(frozen=True)
@@ -274,15 +301,27 @@ def findings_record(debug: PageDebug, page: int = 1) -> dict:
     }
 
 
-def write_findings(path: str | Path, records: Sequence[dict]) -> None:
+def write_findings(
+    path: str | Path, records: Sequence[dict], *, layer0: str = "on"
+) -> None:
     """Write the run's layer-0 listing, plus a count of what has no geometry.
 
     Near-PII exactly like the overlays — it carries the values verbatim — so
     it lands beside them and is warned about with them.
+
+    `layer0` names the detector that produced the listing ("vision", "text").
+    A listing says what was found but not what was ASKED, and those diverge as
+    soon as the two modalities can run independently (the switches in
+    [TODO.md](TODO.md)) — a page read by the text pass and a page read by the
+    vision pass fail differently, so "found nothing" means different things.
+    The front end writes no listing at all under `--layer0 off` rather than an
+    empty one (`DebugSpec.findings`); "off" stays representable for a library
+    caller that wants the artifact anyway.
     """
     findings = [f for record in records for f in record["findings"]]
     payload = {
         "summary": {
+            "layer0": layer0,
             "pages": len(records),
             "findings": len(findings),
             # The two an operator is looking for: named but never boxed, and

@@ -24,8 +24,10 @@ pip install -r pii/requirements.txt
 
 **Detection needs a running llama-server.** Layer 0 — a local LLM — is the
 detector for every input mode, reached over HTTP: set `--vlm-url` or
-`$PII_VLM_URL` (default `http://localhost:8080`). Nothing here starts it, and
-there is no offline fallback.
+`$PII_VLM_URL` (default `http://localhost:8080`). Nothing here starts it. The
+only run that does without it is `--layer0 off`, which skips the semantic
+detector entirely — fast, offline, and a [reduced
+redaction](#skipping-layer-0).
 
 ## Usage
 
@@ -49,8 +51,10 @@ to derive it from). **The map contains the original PII — it is
 gitignored and must never leave the machine.**
 
 Flags: `--entity-keep` / `--strip-orgs` (see [the keep
-list](#the-keep-list-what-survives) below), `--threshold` (default 0.4), and
-the checksum-invalid identifier controls below.
+list](#the-keep-list-what-survives) below), `--threshold` (default 0.4),
+`--layer0 off` (skip the semantic detector — fast, offline, [reduced
+redaction](#skipping-layer-0)), and the checksum-invalid
+identifier controls below.
 
 ## The keep list: what survives
 
@@ -245,7 +249,7 @@ it, and the spans it landed on — plus the page's `borrowed` spans, which have 
 draw here by construction because the value was named on another page:
 
 ```json
-{"summary": {"pages": 6, "findings": 44, "without_box": 2, "unplaced": 0},
+{"summary": {"layer0": "vision", "pages": 6, "findings": 44, "without_box": 2, "unplaced": 0},
  "pages": [{"page": 2,
             "findings": [{"type": "ADDRESS", "text": "24 Stacey Dr Carrickalinga SA 5204",
                           "box": [747, 247, 888, 274], "placed": "squash",
@@ -259,6 +263,9 @@ draw here by construction because the value was named on another page:
 
 `summary.without_box` and `summary.unplaced` are the two counts worth scanning first: the former
 is what no overlay will show you, the latter is what was detected and **not redacted**.
+`summary.layer0` names the detector that produced the listing (`vision` or `text`): a listing
+records what was found, not what was asked for. Under `--layer0 off` no listing is written at
+all, rather than an empty one.
 
 **The overlay is not redacted.** It is drawn on the original page — that is the point, you are
 reading the text under the boxes — so it is near-PII: keep it local, like the map file.
@@ -323,6 +330,32 @@ logged 44 noise findings over 11 docs.
    in financial documents.
 3. **Local-LLM audit pass** — planned.
 
+### Skipping layer 0
+
+Runs layer 1 alone. No model server is contacted, which makes it one to two
+orders of magnitude faster and the only offline mode. It is meant for fast dry
+runs, low-sensitivity documents where speed wins, and debugging layer 1 in
+isolation.
+
+**It is a reduced redaction, not a free speedup.** Layer 1 is patterns and
+checksums, so identifiers are replaced but **PERSON, ADDRESS, ORGANIZATION and
+DATE_OF_BIRTH are not detected at all** — names and addresses stay on the page.
+Every such run prints a warning saying so, whether or not `--report` was asked
+for. Do not treat the output as safe to share.
+
+Works on every input mode. On `--image`/`--pdf` the run becomes OCR → layer 1 →
+paint, so pages are still read and painted normally. It cannot be combined with
+`--geometry vlm`, which never runs OCR: with no semantic detector there would be
+no text for layer 1 either, and the output would be an unredacted copy of the
+input. That combination is rejected.
+
+`--debug` writes fewer artifacts: the `layer-0` and `locate` overlays and the
+findings listing all describe what the semantic detector did, so with none of
+it they would be blank files — and a blank overlay is still an unredacted copy
+of the page. They are skipped, and the run says which ones and why. `--debug
+all` therefore gives you `ocr` and `layer-1`; asking for *only* the skipped
+layers by name writes nothing at all.
+
 Behaviour worth knowing when running the tool: `DATE_TIME` is detected but
 **kept** (transaction dates; `DATE_OF_BIRTH` is stripped), and everything else
 detected is replaced unless [the keep list](#the-keep-list-what-survives)
@@ -337,6 +370,8 @@ Dominated by the model server. Text runs at roughly 15 s per document;
 `--image`/`--pdf` at minutes per page, most of it spent ingesting the page
 image. Locally there is nothing heavy left to load — layer 1 is regexes —
 and OCR runs only for `--image`/`--pdf`, where it supplies painting geometry.
+`--layer0 off` removes the server from the run entirely and is one to two
+orders of magnitude faster, at the cost described [above](#skipping-layer-0).
 
 ## Evaluation
 

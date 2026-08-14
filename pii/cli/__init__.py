@@ -70,10 +70,15 @@ def _build_detector(args):
     """Construct the layer-0 detector for this run.
 
     There is no detector CHOICE any more — layer 0 is the only detector since
-    GLiNER2 was retired (2026-08-09), and a patterns-only run is the regime
-    retired 2026-07-15 as unsafe. What varies is the MODALITY, and that
+    GLiNER2 was retired (2026-08-09). What varies is the MODALITY, and that
     follows the input rather than a flag: --image/--pdf read page pixels,
     text and CSV read the string.
+
+    `--layer0 off` turns the layer off entirely and is the one way to reach a
+    patterns-only run. It is deliberately a detector OBJECT rather than a
+    missing argument: the strip entry points still require one, so the regime
+    retired 2026-07-15 stays unreachable by omission, and choosing it is an
+    explicit, reported act. See `pii.core.vlm.NullDetector`.
 
     Imported lazily, so the import cost and the model-server dependency land
     only when a run actually reaches for one."""
@@ -82,14 +87,32 @@ def _build_detector(args):
     url = getattr(args, "vlm_url", None) or DEFAULT_URL
     grammar = getattr(args, "grammar", True)
 
-    if not media:
+    if not media and geometry != DEFAULT_GEOMETRY:
         # Text and CSV have no page, so there is nothing for --geometry to
         # mean: values are located by finding them in the string itself.
-        if geometry != DEFAULT_GEOMETRY:
+        raise SystemExit(
+            "--geometry applies to --image/--pdf only: text input has no "
+            "page, so detected values are located in the text itself"
+        )
+
+    if getattr(args, "layer0", "auto") == "off":
+        if geometry == "vlm":
+            # That path never runs OCR, so with layer 0 silent there is no
+            # text for layer 1 to read either: the run would detect nothing
+            # at all and write out a copy of the input, which is the one
+            # failure an operator could not see. Refuse rather than quietly
+            # force a geometry they did not ask for.
             raise SystemExit(
-                "--geometry applies to --image/--pdf only: text input has no "
-                "page, so detected values are located in the text itself"
+                "--layer0 off cannot be combined with --geometry vlm: that "
+                "path never runs OCR, so with no semantic detector there is "
+                "no text for layer 1 either and the output would be an "
+                "unredacted copy of the input"
             )
+        from pii.core.vlm import NullDetector
+
+        return NullDetector()
+
+    if not media:
         from pii.core.text_llm import TextDetector
 
         return TextDetector(url=url, grammar=grammar)
@@ -103,6 +126,23 @@ def _build_detector(args):
         # (VlmDetector.localize), which costs no recall.
         want_boxes=geometry == "vlm",
         grammar=grammar,
+    )
+
+
+def _warn_layer0_off(file=None) -> None:
+    """Say that no semantic detector ran, before the run produces anything.
+
+    NOT gated behind --report: what a run did not look for is not a reporting
+    detail. Printed once at the top rather than beside the results, so an
+    operator reading a plausible-looking list of redacted identifiers has
+    already been told what is missing from it."""
+    print(
+        "WARNING: --layer0 off — no semantic detector ran. Only layer 1 "
+        "(patterns and checksums) was applied, so identifiers are redacted "
+        "but PERSON, ADDRESS, ORGANIZATION and DATE_OF_BIRTH are NOT "
+        "detected. This output is a reduced redaction; do not treat it as "
+        "safe to share.",
+        file=file or sys.stderr,
     )
 
 
@@ -240,6 +280,36 @@ def _report_invalid(findings, file=None) -> None:
         print(f"  {f.entity_type:<22} {value!r}  [{f.rule}]", file=file)
 
 
+def _debug_spec(args, detector):
+    """Build the overlay request, minus anything this run cannot draw.
+
+    Under `--layer0 off` the layer-0 and locate overlays have no placements to
+    draw and would come out as unannotated copies of the original page — extra
+    NEAR-PII files (that is what the debug warning is about) carrying nothing.
+    Dropped rather than rendered blank, and said out loud rather than dropped
+    quietly, so a shorter file list is explained instead of puzzling."""
+    if not args.debug:
+        return None
+    from pii.core.debug_overlay import DebugSpec, drop_layer0_layers
+
+    if getattr(detector, "layer0", None) != "off":
+        return DebugSpec(layers=args.debug, path=args.debug_out)
+
+    layers, dropped = drop_layer0_layers(args.debug)
+    if dropped:
+        print(
+            f"note: no semantic detector ran, so the "
+            f"{', '.join(dropped)} overlay(s) and the findings listing have "
+            f"nothing to show and were not written",
+            file=sys.stderr,
+        )
+    if not layers:
+        # Every layer asked for needs layer 0. Writing nothing beats writing a
+        # blank page, and the note above already said why.
+        return None
+    return DebugSpec(layers=layers, path=args.debug_out, findings=False)
+
+
 def _debug_note(spec) -> None:
     """List the debug artifacts — and the warning that goes with all of them.
 
@@ -249,22 +319,27 @@ def _debug_note(spec) -> None:
     named: an operator who forgets which of these files is the safe one has a
     breach, not an inconvenience."""
     paths = spec.paths()
+    listing = " + 1 findings listing" if spec.findings else ""
     print(
-        f"wrote {len(paths)} debug overlay(s) + 1 findings listing — NOT "
+        f"wrote {len(paths)} debug overlay(s){listing} — NOT "
         f"redacted, they show the original page; keep them local, like the "
         f"map file:",
         file=sys.stderr,
     )
     for layer, path in paths:
         print(f"  {layer:<8} -> {path}", file=sys.stderr)
-    # Named apart from the layers because it is not one: it carries every
-    # layer-0 finding, including the ones with no box, which no overlay can
-    # draw. See pii.core.debug_overlay.findings_record.
-    print(f"  {'findings':<8} -> {spec.findings_path()}", file=sys.stderr)
+    if spec.findings:
+        # Named apart from the layers because it is not one: it carries every
+        # layer-0 finding, including the ones with no box, which no overlay can
+        # draw. See pii.core.debug_overlay.findings_record.
+        print(f"  {'findings':<8} -> {spec.findings_path()}", file=sys.stderr)
 
 
 def _strip_media(args, pipeline, detector):
     """Handle --image / --pdf. Returns an exit code."""
+    # Resolved before the run, so a dropped layer is reported with the other
+    # start-of-run warnings rather than after minutes of detection.
+    debug_spec = _debug_spec(args, detector)
     if getattr(args, "image", False):
         from PIL import Image
 
@@ -278,24 +353,26 @@ def _strip_media(args, pipeline, detector):
                              geometry=getattr(args, "geometry", DEFAULT_GEOMETRY))
         result.image.save(args.output)
         pmap.save()
-        if args.debug:
+        if debug_spec is not None:
             # Drawn here rather than inside the core call: on a single page the
             # front-end still holds the pixels the run used, so there is no
             # cache to reach into (unlike --pdf, where strip_pdf owns them).
             from pii.core.debug_overlay import (
-                DebugSpec,
                 draw_layers,
                 findings_record,
                 page_debug,
                 write_findings,
             )
 
-            spec = DebugSpec(layers=args.debug, path=args.debug_out)
             record = page_debug(result)
-            for layer, path in spec.paths():
+            for layer, path in debug_spec.paths():
                 draw_layers(image, record, [layer]).save(path)
-            write_findings(spec.findings_path(), [findings_record(record)])
-            _debug_note(spec)
+            if debug_spec.findings:
+                write_findings(
+                    debug_spec.findings_path(), [findings_record(record)],
+                    layer0=getattr(detector, "layer0", "on"),
+                )
+            _debug_note(debug_spec)
         if args.report:
             if result.ocr is not None:
                 print(f"{len(result.spans)} entities detected:", file=sys.stderr)
@@ -328,12 +405,6 @@ def _strip_media(args, pipeline, detector):
         def progress(number: int, count: int, phase: str) -> None:
             print(f"page {number}/{count} {phases.get(phase, phase)} ...",
                   file=sys.stderr)
-
-        debug_spec = None
-        if args.debug:
-            from pii.core.debug_overlay import DebugSpec
-
-            debug_spec = DebugSpec(layers=args.debug, path=args.debug_out)
 
         pmap = PseudonymMap(args.map)
         result = strip_pdf(args.input, pipeline, pmap, args.output,
@@ -461,10 +532,22 @@ def main(argv=None) -> int:
              "comparison instrument, not a production option)",
     )
     p_strip.add_argument(
+        "--layer0", choices=["auto", "off"], default="auto",
+        help="whether the semantic detector runs. auto = yes, in the modality "
+             "the input implies (pixels for --image/--pdf, text otherwise). "
+             "off = skip it entirely and run layer 1 alone — no model server "
+             "is contacted, which is one to two orders of magnitude faster "
+             "and is meant for dry runs, low-sensitivity documents and "
+             "debugging layer 1 in isolation. UNSAFE AS A DEFAULT: layer 1 is "
+             "patterns and checksums, so identifiers are redacted but PERSON, "
+             "ADDRESS, ORGANIZATION and DATE_OF_BIRTH are not detected at all "
+             "(default: auto)",
+    )
+    p_strip.add_argument(
         "--vlm-url", default=None,
         help="llama-server base URL (default http://localhost:8080, or "
              "$PII_VLM_URL). Required by every strip mode — the local LLM is "
-             "the detector",
+             "the detector — unless --layer0 off",
     )
     p_strip.add_argument(
         "--no-grammar", dest="grammar", action="store_false",
@@ -530,6 +613,11 @@ def main(argv=None) -> int:
     p_analyze.add_argument(
         "--invalid-identifiers",
         choices=["ignore", "all", "likely", "context"], default="likely",
+    )
+    p_analyze.add_argument(
+        "--layer0", choices=["auto", "off"], default="auto",
+        help="whether the semantic detector runs; 'off' reports layer 1 alone "
+             "and contacts no model server (see `strip --layer0`)",
     )
     p_analyze.add_argument(
         "--vlm-url", default=None,
@@ -628,6 +716,8 @@ def main(argv=None) -> int:
         entity_keep=entity_keep,
     )
     detector = _build_detector(args)
+    if getattr(detector, "layer0", None) == "off":
+        _warn_layer0_off()
     if getattr(args, "image", False) or getattr(args, "pdf", False):
         try:
             return _strip_media(args, pipeline, detector)

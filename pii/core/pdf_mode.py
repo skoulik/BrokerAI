@@ -281,8 +281,11 @@ def strip_pdf(
             doc.set_metadata({})
             doc.save(path, garbage=4, deflate=True)
             doc.close()
-        if debug is not None:
-            write_findings(debug.findings_path(), debug_findings)
+        if debug is not None and debug.findings:
+            write_findings(
+                debug.findings_path(), debug_findings,
+                layer0=getattr(detector, "layer0", "on"),
+            )
     return PdfStripResult(pages=pages, groups=grouping.groups)
 
 
