@@ -1,11 +1,12 @@
 """Geometric label attachment: which words are NEAR a candidate on the page.
 
 The engine knows only `Layout` (a protocol over character offsets); this module
-is the implementation that has pixels. It exists because the retiring
-`WindowLayout` — 60 characters back in the assembled string — models nothing
-about the page: on one statement it reached across a line break to a label that
-already had an owner, and across a *column* to a word `_rows` had interleaved
-onto the same assembled line (2026-08-14, record in DONE.md).
+is the implementation that has pixels. It exists because the character window
+it replaced — 60 characters back in the assembled string, retired 2026-08-18 —
+modelled nothing about the page: on one statement it reached across a line
+break to a label that already had an owner, and across a *column* to a word
+`_rows` had interleaved onto the same assembled line (2026-08-14, record in
+DONE.md).
 
 **The neighbourhood IS the context string** (Sergei's formulation): collect the
 words that sit near the candidate, concatenate them in reading order, and hand

@@ -39,13 +39,7 @@ from dataclasses import dataclass
 
 from pii.core.derived import apply as derive
 from pii.core.detection import Detection
-from pii.core.engine import (
-    ATTACH_MODES,
-    ATTACH_WINDOW,
-    Analyzer,
-    TextLayout,
-    WindowLayout,
-)
+from pii.core.engine import Analyzer, TextLayout
 from pii.core.mapping import PseudonymMap
 from pii.core.entity_keep import EntityKeep, load_keep
 from pii.core.recognizers import (
@@ -118,17 +112,8 @@ class PiiPipeline:
         invalid_identifiers: str = "likely",
         mask_invalid: bool = False,
         entity_keep=None,
-        attach: str = ATTACH_WINDOW,
     ):
         self.threshold = threshold
-        if attach not in ATTACH_MODES:
-            raise ValueError(f"attach={attach!r}, expected one of {ATTACH_MODES}")
-        # TRANSITIONAL (2026-08-14): which notion of "the label is near the
-        # value" this pipeline uses. Defaults to the retiring character window
-        # until the geometric one has been measured on the corpus both ways —
-        # a switch, so a regression is attributable to a cause rather than to
-        # a release. See `pii/core/TODO.md`.
-        self.attach = attach
         self.strip_entities = (
             set(strip_entities) if strip_entities is not None
             else set(DEFAULT_STRIP_ENTITIES)
@@ -148,16 +133,13 @@ class PiiPipeline:
         self.analyzer = Analyzer(build_rules(invalid_identifiers))
 
     def layout_for(self, text: str, source=None):
-        """The `Layout` this pipeline's mode calls for.
+        """The `Layout` for the input at hand.
 
         Callers hand over the page they have (`source`, a `RecognizerInput`)
-        and stay out of the decision, so the mode switch lives in one place.
-        Without a page — plain text, a CSV cell — the fallback is left-only
-        proximity, never the character window: text has no columns to reason
-        about but it does have lines (Sergei, 2026-08-14).
+        and stay out of the decision, so the choice lives in one place. Without
+        a page — plain text, a CSV cell — it is left-only proximity: text has
+        no columns to reason about but it does have lines (Sergei, 2026-08-14).
         """
-        if self.attach == ATTACH_WINDOW:
-            return WindowLayout(text)
         if source is None:
             return TextLayout(text)
         from pii.core.layout import PageLayout  # deferred: pulls OCR types

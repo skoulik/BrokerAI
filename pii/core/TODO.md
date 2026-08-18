@@ -397,31 +397,20 @@ below gets picked up against the old shape of the tool.
 
 ## Detection pipeline
 
-- [ ] **Finish retiring the character window** *(the design and the build landed 2026-08-14 —
-      record in [DONE.md](DONE.md); this is what is left)*. `--context-attach` still defaults to
-      `window`, and `WindowLayout` still exists, so both notions of "near" are in the tree at
-      once. Flip the default to `layout` and delete `WindowLayout`, `CONTEXT_WINDOW_CHARS` and
-      the flag together. The measurement that gates the flip has been made — text corpus recall
-      unchanged at 75/90 with false positives 54 -> 39, the two real statements diffed map to
-      map — so what remains is Sergei's call on when, plus deleting the retiring path in one
-      commit so no run can silently use it afterwards. The `_rows` invariant in
-      [../CLAUDE.md](../CLAUDE.md) is already rewritten; the flag's line in
-      [../README.md](../README.md) goes with the flag.
+- [ ] **A vertical band for TEXT mode, and then CSV** *(the two follow-ons left over from the
+      attachment work; the character window itself was retired 2026-08-18 — record in
+      [DONE.md](DONE.md))*. Text attachment is left-only by Sergei's call ("Might reconsider
+      later"), so a label directly ABOVE its value strips on the image tier and is a scored MISS
+      on the text tier — which is what the non-gated `ACCOUNT_LABELLED_ABOVE` probe measures on
+      every run. Monospaced statement text has real columns, so the same band is expressible
+      over (line, column) without geometry. **CSV** follows it: cells are already the detection
+      unit, so a column HEADER as the label of every cell below it is the natural next step, and
+      it was postponed with the vertical band.
 
-      Two follow-ons, both deliberately not done yet:
-
-      - **A vertical band for TEXT mode.** Left-only was Sergei's call for now ("Might reconsider
-        later"), so a label directly above its value strips on the image tier and is a scored
-        MISS on the text tier — which is what the non-gated `ACCOUNT_LABELLED_ABOVE` probe
-        measures on every run. Monospaced statement text has real columns, so the same band is
-        expressible over (line, column) without geometry.
-      - **CSV.** Cells are already the detection unit; a column HEADER as the label of every
-        cell below it is the natural next step and was postponed with the vertical band.
-
-      Accepted residual, needing a specific layout rather than hypothetical: a two-column line
-      whose LEFT column ends in a label word, beside a right-column value with fewer than
-      `word_floor` words before it, still attaches. And a column header still labels only the
-      first row under it (Sergei: "we have to sacrifice this, do not chase").
+      Accepted residuals, all needing a specific layout rather than being hypothetical: a
+      two-column line whose LEFT column ends in a label word, beside a right-column value with
+      fewer than `word_floor` words before it, still attaches; a column header still labels only
+      the first row under it (Sergei: "we have to sacrifice this, do not chase").
 
 - [ ] **The corpus cannot see a separator bug, and has now hidden the same one twice**
       *(2026-08-12)*. `pii_eval/au.py` emits every identifier in ONE canonical form —
@@ -440,8 +429,9 @@ below gets picked up against the old shape of the tool.
       disagree with any of them (record in [DONE.md](DONE.md)). The generalization is that a
       probe exercising ONE surface form of a labelled or separated pattern measures the regex
       against itself, so the varied-surface-form work above must cover label spellings as well as
-      separators. The context-attachment item above moves label spellings out of the regexes
-      into data, which is what makes varying them in the generator worth doing.
+      separators. The attachment work has since moved label spellings out of the regexes into
+      data (`Rule.context`, 2026-08-14), which is what makes varying them in the generator worth
+      doing: one list to extend, not nine alternations.
 
 - [ ] **The ACN inside an ABN can still capture it when OCR damages a DIGIT rather than a
       separator** *(remainder of the 2026-08-12 separator fix)*. The separator class fixed the

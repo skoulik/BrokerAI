@@ -116,7 +116,8 @@ def test_known_hard_forms_present_and_not_gated(tmp_path):
     # post-validation unstripped.
     # REFERENCE_ACROSS_COLUMN (2026-08-14): an unrelated reference in the
     # right column of a line whose LEFT column happens to carry an account
-    # label. The 60-character lookback strips it; visual attachment must not.
+    # label. The retired 60-character lookback stripped it; visual attachment
+    # must not.
     for t in ("LOCATION", "ORGANIZATION_AND", "ORGANIZATION_AND_BARE",
               "PROSE_AND", "AMOUNT_COLUMN", "REFERENCE_NUMBER",
               "DIGITS_OVERLONG", "CARD_LAST4", "TRAILING_AMOUNT",

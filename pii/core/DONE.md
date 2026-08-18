@@ -2875,3 +2875,77 @@ the move; new completed tasks append to the matching section with their records.
           layout  REFERENCE_ACROSS_COLUMN  794022  kept
 
       Fast suite 623 passed.
+
+- [x] **The character window is retired: visual attachment is the only notion of "near"**
+      *(Sergei, 2026-08-18 — "Yes, please go ahead")*. Closes the item written on 2026-08-14
+      when the geometric attachment landed switchable. `--context-attach`, `WindowLayout` and
+      `CONTEXT_WINDOW_CHARS` are deleted in one commit, so no run can silently take the old
+      path afterwards; `PiiPipeline` loses its `attach` parameter and `layout_for` its branch.
+
+      **It rests on the measurement already recorded above** (2026-08-14, layer 1 alone, both
+      ways on the same inputs): text corpus recall unchanged at 75/90, false positives 54 → 39,
+      `AmplifyBusiness-…-24Sep2023.pdf` losing exactly three map entries — all three false
+      positives — and `116832820_7_Insurance_Certificate.pdf` coming out identical. Nothing was
+      re-measured to make the flip; what was measured is the blast radius of the deletion.
+
+      **The `Analyzer`'s no-layout default is now `TextLayout`, and that is the substantive part
+      of the deletion.** `analyze(text, threshold)` fell back to `WindowLayout` regardless of
+      `--context-attach`, so any caller that forgot to hand over a layout ran the retiring rule
+      even in `layout` mode. No production path did (`image_mode.py` and `text_mode.py` both
+      pass one; `PiiPipeline.plan` has no callers at all), but the trap was live, and deleting
+      the class is what closed it. The replacement default loses column reasoning visibly — a
+      caller holding a page must pass its `PageLayout` — rather than falling back to a rule
+      nobody chose.
+
+      **The blast radius, measured before touching the tree** by running the fast suite with the
+      default forced to `layout` through a pytest plugin: **621 passed, 2 failed**, both of them
+      tests pinning the retiring rule.
+
+      - `test_context_window_is_bounded` died with `CONTEXT_WINDOW_CHARS`, as intended. Replaced
+        rather than dropped, because what it pinned — that attachment is BOUNDED — still holds
+        under the band: `test_a_label_beyond_the_word_floor_does_not_reach` asserts a label five
+        words back on the same line promotes nothing.
+      - `test_context_promotes_across_lines_on_the_whole_page` was **a fixture artifact, not a
+        regression.** Its comment said "one line above" but its pixels put the value at
+        `top=110` with 20 px lines — five line heights down, outside `V_ABOVE`. Under the window
+        those coordinates were decorative, since a 60-character lookback crossed any gap. Fixed
+        by moving the value to an actual next line (`top=40`), where the promotion still fires,
+        and the five-line-gap case became its own test asserting it does NOT
+        (`test_a_label_far_above_its_value_does_not_promote`) — so the fixture that was mute
+        about geometry now pins both sides of the band.
+
+      **Finding: every corpus run ever made has scored the retiring path.** None of the three
+      eval scorers (`pii_eval/score.py`, `score_image.py`, `score_pdf.py`) passed `attach` when
+      constructing `PiiPipeline`, so they all took the `window` default — including the tier-1
+      gate. The 2026-08-14 both-ways numbers were taken by hand, layer 1 alone; nothing has ever
+      scored layout with layer 0 in the loop. The scorers needed no edit — they inherit the new
+      default — so from this commit on, every corpus run scores what production runs.
+
+      **The tier-1 gate has NOT been run against this change**: no llama-server was reachable at
+      commit time (neither `sergei-macbook-pro:8080` nor `localhost:8080`, `$PII_VLM_URL`
+      unset), and the gate needs one for layer 0. It is the one check this record cannot claim.
+      What it would add over the evidence above is the layer-0 half: the gate asserts zero
+      CRITICAL misses, and `ACCOUNT_LABELLED_ABOVE` — the one entity this change costs on the
+      text tier — is deliberately not a gate member, so the expected result is a pass.
+
+      **Accepted, and unchanged by this commit:** on the text tier a label directly ABOVE its
+      value no longer reaches it, where the window sometimes crossed the line break and got it
+      right by luck. Left-only for text is Sergei's 2026-08-14 call, the image tier attaches it,
+      and `ACCOUNT_LABELLED_ABOVE` keeps scoring the gap on every run. The vertical band that
+      would close it is the surviving TODO item.
+
+      **Verified end to end on both specimens** (`--layer0 off`, real OCR, `--pdf`): each
+      reproduced its existing `.pii_map.json` — the ones Sergei's `run_pii.bat` had produced
+      *with* `--context-attach=layout` — **byte for byte**. The certificate still reports
+      `AU_AFSL 0.70 '241411' <- left 'AFS Licence'` and the same for `285571`. So the deletion is
+      behaviour-preserving against the mode it makes mandatory, on real documents and not only
+      in the suite.
+
+      Also updated: the flag's paragraph in `pii/README.md` (rewritten as a statement of how
+      attachment works, keeping the `--report` example), the `engine.py` row and the
+      invalid-identifier `context` tier in `core/ARCHITECTURE.md` — which still described the
+      evidence as "a context term in the 60-character window" — and a new ARCHITECTURE paragraph
+      recording that geometry-free input gets the left band alone. `run_pii.bat` (untracked,
+      Sergei's) passes `--context-attach=layout` and must drop the flag.
+
+      Fast suite 624 passed.

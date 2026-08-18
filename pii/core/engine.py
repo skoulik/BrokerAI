@@ -55,12 +55,6 @@ CONTEXT_BOOST = 0.35
 CONTEXT_FLOOR = 0.4
 MAX_SCORE = 1.0
 
-# How far back a context word may sit under the RETIRING `WindowLayout`.
-# Presidio looked back five *tokens*; this is the char-level equivalent, sized
-# for five or six words of statement text including a label's punctuation
-# ("Acct No.: ", "BSB / Account "). It models nothing else — see `Layout`.
-CONTEXT_WINDOW_CHARS = 60
-
 # Attachment strengths (per PATTERN, not per rule — several rules have both).
 #
 # NEAR   — a label sits in one of the candidate's neighbourhoods. The promotion
@@ -75,13 +69,6 @@ CONTEXT_WINDOW_CHARS = 60
 NEAR = "near"
 STRICT = "strict"
 STRENGTHS = (NEAR, STRICT)
-
-# Which `Layout` a run uses. TRANSITIONAL: `window` is the retiring character
-# lookback, kept only so one corpus can be scored both ways while the geometric
-# one is measured, and deleted with `WindowLayout` when the default flips.
-ATTACH_WINDOW = "window"
-ATTACH_LAYOUT = "layout"
-ATTACH_MODES = (ATTACH_WINDOW, ATTACH_LAYOUT)
 
 # How many words beyond a rule's longest label the left band must reach back.
 # Covers the fillers between label and value ("No.", "#") plus one, so a band
@@ -308,8 +295,8 @@ class Layout(Protocol):
 
     Structural, not inherited, so the engine gains no dependency on OCR: the
     geometric implementation lives in `pii.core.layout` and is handed in by the
-    caller that has a page. The three implementations differ ONLY in which
-    words count as near, which is the whole of the 2026-08-14 change.
+    caller that has a page. The two implementations differ ONLY in which words
+    count as near, which is the whole of the 2026-08-14 change.
     """
 
     def contexts(self, start: int, end: int, word_floor: int) -> list[Context]:
@@ -325,26 +312,6 @@ class _NoGeometry:
 
     def contiguous(self, start: int, end: int) -> bool:
         return True
-
-
-class WindowLayout(_NoGeometry):
-    """RETIRING: the flat 60-character lookback.
-
-    Kept only so one corpus can be scored both ways while the geometric layout
-    is measured; it goes when the default flips. It models nothing — it cannot
-    tell a label from another field's label, a line from the next, or a column
-    from its neighbour, which is exactly how a mail-house reference came to be
-    typed as a bank account (2026-08-14, record in DONE.md).
-    """
-
-    relation = "window"
-
-    def __init__(self, text: str) -> None:
-        self.text = text
-
-    def contexts(self, start: int, end: int, word_floor: int) -> list[Context]:
-        lo = max(0, start - CONTEXT_WINDOW_CHARS)
-        return [Context(self.relation, self.text[lo:start], origin=lo)]
 
 
 class TextLayout(_NoGeometry):
@@ -403,10 +370,12 @@ class Analyzer:
     def analyze(
         self, text: str, threshold: float, layout: Layout | None = None
     ) -> list[Detection]:
-        """`layout` defaults to the retiring character window, so a caller that
-        has no page geometry keeps today's behaviour until the measurement
-        settles which default is right."""
-        layout = WindowLayout(text) if layout is None else layout
+        """`layout` defaults to `TextLayout`, the geometry-free rule: a caller
+        that has no page hands over none, and gets left-only proximity on the
+        candidate's own line. There is no default that reaches further — a
+        caller holding a page must pass its `PageLayout`, or the columns it
+        knows about go unused."""
+        layout = TextLayout(text) if layout is None else layout
         results: list[Detection] = []
         for rule in self.rules:
             found = rule.detect(text)

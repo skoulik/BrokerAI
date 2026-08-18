@@ -11,7 +11,6 @@ from pii.core.detection import Detection
 from pii.core.engine import (
     CONTEXT_BOOST,
     CONTEXT_FLOOR,
-    CONTEXT_WINDOW_CHARS,
     STRICT,
     Analyzer,
     Pattern,
@@ -91,12 +90,6 @@ def test_context_only_looks_backwards():
     assert Analyzer([rule]).analyze("12345 account", threshold=0.4) == []
 
 
-def test_context_window_is_bounded():
-    rule = _rule(_Digits, context=("account",))
-    far = "account" + " " * (CONTEXT_WINDOW_CHARS + 10) + "12345"
-    assert Analyzer([rule]).analyze(far, threshold=0.4) == []
-
-
 def test_boost_never_exceeds_one():
     rule = _rule(_Digits, context=("account",),
                  patterns=(Pattern("d", r"\d+", 0.9),))
@@ -136,9 +129,10 @@ def test_rules_are_reachable_by_name():
 
 # ------------------------------------------------------- label attachment
 #
-# The 2026-08-14 replacement for the flat character window. `WindowLayout` is
-# still the default and the tests above still pin it; these pin what replaces
-# it. Design and rationale: `pii/core/TODO.md`.
+# How "the label is near the value" is decided since 2026-08-14, and the only
+# way since the character window was retired on 2026-08-18. These pin the
+# geometry-free half (`TextLayout`); `test_layout.py` pins the page.
+# Design and rationale: `pii/core/ARCHITECTURE.md`.
 
 
 class _Labelled(PatternRule):
@@ -168,6 +162,14 @@ def test_a_left_margin_label_reaches_a_right_aligned_value():
     text = "ACCOUNT STATEMENT" + " " * 40 + "Account Number   :   12345678"
     found = _analyze(_Labelled(), text)
     assert [round(d.score, 2) for d in found] == [0.5]
+
+
+def test_a_label_beyond_the_word_floor_does_not_reach():
+    """Attachment stays BOUNDED without the character window: the band is the
+    last `label_words` words of the line, so a label further back than that
+    introduces something else (`cheque`, nine words back, was the specimen)."""
+    text = "Account closed by the branch manager 12345678"
+    assert _analyze(_Labelled(), text) == []
 
 
 def test_the_word_floor_comes_from_the_rules_own_longest_label():

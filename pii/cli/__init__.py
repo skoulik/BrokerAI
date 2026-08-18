@@ -22,7 +22,6 @@ from pathlib import Path
 
 from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
 from pii.core.debug_overlay import DEBUG_LAYERS, parse_layers
-from pii.core.engine import ATTACH_MODES, ATTACH_WINDOW
 from pii.core.entity_keep import load_keep
 from pii.core.ocr import OCR_PAGE_BACKENDS
 # stdlib-only module, so importing it here costs nothing on the default path
@@ -503,13 +502,6 @@ def main(argv=None) -> int:
     )
     p_strip.add_argument("--threshold", type=float, default=0.4)
     p_strip.add_argument(
-        "--context-attach", choices=ATTACH_MODES, default=ATTACH_WINDOW,
-        help="TRANSITIONAL: how a label is judged to reach a value — "
-             "'window' the retiring 60-character lookback, 'layout' visual "
-             "proximity on the page. Exists so a corpus can be scored both "
-             "ways; goes when the default flips",
-    )
-    p_strip.add_argument(
         "--report", action="store_true",
         help="list applied detections on stderr",
     )
@@ -636,11 +628,6 @@ def main(argv=None) -> int:
     p_analyze.add_argument("input", help="input text file, or - for stdin")
     p_analyze.add_argument("--threshold", type=float, default=0.4)
     p_analyze.add_argument(
-        "--context-attach", choices=ATTACH_MODES, default=ATTACH_WINDOW,
-        help="TRANSITIONAL: how a label is judged to reach a value (see "
-             "`strip --help`)",
-    )
-    p_analyze.add_argument(
         "--invalid-identifiers",
         choices=["ignore", "all", "likely", "context"], default="likely",
     )
@@ -744,7 +731,6 @@ def main(argv=None) -> int:
         invalid_identifiers=args.invalid_identifiers,
         mask_invalid=mask_invalid,
         entity_keep=entity_keep,
-        attach=getattr(args, "context_attach", ATTACH_WINDOW),
     )
     detector = _build_detector(args)
     if getattr(detector, "layer0", None) == "off":

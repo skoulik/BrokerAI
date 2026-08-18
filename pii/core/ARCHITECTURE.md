@@ -41,7 +41,7 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `__init__.py`, `constants.py` | Public API surface (`PiiPipeline`, `PseudonymMap`, `RECORD_SEPARATOR`, `DEFAULT_STRIP_ENTITIES`, `InvalidFinding`, `INVALID_ENTITY_TYPES`); `RECORD_SEPARATOR` lives in `constants.py` (zero-import, cycle-free) |
 | `pipeline.py` | `PiiPipeline` — **layer 1**: builds the rule set, runs one `Analyzer` pass, filters to the strip list and applies the keep list, union-merges overlaps, collects checksum-invalid findings. `merge_detections` folds layer 0 in on top |
 | `detection.py` | `Detection` — the record every layer emits and every consumer reads |
-| `engine.py` | `Rule` / `PatternRule` / `Analyzer` — the regex loop, the validation hook, label attachment and the score boost, thresholding and deduplication. Owns the `Layout` protocol and the two geometry-free layouts (`TextLayout`, and `WindowLayout` while the character window is retired) |
+| `engine.py` | `Rule` / `PatternRule` / `Analyzer` — the regex loop, the validation hook, label attachment and the score boost, thresholding and deduplication. Owns the `Layout` protocol and `TextLayout`, the geometry-free one |
 | `layout.py` | `PageLayout` — a candidate's neighbourhoods on an OCR'd page (`left` band, `above` band). The only place layer 1 touches pixels |
 | `labels.py` | The shared label grammar: what may sit between a label and its value (separators, fillers), and `Exact` for spellings too short to be stems |
 | `recognizers.py` | **Every** layer-1 rule: the checksummed identifiers (each emitting its valid class OR its `*_INVALID` shadow from one checksum call), BSB, account, PayID, licences, joint names, ATF tails, email, IBAN, phone |
@@ -311,6 +311,17 @@ now, and either way a span covering "TFN: 123 456 782" would key the pseudonym m
 string than a bare occurrence — one identifier forking into TFN_1 and TFN_2 inside a document.
 The a/c family was the one knowing exception (its label landed inside the placeholder) and this
 change ended it.
+
+**Input with no page gets the left band alone, and there is no third notion of near**
+(`TextLayout`; the character window was retired outright on 2026-08-18, with `--context-attach`
+and `WindowLayout`). Plain text, stdin and CSV cells have no columns to reason about but they do
+have lines, so the band is the last *n* words of the candidate's **own line** and a line break
+ends it. The `Analyzer`'s no-layout default is that same `TextLayout` — a caller holding a page
+must pass its `PageLayout` or the geometry goes unused, which is a visible loss of column
+reasoning rather than a silent fallback to a rule nobody chose. The accepted cost is a label
+directly ABOVE its value in monospaced text: the image tier attaches it, the text tier does not
+(Sergei, 2026-08-14 — left-only "for now"), and `ACCOUNT_LABELLED_ABOVE` scores that gap on
+every corpus run instead of leaving it to memory.
 
 **What layer 1 gave up for this:** it now depends on OCR geometry, where before it was pure
 text. A bad line box is now a *detection* bug and not only a paint bug. That is the price of the
@@ -640,8 +651,9 @@ separate modules with separate pattern sets and disagreed silently; that leak is
 the Presidio chassis (decision above), and they must not be split again.
 
 Three orthogonal CLI controls — collection tier, log, mask. The tiers are defined by *where the
-evidence sits*: in-span grouping or a label → `likely`; a context term in the 60-character
-window before the match → `context`; any failing match at all → `all`, which is noise.
+evidence sits*: in-span grouping or a label → `likely`; a label attached to the match by the
+layout (left band or the column above) → `context`; any failing match at all → `all`, which is
+noise.
 Guardrails: a candidate covered by a *validated* detection is suppressed, keyed on the
 validating rule's name rather than on the entity type — a semantic guess must never suppress a
 checksum candidate — and invalid classes always lose the placeholder to valid types on overlap.

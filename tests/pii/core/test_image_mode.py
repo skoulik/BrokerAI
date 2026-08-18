@@ -174,13 +174,30 @@ def test_context_promotes_across_lines_on_the_whole_page(pipeline):
     # 'BSB' one line above the digits it promotes. The page is fed to the
     # recognizer whole, so the promotion fires — this is what the retired
     # per-block feed gave up, and why it is not coming back without evidence.
+    #
+    # The second line sits ONE line height below the label, not five: until the
+    # character window was retired (2026-08-18) the pixels here were decorative,
+    # because a 60-character lookback crossed any gap. They are the whole test
+    # now — `layout.V_ABOVE` bounds the vertical reach at two line heights.
+    img = Image.new("RGB", (400, 200), "white")
+    page = _page([
+        [("BSB", Box(10, 10, 60, 20), 90.0)],
+        [("014-936", Box(10, 40, 120, 20), 90.0)],
+    ])
+    result = _strip(img, page, pipeline, PseudonymMap())
+    assert [r.entity_type for r in result.spans] == ["AU_BSB"]
+
+
+def test_a_label_far_above_its_value_does_not_promote(pipeline):
+    """The same page with the value five line heights down: the band ends, and
+    a label that far up is introducing some other field."""
     img = Image.new("RGB", (400, 200), "white")
     page = _page([
         [("BSB", Box(10, 10, 60, 20), 90.0)],
         [("014-936", Box(10, 110, 120, 20), 90.0)],
     ])
     result = _strip(img, page, pipeline, PseudonymMap())
-    assert [r.entity_type for r in result.spans] == ["AU_BSB"]
+    assert [r.entity_type for r in result.spans] == []
 
 
 def test_spans_address_the_page_text(pipeline):
