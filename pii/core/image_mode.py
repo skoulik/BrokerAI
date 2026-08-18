@@ -39,13 +39,20 @@ artifact.
 
 import warnings
 from dataclasses import dataclass, field, replace
+from typing import Sequence
 
 from PIL import Image
 from pii.core.detection import Detection
 
 from pii.core.grouping import Grouping, group_findings
 from pii.core.linearization import RecognizerInput, linearize
-from pii.core.locator import Placement, locate_borrowed, locate_findings
+from pii.core.locator import (
+    TEXTUAL_TIERS,
+    Needle,
+    Placement,
+    locate_borrowed,
+    locate_findings,
+)
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box, get_ocr_page
 from pii.core.paint import Segment, paint_segments
@@ -108,6 +115,13 @@ class ImageStripResult:
     # that used to leak; on a single page they are the repeat occurrences of a
     # value the model named only once.
     borrowed: list = field(default_factory=list)
+    # The same, for values LAYER 1 detected elsewhere in the document
+    # (`layer1_needles`). Its own list rather than a share of `borrowed`
+    # because the evidence differs — a value the model read against one a
+    # pattern matched — and because this is the coverage that answers the
+    # per-occurrence context boost: on a single page these are the printings of
+    # a value layer 1 scored above threshold only once.
+    pattern_borrowed: list = field(default_factory=list)
     # The document-wide groups this page was stripped against. Carried so the
     # front-end can print the vote each class was elected from — the election
     # can KEEP a value some page reported as PII, so it has to be auditable.
@@ -132,7 +146,7 @@ class ImageStripResult:
 
 @dataclass
 class PageRead:
-    """Sweep 1's record of one page: what layer 0 said, and the OCR text.
+    """Sweep 1's record of one page: what BOTH layers said, and the OCR text.
 
     Separating this from painting is what lets a document group its findings
     before any page is redacted — see `pii.core.grouping`. `ocr` is None only
@@ -140,6 +154,12 @@ class PageRead:
 
     findings: list
     ocr: RecognizerInput | None = None
+    # Layer 1's own detections on this page, as document-wide needles. Read
+    # here rather than in sweep 2 because sweep 2 is too late: the needle list
+    # has to be complete before the first page is redacted, and layer 1 used
+    # to run only inside `strip_from_vlm` — per page, after the list was
+    # already frozen. See `layer1_needles` for what that cost.
+    layer1: tuple[Needle, ...] = ()
     # Layer-0 responses for this page that were cut off or unparseable. Carried
     # out of sweep 1 because that is where it is known and sweep 2 is where it
     # has to be reported.
@@ -178,15 +198,55 @@ def strip_image(
     )
 
 
+def layer1_needles(
+    pipeline: PiiPipeline, ocr: RecognizerInput
+) -> tuple[Needle, ...]:
+    """Layer 1's own detections on this page, as document-wide needles.
+
+    **Layer 1's score for a value depends on where that occurrence sits on the
+    page**, because the context boost is granted from the candidate's own
+    neighbourhood (`pii.core.layout`). So the same string clears the threshold
+    at one printing and falls short at the next, and the result is not a miss
+    but something worse: a document redacted INCONSISTENTLY, which looks
+    stripped. Measured on a reference statement — an account number printed
+    four times on one page, boosted once by a neighbouring transaction's
+    `Loan Repayment` narrative and bare at the other three, so one occurrence
+    was painted and three were not (2026-08-18).
+
+    The document-wide pass that exists to fix exactly that
+    (`locator.locate_borrowed`) could not see it: its needles come from
+    `grouping`, which is fed layer-0 findings alone. Layer 1 is described as a
+    deterministic recall floor under a stochastic detector, and a floor that
+    holds per-occurrence is not a floor. This is what puts its output into the
+    document-wide view.
+
+    The needles are deliberately weaker than layer 0's — `TEXTUAL_TIERS`, no
+    wrapped and no fuzzy. The reasoning is in `locator.Needle`.
+
+    Values are taken from the strip PLAN, so the keep list has already been
+    applied (`PiiPipeline.detect`) and a kept merchant name never becomes a
+    needle. Distinct pairs in document order: deterministic, and `Detection`
+    carries offsets that mean nothing on another page.
+    """
+    plan, _ = pipeline.detect(ocr.text, pipeline.layout_for(ocr.text, ocr))
+    seen = dict.fromkeys(
+        (ocr.text[d.start : d.end], d.entity_type) for d in plan
+    )
+    return tuple(
+        Needle(text, entity_type, TEXTUAL_TIERS) for text, entity_type in seen
+    )
+
+
 def read_page(
     image: Image.Image,
     ocr_engine=None,
     *,
     detector,
+    pipeline: PiiPipeline,
     geometry: str = DEFAULT_GEOMETRY,
     text_layer: tuple[TextWord, ...] = (),
 ) -> PageRead:
-    """Sweep 1: read one already-rendered page. Detects and OCRs, paints
+    """Sweep 1: read one already-rendered page with BOTH layers. Paints
     nothing.
 
     Split out of `strip_rendered_page` so a multi-page document can read every
@@ -195,6 +255,13 @@ def read_page(
     geometry dispatch lives here, in one place, so `strip_pdf` resolves the OCR
     engine once per document and both entry points share exactly one decision
     about what runs.
+
+    `pipeline` is layer 1, and it is here for its NEEDLES only — the strip plan
+    is still built in sweep 2, where both layers' spans exist together (that is
+    the only place `pii.core.derived` can run). Reading it here is what makes
+    the needle list complete before any page is redacted; see `layer1_needles`.
+    It is a required argument for the same reason `detector` is: a run that
+    quietly contributed no needles would under-redact in a way nothing reports.
 
     `text_layer` is the source document's own text words, where it has some
     (`pii.core.text_layer.page_text_words`, PDF input only). It repairs the OCR
@@ -214,15 +281,17 @@ def read_page(
         findings = located.findings
         incomplete += located.incomplete
     _warn_incomplete(incomplete)
-    ocr, repair = None, RepairReport()
+    ocr, repair, needles = None, RepairReport(), ()
     if geometry != "vlm":
         page = ocr_engine(image)
         if text_layer:
             page, repair = repair_page(page, text_layer)
             _warn_repair_disabled(repair)
         ocr = linearize(page)
+        needles = layer1_needles(pipeline, ocr)
     return PageRead(
-        findings=findings, ocr=ocr, incomplete=incomplete, repair=repair
+        findings=findings, ocr=ocr, incomplete=incomplete, repair=repair,
+        layer1=needles,
     )
 
 
@@ -291,12 +360,13 @@ def strip_rendered_page(
     of a value it named only once. `strip_pdf` does not call this — it reads
     all pages first, then groups across them."""
     read = read_page(
-        image, ocr_engine, detector=detector, geometry=geometry,
-        text_layer=text_layer,
+        image, ocr_engine, detector=detector, pipeline=pipeline,
+        geometry=geometry, text_layer=text_layer,
     )
     return strip_from_vlm(
         image, read.findings, pipeline, pmap, ocr=read.ocr, pad=pad,
         grouping=group_findings([read.findings]),
+        needles=read.layer1,
         incomplete=read.incomplete, repair=read.repair,
     )
 
@@ -309,6 +379,7 @@ def strip_from_vlm(
     ocr: RecognizerInput | None = None,
     pad: int = DEFAULT_PAD,
     grouping: Grouping | None = None,
+    needles: Sequence[Needle] = (),
     incomplete: Incomplete = Incomplete(),
     repair: RepairReport = RepairReport(),
 ) -> ImageStripResult:
@@ -326,6 +397,16 @@ def strip_from_vlm(
     way everywhere, and every constituent of every group is searched against
     this page's OCR text — including values layer 0 never reported here, which
     is what stops a value detected on page 1 from leaking on page 4.
+
+    `needles` is the other half of that: what LAYER 1 found anywhere in the
+    document (`layer1_needles`, collected across every page in sweep 1). They
+    are searched the same way and by the same call — the claiming between the
+    two sets has to be shared — but they carry weaker tiers, and they are
+    deliberately NOT group members: grouping decides the class and the report,
+    never recall, and a pattern hit has no business in an election that can
+    un-redact. Concretely, one number is emitted as both AU_AFSL and
+    AU_CREDIT_LICENCE by two rules on purpose; as group members they would
+    cluster and a vote would rewrite one of them for no recall gain.
 
     Geometry comes from one of two places, decided by whether `ocr` was
     supplied:
@@ -384,17 +465,35 @@ def strip_from_vlm(
     # known value, including ones layer 0 said nothing about here. Runs BESIDE
     # the box-guided placement above, never instead of it — that is the only
     # path to the fuzzy tier and to tier-3 geometry.
+    #
+    # ONE call over both needle sets, not two: the tiers run in phases across
+    # all needles so that textual certainty outranks edit distance whichever
+    # needle gets there first, and splitting the call would let a layer-1
+    # needle's exact match lose a span to a layer-0 needle's fuzzy one. Layer 0
+    # wins a tie on identical text, which is why its needles go first — the
+    # sort in `locate_borrowed` is stable.
+    layer0_needles = grouping.needles()
+    known = {n.text for n in layer0_needles}
+    placements = locate_borrowed(
+        (*layer0_needles, *(n for n in needles if n.text not in known)), ocr
+    )
+    # Which needle claimed each span, so the two provenances can be reported
+    # apart. Keyed by span because `locate_borrowed` claims each one once, and
+    # recorded here rather than re-derived: for a fuzzy match the span text and
+    # the needle differ by construction, so it cannot be recovered afterwards.
+    layer0_set = set(layer0_needles)
+    from_layer0 = {
+        (p.start, p.end): p.needle in layer0_set for p in placements
+    }
     borrowed = [
         Detection(
-            entity_type=entity_type,
-            start=start,
-            end=end,
+            entity_type=p.entity_type,
+            start=p.start,
+            end=p.end,
             score=1.0,
-            full_value=full_value,
+            full_value=p.full_value,
         )
-        for start, end, entity_type, full_value in locate_borrowed(
-            grouping.needles(), ocr
-        )
+        for p in placements
     ]
     # Reported apart: the coverage that exists ONLY because other pages were
     # read. Counted against what this page would have redacted ALONE — its own
@@ -406,11 +505,49 @@ def strip_from_vlm(
     # against minutes of model time per page.
     layout = pipeline.layout_for(ocr.text, ocr)
     alone, _ = pipeline.merge_detections(detected, ocr.text, layout)
-    borrowed_only = [
+
+    def _adds_nothing_here(d) -> bool:
+        return not any(d.start < a.end and a.start < d.end for a in alone)
+
+    # A LAYER-1 needle may only add coverage, never re-classify. Where layer 1
+    # already spoke about these pixels on this page, its own per-occurrence
+    # verdict stands and the borrowed span is dropped before the merge — not
+    # merely left out of the count. Without that it would win: a borrowed span
+    # scores 1.0 and `_merge_overlaps` takes the strongest member, so one
+    # licence number printed twice — labelled `AFSL` at one printing and
+    # `Credit Licence` at the other — collapsed onto whichever class the first
+    # needle happened to carry (measured on a reference statement, 2026-08-18).
+    # That is the vote by another route, and the whole point of keeping these
+    # needles out of `grouping` was that a pattern hit must not re-type
+    # anything. Layer 0's needles are NOT filtered this way: its class is
+    # deliberately authoritative over layer 1's (see the docstring).
+    borrowed = [
         d
         for d in borrowed
-        if not any(d.start < a.end and a.start < d.end for a in alone)
+        if from_layer0[(d.start, d.end)] or _adds_nothing_here(d)
+    ]
+    # Reported apart: the coverage that exists ONLY because other pages were
+    # read. Counted against what this page would have redacted ALONE — its own
+    # layer-0 placements merged with layer 1 — because a value layer 1 catches
+    # by pattern was never going to leak here, and counting it would overstate
+    # what the document-wide pass bought. Also put through the strip policy, or
+    # a kept merchant name matched from another page would inflate the count
+    # without being painted. The extra merge is a regex sweep over a page string
+    # against minutes of model time per page.
+    #
+    # Split by which layer's needle claimed the span: two provenances with
+    # genuinely different evidence — a value the model READ elsewhere, against
+    # one a pattern matched elsewhere — so a single count would conflate them
+    # and hide which mechanism is doing the work (Sergei, 2026-08-18).
+    surviving = [
+        d
+        for d in borrowed
+        if _adds_nothing_here(d)
         and pipeline.strips_value(d.entity_type, ocr.text[d.start : d.end])
+    ]
+    borrowed_only = [d for d in surviving if from_layer0[(d.start, d.end)]]
+    pattern_borrowed = [
+        d for d in surviving if not from_layer0[(d.start, d.end)]
     ]
     # Tier 3 is subject to the same strip policy as everything else — the
     # prompt carries no institutional carve-outs by design, so the model
@@ -497,6 +634,7 @@ def strip_from_vlm(
         unlocated=[p.finding for p in placed.unlocated],
         unlocated_painted_elsewhere=[p.finding for p in painted_elsewhere],
         borrowed=borrowed_only,
+        pattern_borrowed=pattern_borrowed,
         groups=grouping.groups,
         placements=placed.placements,
         skipped=skipped,
@@ -546,7 +684,8 @@ def _paint_vlm_boxes(
 
 def _paint_plan(
     image, ocr, spans, invalid, pmap, extra=(), box_geometry=(), unlocated=(),
-    unlocated_painted_elsewhere=(), borrowed=(), groups=(), placements=(),
+    unlocated_painted_elsewhere=(), borrowed=(), pattern_borrowed=(),
+    groups=(), placements=(),
     skipped=(), incomplete=Incomplete(), repair=RepairReport(),
 ) -> ImageStripResult:
     """Allocate a placeholder per span and paint it over the span's pixels.
@@ -568,7 +707,8 @@ def _paint_plan(
         image=out, ocr=ocr, spans=spans, invalid=invalid, segments=segments,
         box_geometry=list(box_geometry), unlocated=list(unlocated),
         unlocated_painted_elsewhere=list(unlocated_painted_elsewhere),
-        borrowed=list(borrowed), groups=tuple(groups),
+        borrowed=list(borrowed), pattern_borrowed=list(pattern_borrowed),
+        groups=tuple(groups),
         placements=list(placements), skipped=list(skipped),
         incomplete=incomplete, repair=repair,
     )

@@ -183,6 +183,11 @@ class PageDebug:
     placements: tuple = ()  # pii.core.locator.Placement — layer 0
     spans: tuple = ()  # the merged strip plan — what was painted
     borrowed: tuple = ()  # spans this page owes to the rest of the document
+    # The same, where the value came from a LAYER-1 needle rather than a
+    # layer-0 one. Apart because the two answer different questions of an
+    # operator: "the model read this elsewhere" against "a pattern matched
+    # this elsewhere, and scored it below threshold here".
+    pattern_borrowed: tuple = ()
     skipped: tuple = ()  # detected, then exempted by the keep list
 
 
@@ -216,6 +221,7 @@ def page_debug(result) -> PageDebug:
         placements=tuple(result.placements),
         spans=tuple(result.spans),
         borrowed=tuple(result.borrowed),
+        pattern_borrowed=tuple(getattr(result, "pattern_borrowed", ())),
         skipped=tuple(getattr(result, "skipped", ())),
     )
 
@@ -314,6 +320,19 @@ def findings_record(debug: PageDebug, page: int = 1) -> dict:
                 "value": getattr(d, "full_value", None),
             }
             for d in debug.borrowed
+        ],
+        # Occurrences recovered because layer 1 detected the same value
+        # elsewhere in the document — the printings its per-occurrence context
+        # boost scored below threshold here.
+        "pattern_borrowed": [
+            {
+                "type": d.entity_type,
+                "start": d.start,
+                "end": d.end,
+                "text": text[d.start : d.end],
+                "value": getattr(d, "full_value", None),
+            }
+            for d in debug.pattern_borrowed
         ],
     }
 
@@ -470,9 +489,15 @@ def span_provenance(span, debug: PageDebug) -> str:
     The plan is a MERGE (`PiiPipeline.merge_detections`), so a span can have
     more than one source and this reports the strongest evidence, not an
     exclusive origin: the model saw it here (`L0`), else the document knew the
-    value from elsewhere (`DOC`), else only a layer-1 pattern claimed it
-    (`L1`). The last one is the interesting reading — it is what the semantic
-    detector missed on this page and a deterministic rule caught."""
+    value from elsewhere (`DOC`), else a layer-1 pattern matched it elsewhere
+    in the document and this printing was found by searching for it (`PAT`),
+    else only a layer-1 pattern on THIS page claimed it (`L1`).
+
+    The last two are the interesting readings. `L1` is what the semantic
+    detector missed on this page and a deterministic rule caught; `PAT` is
+    what the deterministic rule ITSELF missed here and only recovered because
+    the same value scored above threshold somewhere else — the per-occurrence
+    context boost made visible."""
     if any(
         _overlaps(span, start, end)
         for p in debug.placements
@@ -481,6 +506,8 @@ def span_provenance(span, debug: PageDebug) -> str:
         return "L0"
     if any(_overlaps(span, b.start, b.end) for b in debug.borrowed):
         return "DOC"
+    if any(_overlaps(span, b.start, b.end) for b in debug.pattern_borrowed):
+        return "PAT"
     return "L1"
 
 

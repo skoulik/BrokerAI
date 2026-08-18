@@ -268,20 +268,33 @@ def _report_groups(groups, file=None, prefix: str = "  ") -> None:
             )
 
 
-def _report_borrowed(count: int, file=None) -> None:
+def _report_borrowed(count: int, pattern: int = 0, file=None) -> None:
     """Spans a page owed to detections made elsewhere in the document.
 
     Always printed when non-zero, independently of --report: on a multi-page
     document these are the values that would have leaked before, which is the
-    same class of fact as the two lines in _report_geometry."""
-    if not count:
-        return
+    same class of fact as the two lines in _report_geometry.
+
+    The two provenances get their own lines (Sergei, 2026-08-18). A layer-0
+    needle is a value the MODEL read elsewhere; a layer-1 needle is one a
+    PATTERN matched elsewhere, and the second exists because layer 1 scores a
+    value per occurrence — the boost comes from the neighbourhood that
+    occurrence sits in — so it can catch a printing on one page and miss the
+    identical string on the next. One number would conflate two mechanisms and
+    hide which is carrying the document."""
     file = file if file is not None else sys.stderr
-    print(
-        f"{count} value(s) redacted from detections made elsewhere in the "
-        f"document",
-        file=file,
-    )
+    if count:
+        print(
+            f"{count} value(s) redacted from detections made elsewhere in the "
+            f"document",
+            file=file,
+        )
+    if pattern:
+        print(
+            f"{pattern} value(s) redacted from patterns matched elsewhere in "
+            f"the document (layer 1, other occurrences of a value it detected)",
+            file=file,
+        )
 
 
 def _report_repair(reports, file=None) -> None:
@@ -436,7 +449,9 @@ def _strip_media(args, pipeline, detector):
             painted_elsewhere=result.unlocated_painted_elsewhere,
         )
         _report_incomplete(result.incomplete)
-        _report_borrowed(len(result.borrowed))
+        _report_borrowed(
+            len(result.borrowed), len(result.pattern_borrowed)
+        )
         if args.log_invalid_identifiers == "yes" and result.invalid:
             _report_invalid(result.invalid)
         return 0
@@ -495,7 +510,10 @@ def _strip_media(args, pipeline, detector):
         _report_incomplete(
             sum((p.incomplete for p in result.pages), Incomplete())
         )
-        _report_borrowed(sum(len(p.borrowed) for p in result.pages))
+        _report_borrowed(
+            sum(len(p.borrowed) for p in result.pages),
+            sum(len(p.pattern_borrowed) for p in result.pages),
+        )
         _report_repair([p.repair for p in result.pages])
         invalid = [f for p in result.pages for f in p.invalid]
         if args.log_invalid_identifiers == "yes" and invalid:

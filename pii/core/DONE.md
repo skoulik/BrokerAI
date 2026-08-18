@@ -1730,6 +1730,96 @@ the move; new completed tasks append to the matching section with their records.
       check would have rejected almost nothing while adding a fitted parameter — and the two
       lines it would have rejected are exactly the ones carrying the BSB and the account number.
 
+- [x] **Layer-1 detections become document-wide needles** *(2026-08-18. Design in
+      [ARCHITECTURE.md](ARCHITECTURE.md), "Layer 1 is a document-wide recall floor". Raised by
+      Sergei from a reference statement: "why on … page 2 only one instance of 432103 has been
+      picked up by the layer 1?")*
+
+      **The investigation.** Reproduced exactly by re-running render → OCR → text-layer repair
+      → `pipeline.detect` on that page. OCR read all four printings of `432103` correctly, so
+      not a perception failure. Layer 1 returned one:
+
+          AU_BANK_ACCOUNT  0.50  [233:239] '432103'      <- the only one
+          AU_BANK_ACCOUNT  0.80  [564:575] '30-743-3257'  (x3)
+
+      Dumping `layout.contexts` for each candidate gave the reason — the boost is granted from
+      the neighbourhood *that occurrence* sits in:
+
+          @233  left='Pc'  above='Loan Repayment. Alan Hickinbotham Pt H5203452534'
+                  LABEL 'Loan'      dist=1.02 line heights
+                  LABEL 'Repayment' dist=1.04 line heights
+          @311  left='Pc'  above='Pc 432103 Alan Hickinbotham Pt G7747724435'  — no label
+          @363  left='Pc'  above='Pc 432103 Alan Hickinbotham Pt Q6466472236'  — no label
+          @416  left='Pc'  above='Pc 432103 Alan Hickinbotham Pt F5463737570'  — no label
+
+      `loan` / `repayment` are `AuAccountNumberRule` labels, and the row carrying them belongs
+      to the *previous* transaction (13 May), one line up in the same particulars column. The
+      one detection was an accident of vertical adjacency; 0.15 + 0.35 = 0.50.
+
+      **Why the second sweep did not save it.** It ran, and had nothing to look for:
+
+          NullDetector.detect(...).findings = []
+          groups = ()   needles = ()   locate_borrowed(needles, ocr) -> []
+
+      `grouping.needles()` was the only source, and `group_findings` is fed
+      `[read.findings …]` — layer-0 output alone. **Not specific to `--layer0 off`**: the
+      layer-0-on run's `findings.json` for the same page carries a populated borrowed list of
+      only `PERSON` entries, while layer 1 caught `30-743-3257` three times there and none
+      became a needle. And it could not have: layer 1 ran only inside sweep 2, per page, after
+      the needle list was frozen. Counterfactual on the same OCR, one needle added — all four,
+      instantly: `[233:239] [311:317] [363:369] [416:422]`.
+
+      **Measured impact, three reference statements** (layer-1 spans simulated as needles
+      before the change):
+
+      | Document | Needles | New spans | What |
+      |---|---|---|---|
+      | the specimen (2 pp) | 12 | **+3** on p2 | the three missed `432103` |
+      | a 4-page statement | 12 | 0 | no change, no over-strip |
+      | a 2-page statement | 9 | +1 on p1 | ⚠ the fuzzy hit below |
+
+      The warning case, found on the third document tried: needle `ATF SK MANAGEMENT` (a
+      layer-1 `ORGANIZATION` from p2) matched on p1 through the **fuzzy** tier at distance
+      exactly 3.0 against a budget of exactly 3.0 —
+
+          needle:  ATF SK MANAGEMENT     -> atfskmanagement   (15 chars, budget 3.0)
+          matched: 'Name\nSK MANAGEMENT' -> nameskmanagement  distance 3.0  ✓
+          context: '… Trading Account Name\nSK MANAGEMENT VICTORIA PTY LTD …'
+
+      It crossed a line break and swallowed the field label. `AtfTailRule` matches "the rest of
+      the line (capped)", so its extent is an artifact of where the document truncated a field
+      — hence `TEXTUAL_TIERS` for layer-1 needles. Under that guard the match disappears, and
+      the loss is nothing real: it fires only under `--layer0 off`, where p1's
+      `SK MANAGEMENT VICTORIA PTY LTD` is unredacted anyway; with layer 0 on it is a finding
+      and grouped already.
+
+      **Caught during implementation, not predicted:** the first cut passed the whole borrowed
+      list into the merge, and `234527` — printed twice on one page, labelled `AFSL` at one
+      printing and `Credit Licence` at the other — collapsed to `AU_AFSL` twice. A borrowed
+      span scores 1.0 and `_merge_overlaps` takes the strongest member, so the needle re-typed
+      what layer 1 had said per occurrence. That is the grouping vote arriving by another route,
+      which keeping these needles out of `grouping` was supposed to prevent. Fixed by dropping
+      a layer-1 borrowed span *before* the merge wherever layer 1 already spoke about those
+      pixels here; layer-0 needles are not filtered that way, their class being authoritative
+      by design. Verified: the two licence classes survive, and the specimen still gains its
+      three printings.
+
+      **Verification.** Specimen after the change — all four printings, one placeholder
+      (`ACCOUNT_5`), and the report says where three of them came from:
+
+          p2  AU_BANK_ACCOUNT  0.50  '432103'  <- above 'Loan'
+          p2  AU_BANK_ACCOUNT  1.00  '432103'   (x3, borrowed)
+          3 value(s) redacted from patterns matched elsewhere in the document
+
+      Rejected alternatives: making layer-1 spans group members (pollutes the vote and the
+      report for no recall — the `234527` case); lowering the threshold or widening `V_ABOVE`
+      (re-tunes every sub-threshold pattern at once, and would still be per-occurrence luck
+      with a wider net); a third pass (layer 1 needs only `ocr`, which sweep 1 already has).
+
+      Not fixed, and deliberately: `Pc 432575` prints twice on the same page with no label near
+      either and is still missed entirely — there is no needle to propagate. That is the
+      text-layer-0 item in [TODO.md](TODO.md).
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

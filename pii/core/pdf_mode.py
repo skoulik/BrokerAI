@@ -121,6 +121,9 @@ class PdfPageResult:
     # Spans this page owes to detections made on OTHER pages — the values that
     # used to leak here. Counted per page for the same reason as the two above.
     borrowed: list = dataclasses.field(default_factory=list)
+    # The same, for values LAYER 1 detected elsewhere in the document. Apart
+    # from `borrowed` because the evidence differs; see ImageStripResult.
+    pattern_borrowed: list = dataclasses.field(default_factory=list)
     # Layer-0 responses for this page that were cut off or unparseable
     # (vlm.Incomplete). Per page rather than per document, because the page is
     # what is under-redacted and the operator has to know which one to re-run.
@@ -218,7 +221,8 @@ def strip_pdf(
                 reads.append(
                     read_page(
                         image, page_engine,
-                        detector=detector, geometry=geometry,
+                        detector=detector, pipeline=pipeline,
+                        geometry=geometry,
                         text_layer=(
                             page_text_words(page, dpi)
                             if text_repair and geometry != "vlm"
@@ -230,6 +234,16 @@ def strip_pdf(
                 sizes.append((page.rect.width, page.rect.height))
 
         grouping = group_findings([read.findings for read in reads])
+        # Both layers' document-wide views, complete BEFORE the first page is
+        # redacted — that is the whole point of the read/redact split, and
+        # layer 1 only joined it on 2026-08-18. Deduplicated by (text, type)
+        # across pages, first occurrence winning, so the order stays document
+        # order and a value found on ten pages contributes one needle.
+        needles = tuple(
+            dict.fromkeys(
+                needle for read in reads for needle in read.layer1
+            )
+        )
 
         out_doc = pymupdf.open()
         # One document per requested layer — see DebugSpec for why they are not
@@ -255,7 +269,7 @@ def strip_pdf(
                 image = stored.convert("RGB")
             result = strip_from_vlm(
                 image, read.findings, pipeline, pmap,
-                ocr=read.ocr, grouping=grouping,
+                ocr=read.ocr, grouping=grouping, needles=needles,
                 incomplete=read.incomplete, repair=read.repair,
             )
             cached.unlink()
@@ -287,6 +301,7 @@ def strip_pdf(
                         result.unlocated_painted_elsewhere
                     ),
                     borrowed=result.borrowed,
+                    pattern_borrowed=result.pattern_borrowed,
                     incomplete=result.incomplete,
                     repair=result.repair,
                 )

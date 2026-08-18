@@ -845,9 +845,67 @@ def borrowed_budget(need_sq: str) -> float:
     return budget
 
 
+# The tiers a needle may be matched through, named as the docstring of
+# `locate_borrowed` names them. Declared PER NEEDLE rather than per call
+# because the two sources of needles have earned different liberties.
+EXACT, SQUASH, WRAPPED, FUZZY = "exact", "squash", "wrapped", "fuzzy"
+ALL_TIERS = frozenset({EXACT, SQUASH, WRAPPED, FUZZY})
+# What a needle gets when its EXTENT is an artifact rather than a reading.
+TEXTUAL_TIERS = frozenset({EXACT, SQUASH})
+
+
+@dataclass(frozen=True)
+class Needle:
+    """One value the document knows about, and how hard it may be hunted.
+
+    `tiers` exists because a needle's provenance decides which liberties are
+    safe for it, and that judgement cannot be made at the call site — a single
+    `locate_borrowed` call mixes needles of both kinds, and the claiming and
+    de-duplication between them has to stay shared.
+
+    A layer-0 needle is a value the model READ and we already located
+    elsewhere in this document, so its extent is a transcription of something
+    printed; it gets `ALL_TIERS`. A layer-1 needle is a pattern match, and for
+    some rules the extent is an artifact of the page rather than a reading:
+    `AtfTailRule` matches "the rest of the line (capped)", so its span is
+    wherever the document happened to truncate a field. Page-locally that
+    costs "an over-strip of one line tail (safe direction)" — its own
+    docstring's bargain — but a fragment loosed on every page as a FUZZY
+    needle is a different bargain entirely: unanchored, fragmentary and fuzzy
+    at once, which is the three-liberty composition the wrapped tier is
+    already refused for. Measured on a reference statement: the layer-1
+    fragment `ATF SK MANAGEMENT` matched `Name\\nSK MANAGEMENT` on another
+    page at distance 3.0 against a budget of 3.0, crossing a line break and
+    swallowing the field label. Hence `TEXTUAL_TIERS` for layer 1 — a value
+    it found is hunted where it is printed the same way, and nowhere else.
+    """
+
+    text: str
+    entity_type: str
+    tiers: frozenset[str] = ALL_TIERS
+
+
+@dataclass(frozen=True)
+class BorrowedSpan:
+    """One occurrence claimed by a borrowed needle.
+
+    Carries the `needle` that claimed it, so a caller can report the two
+    provenances apart without re-deriving which value produced which span —
+    unrecoverable for a fuzzy match, where the span text and the needle differ
+    by construction."""
+
+    start: int
+    end: int
+    entity_type: str
+    # Set only on the pieces of a WRAPPED value: they are one value and must
+    # collect one placeholder, which the span text alone cannot say.
+    full_value: str | None
+    needle: Needle
+
+
 def locate_borrowed(
-    needles: Sequence[tuple[str, str]], ocr: RecognizerInput
-) -> list[tuple[int, int, str, str | None]]:
+    needles: Sequence[Needle], ocr: RecognizerInput
+) -> list[BorrowedSpan]:
     """Every occurrence on this page of a value the DOCUMENT knows about.
 
     This is what makes a value the model named on page 1 and missed on page 4
@@ -867,27 +925,41 @@ def locate_borrowed(
     real specimen, not a hypothetical (2026-08-11, `SK BUSINESS TRUS`;
     2026-08-13, an address printed twice on one page and wrapped both times).
 
-    `needles` is `(value, entity_type)` LONGEST FIRST — two needles can land on
-    one span ('John' inside 'John Smith') and the wider one must claim it.
-    Returns `(start, end, entity_type, full_value)` in document order, where
-    `full_value` is set only on the pieces of a wrapped value: they are ONE
-    value and must collect one placeholder, which the span text alone cannot
-    say (see `image_mode`).
+    Two needles can land on one span ('John' inside 'John Smith') and the
+    wider one must claim it, so the needles are ordered LONGEST FIRST here
+    rather than at the call site: there are two sources of them now
+    (`grouping.Grouping.needles` and layer 1's own spans, see
+    `image_mode.layer1_needles`) and an ordering invariant that has to survive
+    a concatenation is one a caller should not be holding. The sort is stable,
+    so a caller's own precedence between same-length needles is preserved.
+
+    Which tiers a given needle may reach is its own declaration (`Needle`),
+    not this function's decision — but the claiming is shared across all of
+    them, which is why they must arrive in one call.
+
+    Returns `BorrowedSpan`s in document order.
     """
     text = ocr.text
+    needles = sorted(needles, key=lambda n: -len(n.text))
     squashed: tuple[str, list[int]] | None = None
-    claimed: dict[tuple[int, int], tuple[str, str | None]] = {}
-    for value, entity_type in needles:
-        spans = _bounded_occurrences(text, value)
-        if not spans:
+    claimed: dict[tuple[int, int], tuple[str, str | None, Needle]] = {}
+    for needle in needles:
+        spans = (
+            _bounded_occurrences(text, needle.text)
+            if EXACT in needle.tiers
+            else []
+        )
+        if not spans and SQUASH in needle.tiers:
             if squashed is None:
                 squashed = squash_map(text)
-            spans = _bounded_squash_occurrences(squashed, text, value)
+            spans = _bounded_squash_occurrences(squashed, text, needle.text)
         for span in spans:
-            claimed.setdefault(span, (entity_type, None))
+            claimed.setdefault(span, (needle.entity_type, None, needle))
 
-    for value, entity_type in needles:
-        need_sq, _ = squash_map(value)
+    for needle in needles:
+        if WRAPPED not in needle.tiers:
+            continue
+        need_sq, _ = squash_map(needle.text)
         if len(need_sq) < _MIN_SQUASH_CHARS:
             continue
         for spans in _wrapped_occurrences(ocr, need_sq):
@@ -896,28 +968,29 @@ def locate_borrowed(
             # pass's to claim; where another needle already owns a piece, the
             # rest is claimed on its own terms rather than half-labelled with
             # a value it no longer accounts for.
-            full = value if len(free) == len(spans) else None
+            full = needle.text if len(free) == len(spans) else None
             for span in free:
-                claimed[span] = (entity_type, full)
+                claimed[span] = (needle.entity_type, full, needle)
 
     fuzzy_needles = [
-        (value, entity_type, squash_map(value)[0])
-        for value, entity_type in needles
+        (needle, squash_map(needle.text)[0])
+        for needle in needles
+        if FUZZY in needle.tiers
     ]
     fuzzy_needles = [
-        n for n in fuzzy_needles if len(n[2]) >= _BORROWED_FUZZY_MIN_CHARS
+        n for n in fuzzy_needles if len(n[1]) >= _BORROWED_FUZZY_MIN_CHARS
     ]
     if fuzzy_needles:
         runs = _word_runs(
             ocr,
-            max(len(sq) + borrowed_budget(sq) for _, _, sq in fuzzy_needles),
+            max(len(sq) + borrowed_budget(sq) for _, sq in fuzzy_needles),
         )
         # Regions the certain tiers already own. A fuzzy match overlapping one
         # is a worse-evidenced view of text that is already claimed — most
         # often a sub-run of it ('9999 1234' inside '(02) 9999 1234') — and
         # keeping it would only inflate the count of what this pass found.
         taken = list(claimed)
-        for _, entity_type, need_sq in fuzzy_needles:
+        for needle, need_sq in fuzzy_needles:
             budget = borrowed_budget(need_sq)
             # A digit read as a letter is damage; a digit read as another digit
             # is a different account, and must not be discounted.
@@ -948,12 +1021,14 @@ def locate_borrowed(
                     for t_start, t_end in taken
                 ):
                     continue
-                claimed[(start, end)] = (entity_type, None)
+                claimed[(start, end)] = (needle.entity_type, None, needle)
                 taken.append((start, end))
 
     return [
-        (start, end, entity_type, full_value)
-        for (start, end), (entity_type, full_value) in sorted(claimed.items())
+        BorrowedSpan(start, end, entity_type, full_value, needle)
+        for (start, end), (entity_type, full_value, needle) in sorted(
+            claimed.items()
+        )
     ]
 
 

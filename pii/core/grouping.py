@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from pii.core import fuzzy
+from pii.core.locator import Needle
 from pii.core.vlm import VlmFinding, squash_map
 
 # Tie-break order for the vote, most-strip-worthy first. Only the ordering
@@ -131,18 +132,31 @@ class Grouping:
         group = self._by_text.get(text)
         return group.entity_type if group else None
 
-    def needles(self) -> tuple[tuple[str, str], ...]:
-        """Every constituent of every group as `(text, elected type)`, longest
-        first.
+    def needles(self) -> tuple[Needle, ...]:
+        """Every constituent of every group as a `locator.Needle` carrying the
+        group's elected type, longest first.
 
         Longest first because two needles can land on the same span — 'John'
         inside 'John Smith' — and the wider one must claim it, exactly as
-        `locate_findings` orders its own placement.
+        `locate_findings` orders its own placement. `locate_borrowed` sorts
+        again (it takes needles from two sources now), so this ordering is
+        what makes the result deterministic rather than what makes it correct.
+
+        These are layer-0 needles: each is a value the model READ and we
+        located somewhere in this document, so its extent is a transcription
+        of something printed and every tier is admissible for it. Layer 1's
+        needles are built elsewhere and are deliberately weaker — see
+        `locator.Needle`.
         """
         pairs = [
             (v.text, g.entity_type) for g in self.groups for v in g.variants
         ]
-        return tuple(sorted(pairs, key=lambda p: (-len(p[0]), p[0])))
+        return tuple(
+            Needle(text, entity_type)
+            for text, entity_type in sorted(
+                pairs, key=lambda p: (-len(p[0]), p[0])
+            )
+        )
 
     def __len__(self) -> int:
         return len(self.groups)

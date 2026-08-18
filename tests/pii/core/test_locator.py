@@ -17,7 +17,13 @@ from __future__ import annotations
 import pytest
 
 from pii.core.linearization import linearize
-from pii.core.locator import denormalize, locate_borrowed, locate_findings
+from pii.core.locator import (
+    TEXTUAL_TIERS,
+    Needle,
+    denormalize,
+    locate_borrowed,
+    locate_findings,
+)
 from pii.core.ocr import Box
 from pii.core.ocr_page import OcrFrame, build_page
 from pii.core.vlm import VlmFinding
@@ -461,9 +467,15 @@ def test_denormalize_maps_model_space_onto_pixels(box, expected):
 
 
 def _borrowed(ocr, *needles):
+    """Match `(text, entity_type)` pairs as full-strength (layer-0) needles.
+
+    Every tier is admissible here, which is what these tests are about; the
+    restricted layer-1 form is exercised separately."""
     return [
-        (ocr.text[start:end], entity_type)
-        for start, end, entity_type, _ in locate_borrowed(needles, ocr)
+        (ocr.text[p.start : p.end], p.entity_type)
+        for p in locate_borrowed(
+            [Needle(text, etype) for text, etype in needles], ocr
+        )
     ]
 
 
@@ -560,10 +572,10 @@ def test_the_pieces_of_a_borrowed_wrapped_value_name_the_whole_of_it():
         ("Registration number", "", "Carrickalinga SA 5204"),
     )
     value = "24 Stacey Dr Carrickalinga SA 5204"
-    assert [full for _, _, _, full in locate_borrowed([(value, "ADDRESS")], ocr)] == [
-        value,
-        value,
-    ]
+    assert [
+        p.full_value
+        for p in locate_borrowed([Needle(value, "ADDRESS")], ocr)
+    ] == [value, value]
 
 
 def test_a_borrowed_wrapped_match_must_stay_in_one_column():
@@ -747,3 +759,63 @@ def test_a_fuzzy_match_never_takes_a_region_the_certain_tiers_own():
 def test_an_unrelated_value_of_the_same_length_is_not_matched():
     ocr = _page("paid to Brendan Whitfield today")
     assert _borrowed(ocr, ("SK BUSINESS TRUST", "PERSON")) == []
+
+
+# ------------------------------------ needle strength: which tiers a needle
+#                                       has earned, by where it came from
+
+
+def _layer1_borrowed(ocr, *needles):
+    """The same, as LAYER-1 needles — textual tiers only."""
+    return [
+        (ocr.text[p.start : p.end], p.entity_type)
+        for p in locate_borrowed(
+            [Needle(text, etype, TEXTUAL_TIERS) for text, etype in needles],
+            ocr,
+        )
+    ]
+
+
+def test_a_layer_1_needle_keeps_the_exact_tier_at_every_occurrence():
+    # The tier it keeps is the point of it existing: a value layer 1 scored
+    # above threshold at one printing is hunted at every printing that says
+    # the same thing. This is the `432103` specimen in miniature.
+    ocr = _page("Account 432103 paid", "Pc 432103 again", "Pc 432103 again")
+    assert _layer1_borrowed(ocr, ("432103", "AU_BANK_ACCOUNT")) == [
+        ("432103", "AU_BANK_ACCOUNT")
+    ] * 3
+
+
+def test_a_layer_1_needle_keeps_the_squash_tier():
+    # The fallback when the page re-spaces the value. Same tier order as any
+    # other needle: squash only where exact found nothing at all.
+    ocr = _page("Pc 4321 03 again")
+    assert _layer1_borrowed(ocr, ("432103", "AU_BANK_ACCOUNT")) == [
+        ("4321 03", "AU_BANK_ACCOUNT")
+    ]
+
+
+def test_a_layer_1_needle_never_reaches_the_fuzzy_tier():
+    # Measured on a reference statement (2026-08-18): the layer-1 fragment
+    # 'ATF SK MANAGEMENT' matched 'Name\nSK MANAGEMENT' at distance 3.0 against
+    # a budget of 3.0, crossing a line break and swallowing the field label.
+    # A layer-1 span's EXTENT is often an artifact — AtfTailRule matches "the
+    # rest of the line (capped)" — so unanchored + fragmentary + fuzzy is three
+    # liberties at once. The same needle from layer 0 is a value the model READ
+    # and keeps the tier.
+    ocr = _page("Trading Account Name", "SK MANAGEMENT VICTORIA PTY LTD")
+    needle = ("ATF SK MANAGEMENT", "ORGANIZATION")
+    assert _layer1_borrowed(ocr, needle) == []
+    assert _borrowed(ocr, needle) != []
+
+
+def test_a_layer_1_needle_never_reaches_the_wrapped_tier():
+    # Same reasoning: the wrapped tier reassembles a value across lines with no
+    # box to anchor it, and a fragment has no business being reassembled.
+    ocr = _two_columns(
+        ("Permitted use of car", "Usually parked at", "24 Stacey Dr"),
+        ("Registration number", "", "Carrickalinga SA 5204"),
+    )
+    needle = ("24 Stacey Dr Carrickalinga SA 5204", "ADDRESS")
+    assert _layer1_borrowed(ocr, needle) == []
+    assert _borrowed(ocr, needle) != []

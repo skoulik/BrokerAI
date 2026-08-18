@@ -147,6 +147,23 @@ below gets picked up against the old shape of the tool.
       for two- and three-character values, not one — and whether the drops should be counted
       rather than silent.
 
+- [ ] **Text and CSV have no borrowed pass, so layer 1's per-occurrence scoring is unguarded
+      there** *(2026-08-18, scoped out of the layer-1-needle change — record in
+      [DONE.md](DONE.md))*. On the page path a value layer 1 detects once is now searched for
+      everywhere (`image_mode.layer1_needles`). `text_mode` has no equivalent: layer 0's
+      findings reach every occurrence through `locate_in_text`, but layer 1's do not propagate
+      at all, and `TextLayout` gives each occurrence its own left band — so the same asymmetry
+      exists in miniature. It bites only where layer 0 misses the value, which is why it was
+      not bundled: on the page path the boost is the *only* thing standing between a bare digit
+      run and the threshold, while in text mode layer 0 reads the same characters we do.
+
+      Not obviously the same fix. The page path collects needles in sweep 1 because it already
+      has two sweeps; text mode is a single pass over a string, and giving it one needs a reason
+      beyond symmetry. Cheapest honest version: after the layer-1 pass, re-search the document
+      for each distinct value it detected — exact and squash only, the same tier restriction —
+      and union the extra spans in. Worth measuring against the corpus before building, since a
+      document-wide regex sweep may already reach most of them.
+
 - [ ] **A painted box started INSIDE its word and left two characters legible** *(seen
       2026-08-11 on the first `--debug` run, `pii_eval/corpora/image/s123/loan_04.png` at 150 dpi,
       Qwen3-VL-8B)*. The page ends "previously resided in Kew." and the output reads

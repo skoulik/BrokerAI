@@ -21,6 +21,7 @@ from pii.core.grouping import (
     CLASS_PRIORITY,
     group_findings,
 )
+from pii.core.locator import ALL_TIERS
 from pii.core.vlm import VlmFinding
 
 
@@ -209,8 +210,11 @@ def test_needles_carry_the_elected_class_longest_first():
     needles = grouping.needles()
     # Longest first, so a wider value claims a contested span before a
     # narrower one nested in it.
-    assert [text for text, _ in needles] == ["John Smith", "John"]
-    assert all(etype == grouping.type_for(text) for text, etype in needles)
+    assert [n.text for n in needles] == ["John Smith", "John"]
+    assert all(n.entity_type == grouping.type_for(n.text) for n in needles)
+    # A layer-0 needle is a value the model READ, so every tier is admissible
+    # for it — unlike layer 1's, which are restricted (locator.Needle).
+    assert all(n.tiers == ALL_TIERS for n in needles)
 
 
 def test_type_for_is_none_for_a_value_no_page_reported():

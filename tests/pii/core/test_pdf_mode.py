@@ -468,3 +468,150 @@ def test_strip_pdf_writes_a_findings_listing_beside_the_overlays(
     (finding,) = payload["pages"][0]["findings"]
     assert finding["text"] == "olga@example.com" and finding["box"] is None
     assert finding["spans"][0]["text"] == "olga@example.com"
+
+
+# --- the same, for what LAYER 1 learns -----------------------------------
+
+
+def _labelled_then_bare_ocr(image, lang="eng"):
+    """A bare account number printed twice, labelled only the first time.
+
+    This is the shape that made the gap visible on a real statement: layer 1
+    scores a bare digit run below threshold and the context boost is granted
+    from the neighbourhood the occurrence sits in, so the SAME string clears
+    the bar at one printing and not at the next.
+    """
+    rows = [
+        [
+            ("Account", Box(20, 20, 70, 20), 90.0),
+            ("432103", Box(100, 20, 60, 20), 90.0),
+        ],
+        # Far enough down that the label above is out of reach: the `above`
+        # band is V_ABOVE line heights, so a couple of rows' gap is what makes
+        # the second printing genuinely unlabelled rather than merely bare.
+        [
+            ("Pc", Box(20, 300, 20, 20), 90.0),
+            ("432103", Box(100, 300, 60, 20), 90.0),
+        ],
+    ]
+    return build_page(
+        rows, OcrFrame(width=image.width, height=image.height, page=1)
+    )
+
+
+def _bare_only_ocr(image, lang="eng"):
+    """The same value, printed with no label anywhere on the page."""
+    return build_page(
+        [
+            [
+                ("Pc", Box(20, 20, 20, 20), 90.0),
+                ("432103", Box(100, 20, 60, 20), 90.0),
+            ]
+        ],
+        OcrFrame(width=image.width, height=image.height, page=1),
+    )
+
+
+def test_a_value_layer_1_scores_once_is_redacted_at_every_occurrence(
+    tmp_path, pipeline, monkeypatch, no_findings
+):
+    """One page, one value, two printings — only one of them labelled.
+
+    Layer 1 detects the labelled printing and nothing else; the bare one is
+    recovered because the value is a document-wide needle. Before 2026-08-18
+    the page was redacted INCONSISTENTLY, which is worse than a clean miss
+    because it looks stripped.
+    """
+    monkeypatch.setattr(
+        pdf_mode, "get_ocr_page", lambda backend: _labelled_then_bare_ocr
+    )
+    src = tmp_path / "doc.pdf"
+    _make_pdf(src, pages=1)
+    pmap = PseudonymMap()
+    result = strip_pdf(src, pipeline, pmap, tmp_path / "out.pdf", dpi=72,
+                       detector=no_findings)
+
+    (page,) = result.pages
+    hits = [
+        s for s in page.spans
+        if page.ocr.text[s.start : s.end] == "432103"
+    ]
+    assert len(hits) == 2
+    # ONE value, so one placeholder — not ACCOUNT_1 and ACCOUNT_2.
+    assert len(pmap) == 1
+    # The second printing is owed to the pattern needle, and is counted apart
+    # from what a layer-0 needle would have recovered.
+    assert len(page.pattern_borrowed) == 1
+    assert page.borrowed == []
+
+
+def test_a_value_layer_1_scores_on_one_page_is_redacted_on_all_of_them(
+    tmp_path, pipeline, monkeypatch, no_findings
+):
+    """The cross-page half, and the reason the needles are collected in sweep 1.
+
+    Page 1 carries the label, page 2 does not. The needle list has to be
+    complete before ANY page is redacted — layer 1 used to run only inside
+    sweep 2, per page, after the list was already frozen.
+    """
+    pages = iter((_labelled_then_bare_ocr, _bare_only_ocr))
+
+    def _by_page(image, lang="eng"):
+        return next(pages)(image, lang)
+
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _by_page)
+    src = tmp_path / "doc.pdf"
+    _make_pdf(src, pages=2)
+    pmap = PseudonymMap()
+    result = strip_pdf(src, pipeline, pmap, tmp_path / "out.pdf", dpi=72,
+                       detector=no_findings)
+
+    first, second = result.pages
+    assert len(second.pattern_borrowed) == 1
+    assert second.ocr.text[second.spans[0].start : second.spans[0].end] == "432103"
+    assert len(pmap) == 1
+
+
+def test_a_layer_1_needle_never_re_types_what_layer_1_said_here(
+    tmp_path, pipeline, monkeypatch, no_findings
+):
+    """A pattern needle adds coverage; it must never re-classify.
+
+    One licence number printed twice, labelled `AFSL` at one printing and
+    `Credit Licence` at the other — a real statement footer. A borrowed span
+    scores 1.0 and `_merge_overlaps` takes the strongest member, so admitting
+    one over a printing layer 1 has already typed collapses both onto whichever
+    class the first needle happened to carry. That is the grouping vote by
+    another route, and keeping these needles out of `grouping` was supposed to
+    prevent exactly it.
+    """
+
+    def _two_licences(image, lang="eng"):
+        return build_page(
+            [
+                [
+                    ("AFSL", Box(20, 20, 40, 20), 90.0),
+                    ("234527", Box(70, 20, 60, 20), 90.0),
+                ],
+                [
+                    ("Credit", Box(20, 300, 50, 20), 90.0),
+                    ("Licence", Box(80, 300, 60, 20), 90.0),
+                    ("234527", Box(150, 300, 60, 20), 90.0),
+                ],
+            ],
+            OcrFrame(width=image.width, height=image.height, page=1),
+        )
+
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _two_licences)
+    src = tmp_path / "doc.pdf"
+    _make_pdf(src, pages=1)
+    result = strip_pdf(src, pipeline, PseudonymMap(), tmp_path / "out.pdf",
+                       dpi=72, detector=no_findings)
+
+    (page,) = result.pages
+    types = {
+        s.entity_type for s in page.spans
+        if page.ocr.text[s.start : s.end] == "234527"
+    }
+    assert types == {"AU_AFSL", "AU_CREDIT_LICENCE"}
+    assert page.pattern_borrowed == []

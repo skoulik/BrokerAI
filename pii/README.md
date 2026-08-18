@@ -156,6 +156,15 @@ read as a person on one page out of eleven stays kept. `--report` prints every
 group with its tally and each spelling it covers, so you can see and check
 those decisions.
 
+The pattern layer feeds the same document-wide search, and it is reported on
+its own line. It has to: an unlabelled number is recognizable only from a label
+near it, so the *same* reference can be identified where a label happens to sit
+beside it and unidentifiable three lines further down. Any value the patterns
+identify anywhere in the document is then searched for on every page, so all of
+its printings are replaced rather than whichever ones read well. Matching there
+is exact-or-respaced only — no damage tolerance — because a pattern's idea of
+where a value ends is often just where the document's column ended.
+
 `--geometry` chooses how detected values are placed on the *page*, so it
 applies to `--image`/`--pdf` only.
 
@@ -269,11 +278,14 @@ file** — combined, they are unreadable on a real statement page:
 | `ocr` | word boxes coloured by where the READING came from — grey OCR unaided, green the text layer confirmed it, magenta the text layer replaced it — and assembled line boxes, numbered (blue) | what OCR perceived, how rows were banded, and (on a text PDF) which pixels the document's own text vouches for: the grey words are the regions it does not reach, which is where OCR damage survives |
 | `layer-0` | the model's own `bbox_2d` (magenta), labelled with its class | what the LLM named and as which class — nothing else. Empty under `--geometry ocr`, which never asks the model for boxes |
 | `locate` | where the value was actually placed (orange), labelled with the tier | which route tied the model's string to pixels: `exact` / `squash` / `fuzzy` (matched inside the box, OCR damage) / `box` (no OCR text matched — the model's padded box is the only geometry) / `dup` (already covered by a wider finding) |
-| `layer-1` | the boxes actually painted (red), labelled `CLASS source` | the final plan: the class after refinement, and where the span came from — `L0` the model found it here, `DOC` another page (or another occurrence) did, `L1` only a pattern/checksum did |
+| `layer-1` | the boxes actually painted (red), labelled `CLASS source` | the final plan: the class after refinement, and where the span came from — `L0` the model found it here, `DOC` another page (or another occurrence) did, `PAT` a pattern matched the same value elsewhere in the document, `L1` only a pattern/checksum on this page did |
 
 Compared across files they explain the pipeline's characteristic moves: an `IDENTIFIER_GENERIC`
 on `layer-0` under an `AU_TFN L0` on `layer-1` is layer 1 refining a coarse class; a `… L1` with
 nothing under it on `layer-0` is the deterministic recall floor catching what the model missed;
+a `… PAT` is that floor reaching a printing it scored below threshold *here*, because the same
+value cleared the bar somewhere else — layer 1 scores per occurrence, so an unlabelled repeat of
+a labelled value is exactly where it needs the document's help;
 and a `layer-0` box with **no box at the same place on `locate`** is a detection nothing could
 place — an unredacted value, the one thing not to miss. The difference between the `layer-0` and
 `locate` rectangles is the design in [core/ARCHITECTURE.md](core/ARCHITECTURE.md) made visible:
@@ -304,8 +316,16 @@ draw here by construction because the value was named on another page:
                          {"type": "PERSON", "text": "-", "box": null, "placed": "exact",
                           "spans": [{"start": 246, "end": 247, "text": "-"}]}],
             "borrowed": [{"type": "ADDRESS", "start": 1034, "end": 1046, "text": "24 Stacey Dr",
-                          "value": "24 Stacey Dr Carrickalinga SA 5204"}]}]}
+                          "value": "24 Stacey Dr Carrickalinga SA 5204"}],
+            "pattern_borrowed": [{"type": "AU_BANK_ACCOUNT", "start": 311, "end": 317,
+                                  "text": "432103", "value": null}]}]}
 ```
+
+`pattern_borrowed` is the same idea for values **layer 1** detected elsewhere in the document.
+It is listed apart from `borrowed` because the evidence differs — a value the model read, against
+one a pattern matched — and because it answers a specific question: layer 1 scores a value per
+occurrence, so these are the printings it scored *below* threshold here and that were recovered
+only because the identical string cleared the bar somewhere else.
 
 `summary.without_box` and `summary.unplaced` are the two counts worth scanning first: the former
 is what no overlay will show you, the latter is what was detected and **not redacted**.

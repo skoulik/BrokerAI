@@ -1379,6 +1379,73 @@ Text and CSV are untouched: they already search the whole document for every nam
 the only thing grouping would add there is cross-window class consistency, which is worth its
 own measured change rather than a free ride on this one.
 
+### Layer 1 is a document-wide recall floor, not a per-occurrence one (2026-08-18)
+
+**Layer 1 scores a value per OCCURRENCE.** The sub-threshold patterns — a bare account number
+above all — reach the threshold only through the context boost, and the boost is granted from
+the neighbourhood *that occurrence* sits in (`layout.py`). So the same string clears the bar at
+one printing and falls short at the next, and the result is not a miss but something worse: a
+document redacted **inconsistently**, which looks stripped.
+
+The motivating specimen (a reference statement, page 2): the payee reference `432103` prints
+four times. The first sits one line under an unrelated transaction's `Loan Repayment`
+narrative — `loan` and `repayment` are both `AuAccountNumberRule` labels — so it scores
+0.15 + 0.35 = 0.50 and strips. The other three sit under `Alan Hickinbotham Pt …` rows, score
+0.15, and are dropped. One value, four printings, one redaction, by accident of vertical
+adjacency.
+
+The document-wide pass that exists for exactly this could not see it: **its needles came from
+`grouping`, which is fed layer-0 findings alone.** Nor was that a forgotten line — layer 1 ran
+only inside sweep 2, per page, *after* the needle list was already frozen, so no layer-1
+detection could have become a needle even in principle. Layer 1's stated role is a
+deterministic recall floor under a stochastic detector, and a floor that holds per-occurrence
+is not a floor.
+
+**Layer 1 now runs in sweep 1 too, and its spans join the borrowed pass.**
+`image_mode.layer1_needles` reads the page's strip plan (so the keep list has already been
+applied) and `strip_pdf` unions the distinct values across **every** page before the first page
+is redacted. Nothing else moves: the strip plan is still built in sweep 2, where both layers'
+spans exist together, which is the only place `derived.py` can run.
+
+Two guards keep this from being the grouping vote by another route:
+
+1. **A layer-1 needle carries `TEXTUAL_TIERS` — exact and squash, no wrapped and no fuzzy**
+   (`locator.Needle`). A layer-0 needle is a value the model READ, so its extent is a
+   transcription of something printed; a layer-1 span's extent is often an *artifact* —
+   `AtfTailRule` matches "the rest of the line (capped)", so the span is wherever the document
+   truncated a field. Page-locally that costs "an over-strip of one line tail (safe
+   direction)", its own docstring's bargain; a fragment loosed on every page as a fuzzy needle
+   is unanchored, fragmentary and fuzzy at once — the three-liberty composition the wrapped
+   tier is already refused for. Measured: the layer-1 fragment `ATF SK MANAGEMENT` matched
+   `Name\nSK MANAGEMENT` on another page at distance 3.0 against a budget of 3.0, crossing a
+   line break and swallowing the field label.
+2. **A layer-1 needle may add coverage, never re-classify.** Where layer 1 already spoke about
+   those pixels on this page, its own per-occurrence verdict stands and the borrowed span is
+   dropped *before* the merge. Without that it wins — a borrowed span scores 1.0 and
+   `_merge_overlaps` takes the strongest member — so one licence number printed twice, labelled
+   `AFSL` at one printing and `Credit Licence` at the other, collapsed onto whichever class the
+   first needle happened to carry. Layer 0's needles are deliberately *not* filtered this way:
+   its class outranks layer 1's by design.
+
+They are also **not group members**: grouping decides the class and the report, never recall,
+and a pattern hit has no business in an election that can un-redact. The same licence number is
+emitted as both `AU_AFSL` and `AU_CREDIT_LICENCE` by two rules on purpose; as group members
+they would cluster and a vote would rewrite one of them for no recall gain. So one
+`locate_borrowed` call takes both needle sets — the claiming between them must stay shared —
+and each `BorrowedSpan` records the needle that claimed it, which is what lets the two
+provenances be counted apart (unrecoverable otherwise: for a fuzzy match the span text and the
+needle differ by construction). The CLI prints them as separate lines and the debug overlay
+gains a fourth provenance, `PAT`, beside `L0` / `DOC` / `L1`.
+
+Measured on three reference statements: **+3 spans** on the specimen (the three missed
+printings, one placeholder for all four), **0 change** on a four-page statement, and on the
+third the `ATF SK MANAGEMENT` over-strip above, which guard 1 removes.
+
+What this does **not** fix: a value layer 1 detects *nowhere* still strips nowhere — the same
+statement prints `Pc 432575` twice with no label near either, and neither is recovered. That is
+the text-layer-0 item in [TODO.md](TODO.md), not this one. Text and CSV are again untouched:
+they have no borrowed pass at all, and adding one is its own change.
+
 ### Surya 2 evaluated and retired the same day (2026-07-17)
 
 Bake-off round 2 built a complete `surya` backend (detection lines → gap-split segments →

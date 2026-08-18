@@ -150,6 +150,39 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
         if page < pages:
             doc.pad_to(60).raw("CONTINUED OVERLEAF").nl()
 
+    # 4. The per-occurrence context boost, probed directly (2026-08-18). Layer
+    #    1 scores a bare digit run below threshold, and only a label NEAR that
+    #    occurrence promotes it — so the same value strips where a label
+    #    happens to sit beside it and leaks where none does. Measured on a real
+    #    statement: a payee reference printed four times, boosted once by a
+    #    neighbouring transaction's `Loan Repayment` narrative, painted once and
+    #    left readable three times. Inconsistent redaction, which is worse than
+    #    a clean miss because it looks stripped.
+    #
+    #    Every printing is ground-truthed as the same type. The fix is the
+    #    document-wide layer-1 needle (`pii.core.image_mode.layer1_needles`),
+    #    so a run that strips only the labelled printing is exactly the
+    #    regression this probe catches. Filler rows keep the bare printings out
+    #    of the labelled row's `above` band, or the probe would measure nothing.
+    #
+    #    The label sits in its own column (`pad_to`) rather than a space away
+    #    from the date: at image-tier resolutions OCR glues neighbouring tokens
+    #    often enough to matter, and `23FEB22PROGRESSACCOUNT` defeats the
+    #    label's word-boundary requirement — which would make the probe measure
+    #    an OCR artifact instead of the boost.
+    payee_ref = f"{rng.randrange(10**5, 10**6)}"
+    doc.raw(f"{_date(rng, year)}").pad_to(12).raw("PROGRESS DRAW").pad_to(30)
+    doc.raw("ACCOUNT : ")
+    doc.pii(payee_ref, "ACCOUNT_LABELLED_ONCE").pad_to(66)
+    doc.raw(f"{balance:>14,.2f}").nl()
+    doc.raw(" " * 8 + "BUILDER PAYMENT ADVICE").nl()
+    doc.raw(" " * 8 + "SETTLED IN FULL").nl()
+    for _ in range(3):
+        doc.raw(f"{_date(rng, year)}").pad_to(12).raw("PC").pad_to(30)
+        doc.pii(payee_ref, "ACCOUNT_LABELLED_ONCE").pad_to(66)
+        doc.raw(f"{balance:>14,.2f}").nl()
+    doc.nl()
+
     doc.raw(f"{_date(rng, year)} CLOSING BALANCE").pad_to(66).raw(f"{balance:>14,.2f}").nl(2)
     doc.raw(" " * 8 + "TOTAL DEBITS").pad_to(38).raw("TOTAL CREDITS").nl()
     return doc

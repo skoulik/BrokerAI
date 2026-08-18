@@ -169,6 +169,25 @@ items move to [core/DONE.md](core/DONE.md) with their records.
 - **A page is not the unit of truth.** Every page is READ before any page is REDACTED, so a
   value layer 0 names on page 1 and misses on page 4 strips on both. Do not restore a
   streaming per-page loop in `strip_pdf`: it is what made that leak invisible.
+- **BOTH layers are read in sweep 1, and the needle list is complete before any page is
+  painted.** Layer 1 scores per OCCURRENCE — the boost comes from the neighbourhood that
+  occurrence sits in — so one printing of a value clears the threshold and the next does not:
+  four `Pc 432103` on one page, one painted (2026-08-18). Its detections are needles now
+  (`image_mode.layer1_needles`). Do not move that call back into sweep 2: there it runs per
+  page, after the needle list is frozen, which is why no layer-1 hit could propagate.
+- **A layer-1 needle may ADD coverage and must never re-classify or reach the fuzzy tier.**
+  Two separate guards, both load-bearing. It carries `TEXTUAL_TIERS` because a layer-1 span's
+  extent is often an artifact (`AtfTailRule` matches the rest of the line) — as a fuzzy needle
+  `ATF SK MANAGEMENT` ate `Name\nSK MANAGEMENT` across a line break. And it is dropped before
+  the merge wherever layer 1 already spoke on that page, or its score of 1.0 wins
+  `_merge_overlaps` and re-types the page's own verdict — one licence number labelled `AFSL`
+  at one printing and `Credit Licence` at the other collapsed onto one class. Layer-0 needles
+  get neither guard, deliberately: every tier, and their class outranks layer 1's.
+- **Layer-1 needles are not group members.** Grouping decides the class and the report, never
+  recall, so a pattern hit casts no vote and adds no group row — the same number is emitted as
+  both `AU_AFSL` and `AU_CREDIT_LICENCE` on purpose. But both needle sets go through ONE
+  `locate_borrowed` call: the tiers run in phases across all needles, and splitting the call
+  would let a layer-0 fuzzy match take a span from a layer-1 exact one.
 - **Cache the raster the model saw; never render a page twice.** The model's `bbox_2d` lives
   in the coordinate space of those exact pixels, and a second render only assumes it
   reproduces the first. The cache is PNG (lossless until the final embed), holds full

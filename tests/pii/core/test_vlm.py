@@ -523,6 +523,7 @@ def test_a_truncated_read_warns_and_reaches_the_result(pipeline):
             Image.new("RGB", (200, 40), "white"),
             lambda im: _ocr_page("SERGEI KULIK"),
             detector=CutOff(),
+            pipeline=pipeline,
             geometry="hybrid",
         )
     assert read.incomplete == Incomplete(truncated=1)
@@ -553,6 +554,7 @@ def test_a_malformed_read_is_reported_as_its_own_kind(pipeline):
             Image.new("RGB", (200, 40), "white"),
             lambda im: _ocr_page("nothing here"),
             detector=Garbage(),
+            pipeline=pipeline,
             geometry="hybrid",
         )
     assert read.incomplete == Incomplete(malformed=1)
@@ -578,6 +580,7 @@ def test_a_truncated_second_pass_is_counted_too(pipeline):
             Image.new("RGB", (200, 40), "white"),
             lambda im: _ocr_page("SERGEI KULIK"),
             detector=CutOffBoxes(),
+            pipeline=pipeline,
             geometry="hybrid",
         )
     assert read.incomplete == Incomplete(truncated=1)
