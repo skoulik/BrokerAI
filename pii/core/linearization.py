@@ -20,7 +20,7 @@ DONE.md.
 from dataclasses import dataclass
 
 from pii.core.ocr import Box, _union
-from pii.core.ocr_page import OcrPage
+from pii.core.ocr_page import FontSpec, OcrPage
 
 
 @dataclass(frozen=True)
@@ -28,7 +28,11 @@ class PlacedWord:
     """A word placed at a character interval in the linearized text, with the
     geometry needed to map a span back to pixels. `region_box` is the
     detection-line box the run grows out to when painting (always set here —
-    resolved from the word's region, glyph-tight box otherwise)."""
+    resolved from the word's region, glyph-tight box otherwise).
+
+    `font` and `source` are carried straight off the `OcrWord` (see
+    `pii.core.ocr_page`): the face a placeholder is drawn in, and what the
+    reading is owed to. Both are render/diagnostic only."""
 
     text: str
     box: Box
@@ -36,6 +40,8 @@ class PlacedWord:
     line: int
     char_start: int
     char_end: int
+    font: FontSpec | None = None
+    source: str = "ocr"
 
 
 @dataclass(frozen=True)
@@ -61,6 +67,25 @@ class RecognizerInput:
             if max(start, w.char_start) < min(end, w.char_end):
                 by_line.setdefault(w.line, []).append(w.box)
         return [_union(boxes) for _, boxes in sorted(by_line.items())]
+
+    def font_for_span(self, start: int, end: int) -> FontSpec | None:
+        """The face a placeholder covering this span should be drawn in: the
+        one carried by most of the CHARACTERS the span covers.
+
+        By characters rather than by words so a span that reaches one word of a
+        heading and six of the body takes the body's face. One face per span,
+        not per painted box: a span crossing lines in two different faces is
+        rare, and each box re-fits its own size anyway. None whenever the page
+        has no font traceback at all, which is every non-PDF input — the
+        painter then falls back to its own default."""
+        weights: dict[FontSpec, int] = {}
+        for w in self.words:
+            covered = min(end, w.char_end) - max(start, w.char_start)
+            if covered > 0 and w.font is not None:
+                weights[w.font] = weights.get(w.font, 0) + covered
+        if not weights:
+            return None
+        return max(weights.items(), key=lambda item: item[1])[0]
 
     def painted_boxes_for_span(self, start: int, end: int) -> list[Box]:
         """Boxes for painting a span — like boxes_for_span, but each line's
@@ -128,6 +153,8 @@ def linearize(page: OcrPage) -> RecognizerInput:
                     line=line_idx,
                     char_start=pos,
                     char_end=pos + len(w.text),
+                    font=w.font,
+                    source=w.source,
                 )
             )
             parts.append(w.text)

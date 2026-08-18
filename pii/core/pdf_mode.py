@@ -61,6 +61,7 @@ from pii.core.debug_overlay import (
 )
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import get_ocr_page
+from pii.core.text_layer import RepairReport, page_text_words
 from pii.core.vlm import Incomplete
 
 # 300 DPI is the scanning-industry default for OCR of small print;
@@ -124,6 +125,9 @@ class PdfPageResult:
     # (vlm.Incomplete). Per page rather than per document, because the page is
     # what is under-redacted and the operator has to know which one to re-run.
     incomplete: Incomplete = Incomplete()
+    # What this page's own text layer did to its OCR (pii.core.text_layer):
+    # readings confirmed, readings replaced, or the layer refused outright.
+    repair: RepairReport = RepairReport()
 
 
 @dataclass
@@ -145,6 +149,7 @@ def strip_pdf(
     *,
     detector,
     geometry: str = "hybrid",
+    text_repair: bool = True,
     debug: DebugSpec | None = None,
 ) -> PdfStripResult:
     """Strip a PDF in two sweeps and write a fresh, image-only PDF.
@@ -166,6 +171,14 @@ def strip_pdf(
     it lives in a temporary directory that is emptied as the run proceeds (each
     page's file is unlinked the moment that page is embedded) and removed on
     the way out, including on an exception.
+
+    `text_repair` prefers the document's OWN text layer to the OCR's reading
+    of a word, where the two describe the same pixels and agree about what is
+    printed there (`pii.core.text_layer`). It is read from the page object
+    sweep 1 already holds, so it costs no reopen and no second render. This is
+    the one place anything from the source PDF's internals is consulted, and
+    it stays a repair source constrained by OCR geometry: no word is added,
+    no box moves, and the output is still rebuilt from pixels alone.
 
     One pipeline, one OCR engine and one shared `pmap` serve all pages, so
     placeholders are consistent across the document.
@@ -206,6 +219,11 @@ def strip_pdf(
                     read_page(
                         image, page_engine,
                         detector=detector, geometry=geometry,
+                        text_layer=(
+                            page_text_words(page, dpi)
+                            if text_repair and geometry != "vlm"
+                            else ()
+                        ),
                     )
                 )
                 # Captured here so sweep 2 never reopens the source document.
@@ -238,7 +256,7 @@ def strip_pdf(
             result = strip_from_vlm(
                 image, read.findings, pipeline, pmap,
                 ocr=read.ocr, grouping=grouping,
-                incomplete=read.incomplete,
+                incomplete=read.incomplete, repair=read.repair,
             )
             cached.unlink()
             width, height = sizes[index]
@@ -270,6 +288,7 @@ def strip_pdf(
                     ),
                     borrowed=result.borrowed,
                     incomplete=result.incomplete,
+                    repair=result.repair,
                 )
             )
         # A fresh document carries nothing from the source; empty the

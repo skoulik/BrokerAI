@@ -24,6 +24,7 @@ from pii.core import DEFAULT_STRIP_ENTITIES, PiiPipeline, PseudonymMap
 from pii.core.debug_overlay import DEBUG_LAYERS, parse_layers
 from pii.core.entity_keep import load_keep
 from pii.core.ocr import OCR_PAGE_BACKENDS
+from pii.core.text_layer import RepairReport
 # stdlib-only module, so importing it here costs nothing on the default path
 from pii.core.vlm import (
     DEFAULT_GEOMETRY,
@@ -283,6 +284,33 @@ def _report_borrowed(count: int, file=None) -> None:
     )
 
 
+def _report_repair(reports, file=None) -> None:
+    """What the source document's own text layer did to the OCR.
+
+    Always printed when a text layer was consulted at all, independently of
+    --report: a repaired reading is one the recognizers can match and the raw
+    OCR could not, and a REFUSED page is a page silently read from OCR alone.
+    Both change what the run could see, which is the same class of fact as the
+    borrowed line above."""
+    total = sum(reports, RepairReport())
+    if not total:
+        return
+    file = file if file is not None else sys.stderr
+    print(
+        f"text layer: {total.repaired} OCR reading(s) repaired, "
+        f"{total.agreed} confirmed, of {total.words} word(s)",
+        file=file,
+    )
+    refused = [n for n, report in enumerate(reports, 1) if report.disabled]
+    if refused:
+        print(
+            f"  text layer REFUSED on page(s) "
+            f"{', '.join(str(n) for n in refused)} — it disagrees with the "
+            f"pixels there; those pages are read from OCR alone",
+            file=file,
+        )
+
+
 def _report_invalid(findings, file=None) -> None:
     # Near-PII (a typo'd TFN is a real TFN minus a digit) — stderr only,
     # treat any capture of it as a local-only artifact like the map file.
@@ -430,6 +458,7 @@ def _strip_media(args, pipeline, detector):
                            progress=progress,
                            detector=detector,
                            geometry=getattr(args, "geometry", DEFAULT_GEOMETRY),
+                           text_repair=getattr(args, "text_repair", "on") == "on",
                            debug=debug_spec)
         pmap.save()
         if debug_spec is not None:
@@ -466,6 +495,7 @@ def _strip_media(args, pipeline, detector):
             sum((p.incomplete for p in result.pages), Incomplete())
         )
         _report_borrowed(sum(len(p.borrowed) for p in result.pages))
+        _report_repair([p.repair for p in result.pages])
         invalid = [f for p in result.pages for f in p.invalid]
         if args.log_invalid_identifiers == "yes" and invalid:
             _report_invalid(invalid)
@@ -533,6 +563,18 @@ def main(argv=None) -> int:
              "models/paddlex on first use. On the GPU paddle wheel the engine "
              "runs in a worker subprocess (it cannot share a process with "
              "torch); the CPU wheel runs it in-process.",
+    )
+    p_strip.add_argument(
+        "--text-repair", choices=("on", "off"), default="on",
+        help="repair the OCR's reading of a word from the PDF's own text "
+             "layer where the two describe the same pixels and agree about "
+             "what is printed there (--pdf only; default on). A text PDF "
+             "carries the true characters, and an account number OCR'd as "
+             "'O18057571' matches no rule at all. The text layer is only ever "
+             "a repair source: no word is added, no box moves, the output is "
+             "still rebuilt from pixels, and a page whose text disagrees with "
+             "its own pixels is refused and read from OCR alone. 'off' is the "
+             "OCR-only baseline for measuring what it buys.",
     )
     p_strip.add_argument(
         "--geometry", choices=list(GEOMETRIES), default=DEFAULT_GEOMETRY,

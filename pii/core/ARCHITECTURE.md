@@ -59,6 +59,7 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `ocr_page.py` | Perception: `OcrPage` → `OcrLine` → `OcrWord` + `OcrFrame`. Geometry only, no character offsets |
 | `linearization.py` | `OcrPage` → `RecognizerInput`: the flat page string plus the source map that turns a span back into pixel boxes |
 | `ocr_paddle.py` | PaddleOCR adapter: line-oriented det/rec → per-word `OcrPage`; in-process on either wheel, and holds the torch guard that keeps it safe |
+| `text_layer.py` | The PDF's own text layer as an OCR **repair** source: extraction into raster pixels, per-line alignment against the `OcrPage`, the gates a repair must pass, and the font traceback that rides the same pairing |
 | `debug_overlay.py` | `strip --debug` renderers: the ocr / layer-0 / layer-1 diagnostic layers drawn onto the page a run processed |
 | `paint.py` | The drawing toolkit (`Segment`, `paint_segments`, fill/frame styles), shared by strip and the debug overlay |
 | `image_mode.py` | Image front/back-end: layer-0 detect, locate in the OCR text, paint placeholders onto the original pixels |
@@ -158,7 +159,9 @@ are painted from the model's own padded box and counted apart (see "Layer 0" bel
 ### PDF — two sweeps over the image pipeline, reassembled from scratch
 
 `strip_pdf` (`pdf_mode.py`, 2026-07-18; two sweeps 2026-08-11) **reads** every page — render
-at 300 DPI (default) → detect → localize → OCR — then groups the findings across the whole
+at 300 DPI (default) → detect → localize → OCR → repair the OCR readings from the page's own
+text layer (`text_layer.py`, 2026-08-18; before linearization, so everything downstream is
+built from repaired words) — then groups the findings across the whole
 document, then **redacts** every page against that shared view (locate → layer 1 → paint) and
 embeds each painted page into a **fresh** pymupdf document at the source page's physical size
 in points. Nothing is copied from the source document object, so text layers, annotations,
@@ -699,6 +702,85 @@ detect and mask barcode regions.
   output PDF is lossy (JPEG q90 — ~0.2 MB/page vs 1–4 MB lossless; the eval scorer re-OCRs
   output pixels, so encoding damage is measured, not hidden). Encoding configurability is a
   recorded TODO.
+
+### OCR repair from the PDF's own text layer (2026-08-18)
+
+A text PDF carries the true characters already; the OCR that layer 1 reads does not. On
+`ServletRetrieve (6).pdf` p1 the OCR read `018057571` as `O18057571` and the footer ABN as
+`32 O09 656 74O`, and **neither matched any rule at all** — a five-to-ten digit run cannot
+start after a letter — so a customer's account number and an institution's ABN both survived
+a `--layer0 off` run unredacted while the text layer of those same pages had the digits.
+`pii/core/text_layer.py` pairs each OCR word with the text-layer word describing the same
+pixels and prefers the text layer's characters where the two agree about the pixels and
+disagree about the reading. Measurements and the rejected variants are in [DONE.md](DONE.md).
+
+**It does not overturn the pixels-first decision above**, because the rule is: *the text layer
+is a repair source CONSTRAINED BY OCR GEOMETRY, never an independent detection source.* Same
+shape as "a model box is a search constraint, not paint geometry" — an untrusted source is
+admissible exactly where a trusted one pins it down. Only a word the OCR already saw is
+repaired, only where positionally matched and similar; a word the OCR missed is never added,
+and hidden text still cannot reach the output, which is rebuilt from pixels.
+
+- **A repair changes a word's CHARACTERS and nothing else** — not its box, not its word count.
+  Repair runs at the `OcrPage` word level, BEFORE `linearize`, so the source map is built from
+  repaired words and offsets, boxes, painting and the pseudonym map stay consistent by
+  construction with no remapping anywhere.
+- **Geometry buckets; ALIGNMENT decides the correspondence.** Text words are assigned to the
+  OCR line they vertically overlap, and the two word sequences of that line are then aligned
+  in reading order (Needleman–Wunsch over confusion-weighted character distance). Independent
+  per-word best-overlap pairing — the obvious design — drifts by one across a whole line
+  wherever OCR word boxes are interpolated, and did so on the first page measured. Only the
+  similarity gate rejected those; aligned, the same run pairs exactly and confirms.
+- **Only a 1:1 match is repaired.** Merges are aligned so the correspondence stays right, never
+  applied: OCR read those pixels as one token and the text layer as several, so which
+  characters belong where is exactly what is not established.
+- **Four gates, each rejecting something no other one catches** — the readings agree to within
+  `fuzzy`'s budget; the EXTENT agrees (a text layer that puts thirty table-of-contents leader
+  dots inside its word squashes to distance ZERO, and nothing else sees it); the boxes agree
+  two-way (never at `min(area)`, which scores 1.0 for a word wholly inside a much wider one);
+  and no non-graphic character may be introduced, because a text layer can be WORSE than the
+  OCR — one reference statement renders a BSB with U+00AD, which would delete the separator
+  from `[ -]` and unmatch the rule.
+- **The permissive confusion table, not the identifier one.** The question is "is this the same
+  printed WORD", which the alignment and the geometry answer between them — not "is this the
+  same VALUE". So a digit read as a different digit is repaired here (Sergei, 2026-08-18),
+  unlike in `grouping.py`, where the same comparison has no positional anchor.
+- **The page-level guard counts READING agreement alone.** A text layer that does not describe
+  these pixels — a different revision, another tool's OCR baked in — disables repair for THAT
+  page. Pairs refused for geometry or extent are good correspondences we decline to act on, and
+  counting those against the layer would disable repair on a page whose only problem is that
+  OCR interpolated some boxes.
+- **"Text PDF" is not the boundary; the part of the page the text layer COVERS is.** The
+  Amplify p3 ABN is not repaired — that footer lives inside an embedded image and has no
+  text-layer counterpart at all, while the page still reports 85% coverage. A page-level
+  average hides WHICH words are missing, and the missing ones are where the damage is. The
+  `ocr` debug overlay colours exactly this: words the text layer never reached stay grey.
+- **The transform is the render matrix, not a scalar.** `get_pixmap` applies `/Rotate` itself
+  so the raster is upright-as-displayed, while `get_text` returns UNROTATED page coordinates:
+  on a 90° page `x * dpi/72` puts a word at x=104 where its ink is at x=1041.
+  `page.rotation_matrix * Matrix(s, s)` is correct for all four rotations (measured). A shifted
+  CropBox needs no handling — `page.rect` is normalized to the origin.
+
+### Font traceback, and what it may touch (2026-08-18)
+
+The same pairing fills `OcrWord.font` / `OcrLine.font`, which no OCR engine can supply, and
+`pii.core.paint` draws each placeholder in the face it replaces — bold where the original was
+bold, monospaced where it was monospaced, at the document's own size rather than a guess from
+the box. **Render-only**: a font must never reach a detection decision, since we deliberately
+distrust the text layer and its idea of the typeface is the least load-bearing thing it carries.
+
+- **Not the document's embedded font**, although pymupdf can extract it. Measured: 8 of the 11
+  fonts on one reference page are Identity-H CID subsets, through which Pillow renders
+  `PERSON_1` as zero-height nothing — a filled box with an invisible label, which is silently
+  unreadable output rather than a cosmetic miss. A `FontSpec` describes the face and `paint.py`
+  resolves it to a system one.
+- **The PDF's serifed flag is not used at all.** Measured across the corpus it is wrong more
+  often than right: `ArialMT` and `Helvetica` each appear with the bit both set and clear in
+  different documents, and `FrutigerLTPro`, `Roboto`, `MyriadPro` and `Gotham` are all flagged
+  serifed — while not one true serif face appears. Serif is read off the NAME and defaults to
+  sans; bold/italic/mono come from the flags, which are reliable.
+- **Size is carried in raster pixels**, converted at extraction, which is what keeps dpi out of
+  the paint layer entirely.
 
 ### Image-path invariants, harvested from a package we declined (2026-07-14)
 

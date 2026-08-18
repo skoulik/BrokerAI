@@ -213,6 +213,33 @@ than by scrubbing. Placeholders are consistent across the document's
 pages; processing is lossless end-to-end with a JPEG embed only at the
 final step (~0.2 MB/page at 300 DPI).
 
+### Repair from the PDF's own text layer
+
+A text PDF carries the true characters; the OCR does not always. Where a
+word's OCR reading and the document's own text layer describe the same
+pixels and agree about what is printed there, the text layer's characters
+win — so an account number OCR'd as `O18057571`, which matches no rule at
+all because a digit run cannot start after a letter, is read as
+`018057571` and redacted. On the reference statements this also restores
+an ABN's checksum (`32 O09 656 74O` → `32 009 656 740`).
+
+The text layer is only ever a **repair source**: no word is added, no box
+moves, and the output is still rebuilt from pixels, so nothing hidden in
+the source can reach it. A page whose text disagrees with its own pixels
+— a different revision, another tool's OCR baked in — is refused and read
+from OCR alone, and the run says which pages those were. Words the text
+layer does not reach at all (an embedded image, a scanned footer) simply
+keep their OCR reading; the `ocr` debug overlay colours them so you can
+see which is which.
+
+The run always reports what happened (`text layer: 15 OCR reading(s)
+repaired, 679 confirmed, of 721 word(s)`). `--text-repair off` is the
+OCR-only baseline, for measuring what it buys.
+
+Placeholders are also drawn in the face they replace — bold where the
+original was bold, monospaced where it was monospaced, at the document's
+own size — which comes from the same pairing and applies to `--pdf` only.
+
 The run makes **two passes** over the document — every page is read
 before any page is redacted, which is what lets a value found on one
 page be redacted on all of them. Progress on stderr names the pass
@@ -232,7 +259,7 @@ file** — combined, they are unreadable on a real statement page:
 
 | layer | drawn | tells you |
 |---|---|---|
-| `ocr` | word boxes (grey) and assembled line boxes, numbered (blue) | what OCR perceived, and how rows were banded — the geometry painting can use at all |
+| `ocr` | word boxes coloured by where the READING came from — grey OCR unaided, green the text layer confirmed it, magenta the text layer replaced it — and assembled line boxes, numbered (blue) | what OCR perceived, how rows were banded, and (on a text PDF) which pixels the document's own text vouches for: the grey words are the regions it does not reach, which is where OCR damage survives |
 | `layer-0` | the model's own `bbox_2d` (magenta), labelled with its class | what the LLM named and as which class — nothing else. Empty under `--geometry ocr`, which never asks the model for boxes |
 | `locate` | where the value was actually placed (orange), labelled with the tier | which route tied the model's string to pixels: `exact` / `squash` / `fuzzy` (matched inside the box, OCR damage) / `box` (no OCR text matched — the model's padded box is the only geometry) / `dup` (already covered by a wider finding) |
 | `layer-1` | the boxes actually painted (red), labelled `CLASS source` | the final plan: the class after refinement, and where the span came from — `L0` the model found it here, `DOC` another page (or another occurrence) did, `L1` only a pattern/checksum did |

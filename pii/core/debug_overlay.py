@@ -8,7 +8,13 @@ annotating the SAME pixels the run processed, and each written to ITS OWN file
 - ``ocr``      — the perception layer: every word box, and the assembled line
   boxes numbered in assembly order, so `_rows` banding is visible. This is the
   geometry painting can use at all; a value missing from these lines can only
-  be redacted from the model's own box.
+  be redacted from the model's own box. Word boxes are coloured by where the
+  READING came from (`pii.core.text_layer`): grey where OCR is on its own,
+  green where the document's text layer confirmed it, magenta where the text
+  layer REPLACED it. On a text PDF that makes two things visible at a glance —
+  which pixels the text layer vouches for, and which regions (an embedded
+  image, a scanned footer) it does not reach, since those are exactly the words
+  left grey.
 - ``layer-0``  — what the semantic detector itself produced, and nothing else:
   its class, drawn on its own `bbox_2d`. A run whose model was never asked for
   boxes (`--geometry ocr`) draws NOTHING here, which is the honest picture —
@@ -71,6 +77,7 @@ from PIL import Image
 
 from pii.core.linearization import RecognizerInput
 from pii.core.ocr import Box, _union
+from pii.core.ocr_page import SOURCE_AGREED, SOURCE_OCR, SOURCE_TEXT
 from pii.core.paint import Segment, paint_segments
 
 # The selectable layers, in DRAWING order — pipeline order, so the overlay
@@ -89,7 +96,9 @@ DEBUG_LAYERS = ("ocr", "layer-0", "locate", "layer-1")
 # there, and the emptiness is the truth about that regime).
 LAYER0_DEBUG_LAYERS = ("layer-0", "locate")
 
-_WORD_COLOR = (90, 90, 90)  # thin grey — word boxes
+_WORD_COLOR = (90, 90, 90)  # thin grey — word boxes OCR read unaided
+_AGREED_COLOR = (30, 150, 70)  # green — the text layer confirmed the reading
+_REPAIRED_COLOR = (190, 40, 190)  # magenta — the text layer replaced it
 _LINE_COLOR = (30, 120, 220)  # blue — assembled line boxes, numbered
 _LAYER0_COLOR = (190, 40, 190)  # magenta — the model's own view
 _LOCATE_COLOR = (235, 140, 0)  # orange — where the locator put it
@@ -221,10 +230,18 @@ def draw_layers(
     wanted = set(layers)
     out = image.convert("RGB")
     if "ocr" in wanted and debug.ocr is not None:
-        out = paint_segments(
-            out, _word_segments(debug.ocr), margin=0, style="frame",
-            color=_WORD_COLOR, width=1, chip="none",
-        )
+        # Three passes, one per provenance, because a paint call carries one
+        # colour. Repaired words are drawn LAST and thicker: they are the few
+        # the page is worth inspecting for.
+        for source, color, width in (
+            (SOURCE_OCR, _WORD_COLOR, 1),
+            (SOURCE_AGREED, _AGREED_COLOR, 1),
+            (SOURCE_TEXT, _REPAIRED_COLOR, 2),
+        ):
+            out = paint_segments(
+                out, _word_segments(debug.ocr, source), margin=0,
+                style="frame", color=color, width=width, chip="none",
+            )
         out = paint_segments(
             out, _line_segments(debug.ocr), margin=0, style="frame",
             color=_LINE_COLOR, width=2,
@@ -336,8 +353,12 @@ def write_findings(
     )
 
 
-def _word_segments(ocr: RecognizerInput) -> list[Segment]:
-    return [Segment("", [w.box]) for w in ocr.words]
+def _word_segments(ocr: RecognizerInput, source: str) -> list[Segment]:
+    """Word boxes of one provenance (`pii.core.ocr_page.OcrWord.source`).
+
+    Unlabelled: the overlay outlines every word on the page and a chip on each
+    would bury the page under its own labels — the colour carries it."""
+    return [Segment("", [w.box]) for w in ocr.words if w.source == source]
 
 
 def _line_segments(ocr: RecognizerInput) -> list[Segment]:

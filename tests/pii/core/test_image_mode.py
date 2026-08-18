@@ -355,3 +355,61 @@ def test_a_wrapped_value_collects_one_placeholder(pipeline):
     # The left card's row-mate is between them and stays out of the plan.
     assert "Product Gold" not in " ".join(painted)
     assert {segment.label for segment in result.segments} == {"ADDRESS_1"}
+
+
+# --- the face a placeholder is drawn in (pii.core.text_layer traceback) ---
+
+
+def test_placeholder_is_drawn_in_the_face_it_replaces():
+    """A `FontSpec` reaches the painter and changes the glyphs it draws.
+
+    Compared against the same label with no spec: a monospaced face at the same
+    size lays `PERSON_1` out differently from the proportional default, so the
+    painted pixels must differ. What is asserted is that the spec is CONSULTED
+    — which face a platform actually resolves to is not something a test can
+    pin, and `_face` falls back rather than failing when it has none."""
+    from pii.core.ocr_page import FontSpec
+    from pii.core.paint import _face
+
+    mono = _face(FontSpec(name="Courier New", size=14.0, mono=True), 14)
+    sans = _face(FontSpec(name="Arial", size=14.0), 14)
+    # Both resolve to something drawable, whatever the platform has.
+    assert mono is not None and sans is not None
+    assert mono.getlength("PERSON_1") != sans.getlength("PERSON_1")
+
+
+def test_font_spec_sets_the_placeholder_size_from_the_document():
+    """The document's own point size beats guessing from the box.
+
+    The painted box is grown and includes the region's ink margin, so
+    `height * 0.8` overstates the real face — with a spec the placeholder is
+    set at the size the replaced text actually was."""
+    from pii.core.ocr_page import FontSpec
+
+    box = Box(20, 10, 200, 40)
+    img = Image.new("RGB", (240, 60), "white")
+    small = paint_segments(
+        img, [Segment("X", [box], font=FontSpec(name="Arial", size=9.0))]
+    )
+    unsized = paint_segments(img, [Segment("X", [box])])
+
+    def ink(image):
+        return sum(
+            1 for pixel in image.crop(
+                (box.left, box.top, box.right, box.bottom)
+            ).getdata() if sum(pixel) < 400
+        )
+
+    assert 0 < ink(small) < ink(unsized)
+
+
+def test_no_font_spec_paints_exactly_as_before():
+    """Every input without a text layer — an image, a scan, a PDF page the
+    layer does not cover — keeps the previous rendering."""
+    box = Box(20, 10, 100, 14)
+    img = Image.new("RGB", (200, 40), "white")
+    assert list(
+        paint_segments(img, [Segment("PERSON_1", [box])]).getdata()
+    ) == list(
+        paint_segments(img, [Segment("PERSON_1", [box], font=None)]).getdata()
+    )

@@ -50,6 +50,7 @@ from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box, get_ocr_page
 from pii.core.paint import Segment, paint_segments
 from pii.core.pipeline import InvalidFinding, PiiPipeline
+from pii.core.text_layer import RepairReport, TextWord, repair_page
 from pii.core.vlm import (
     DEFAULT_GEOMETRY,
     DEFAULT_PAD,
@@ -122,6 +123,11 @@ class ImageStripResult:
     # counts the reads where we cannot know what was missed, which is why it is
     # carried rather than only warned about.
     incomplete: Incomplete = Incomplete()
+    # What the source document's own text layer did to this page's OCR
+    # (pii.core.text_layer) — how many readings it confirmed, how many it
+    # replaced, and whether it was refused outright. Empty for any input that
+    # has no text layer at all.
+    repair: RepairReport = RepairReport()
 
 
 @dataclass
@@ -138,6 +144,8 @@ class PageRead:
     # out of sweep 1 because that is where it is known and sweep 2 is where it
     # has to be reported.
     incomplete: Incomplete = Incomplete()
+    # What the PDF's own text layer did to this page's OCR, if it had one.
+    repair: RepairReport = RepairReport()
 
 
 def strip_image(
@@ -176,6 +184,7 @@ def read_page(
     *,
     detector,
     geometry: str = DEFAULT_GEOMETRY,
+    text_layer: tuple[TextWord, ...] = (),
 ) -> PageRead:
     """Sweep 1: read one already-rendered page. Detects and OCRs, paints
     nothing.
@@ -185,7 +194,14 @@ def read_page(
     misses on page 4 can only be recovered by a pass that has seen both. The
     geometry dispatch lives here, in one place, so `strip_pdf` resolves the OCR
     engine once per document and both entry points share exactly one decision
-    about what runs."""
+    about what runs.
+
+    `text_layer` is the source document's own text words, where it has some
+    (`pii.core.text_layer.page_text_words`, PDF input only). It repairs the OCR
+    readings BEFORE linearization, so the source map, the offsets, the boxes and
+    the pseudonym map are all built from the repaired words and nothing
+    downstream has to remap anything. It is a repair source only: no word is
+    added, no box is moved."""
     if geometry not in GEOMETRIES:
         raise ValueError(f"unknown geometry: {geometry!r}")
     read = detector.detect(image)
@@ -198,8 +214,35 @@ def read_page(
         findings = located.findings
         incomplete += located.incomplete
     _warn_incomplete(incomplete)
-    ocr = None if geometry == "vlm" else linearize(ocr_engine(image))
-    return PageRead(findings=findings, ocr=ocr, incomplete=incomplete)
+    ocr, repair = None, RepairReport()
+    if geometry != "vlm":
+        page = ocr_engine(image)
+        if text_layer:
+            page, repair = repair_page(page, text_layer)
+            _warn_repair_disabled(repair)
+        ocr = linearize(page)
+    return PageRead(
+        findings=findings, ocr=ocr, incomplete=incomplete, repair=repair
+    )
+
+
+def _warn_repair_disabled(repair: RepairReport) -> None:
+    """Say so when a page's text layer was refused.
+
+    It means the document carries text that does NOT describe its own pixels —
+    a different revision, or another tool's OCR baked in. Nothing is lost
+    relative to a scan (the page is read by OCR either way), but an operator
+    who believes this is a text PDF is entitled to know the repair did not
+    happen here."""
+    if repair.disabled:
+        warnings.warn(
+            f"the text layer of this page disagrees with its pixels "
+            f"({repair.agreed} of {repair.paired} aligned words matched) — OCR "
+            f"repair and font traceback are disabled for it; the page is read "
+            f"from OCR alone.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
 
 def _warn_incomplete(incomplete: Incomplete) -> None:
@@ -238,6 +281,7 @@ def strip_rendered_page(
     detector,
     geometry: str = DEFAULT_GEOMETRY,
     pad: int = DEFAULT_PAD,
+    text_layer: tuple[TextWord, ...] = (),
 ) -> ImageStripResult:
     """Read and strip one page, its own findings being the whole document.
 
@@ -246,11 +290,14 @@ def strip_rendered_page(
     on the same page consistent, and the borrowed pass paints every occurrence
     of a value it named only once. `strip_pdf` does not call this — it reads
     all pages first, then groups across them."""
-    read = read_page(image, ocr_engine, detector=detector, geometry=geometry)
+    read = read_page(
+        image, ocr_engine, detector=detector, geometry=geometry,
+        text_layer=text_layer,
+    )
     return strip_from_vlm(
         image, read.findings, pipeline, pmap, ocr=read.ocr, pad=pad,
         grouping=group_findings([read.findings]),
-        incomplete=read.incomplete,
+        incomplete=read.incomplete, repair=read.repair,
     )
 
 
@@ -263,6 +310,7 @@ def strip_from_vlm(
     pad: int = DEFAULT_PAD,
     grouping: Grouping | None = None,
     incomplete: Incomplete = Incomplete(),
+    repair: RepairReport = RepairReport(),
 ) -> ImageStripResult:
     """Strip against layer-0 findings — the VLM detector seam.
 
@@ -453,6 +501,7 @@ def strip_from_vlm(
         placements=placed.placements,
         skipped=skipped,
         incomplete=incomplete,
+        repair=repair,
     )
 
 
@@ -498,7 +547,7 @@ def _paint_vlm_boxes(
 def _paint_plan(
     image, ocr, spans, invalid, pmap, extra=(), box_geometry=(), unlocated=(),
     unlocated_painted_elsewhere=(), borrowed=(), groups=(), placements=(),
-    skipped=(), incomplete=Incomplete(),
+    skipped=(), incomplete=Incomplete(), repair=RepairReport(),
 ) -> ImageStripResult:
     """Allocate a placeholder per span and paint it over the span's pixels.
     Spans arrive in document order, which is the numbering order. `extra`
@@ -510,6 +559,7 @@ def _paint_plan(
                 r.entity_type, r.full_value or ocr.text[r.start : r.end]
             ),
             boxes=ocr.painted_boxes_for_span(r.start, r.end),
+            font=ocr.font_for_span(r.start, r.end),
         )
         for r in spans
     ] + list(extra)
@@ -520,5 +570,5 @@ def _paint_plan(
         unlocated_painted_elsewhere=list(unlocated_painted_elsewhere),
         borrowed=list(borrowed), groups=tuple(groups),
         placements=list(placements), skipped=list(skipped),
-        incomplete=incomplete,
+        incomplete=incomplete, repair=repair,
     )

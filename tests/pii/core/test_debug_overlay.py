@@ -25,7 +25,13 @@ from pii.core.detection import Detection
 from pii.core.linearization import linearize
 from pii.core.locator import Placement
 from pii.core.ocr import Box
-from pii.core.ocr_page import OcrFrame, build_page
+from pii.core.ocr_page import (
+    OcrFrame,
+    OcrLine,
+    OcrPage,
+    OcrWord,
+    build_page,
+)
 from pii.core.vlm import VlmFinding
 
 _WORD_COLOR = (90, 90, 90)
@@ -440,3 +446,58 @@ def test_the_findings_listing_records_the_borrowed_half_of_the_locator():
 def test_the_findings_listing_lands_beside_the_overlays():
     spec = DebugSpec(layers=("layer-0",), path="statement.clean.debug.pdf")
     assert spec.findings_path() == "statement.clean.debug.findings.json"
+
+
+# --- the perception layer's reading provenance ----------------------------
+
+
+def test_ocr_layer_colours_words_by_where_the_reading_came_from():
+    """Three colours, one per `OcrWord.source`.
+
+    What it makes visible on a text PDF: which pixels the document's own text
+    layer vouches for, which readings it OVERRULED — the few worth inspecting —
+    and, in plain grey, the regions it does not reach at all (an embedded
+    image, a scanned footer), which is exactly where OCR damage survives."""
+    from pii.core.debug_overlay import (
+        _AGREED_COLOR,
+        _REPAIRED_COLOR,
+        _WORD_COLOR,
+    )
+
+    region = Box(10, 100, 220, 24)
+    ocr = linearize(
+        OcrPage(
+            frame=OcrFrame(width=400, height=300, page=1),
+            lines=(
+                OcrLine(
+                    text="Account 018057571 logo",
+                    box=region,
+                    words=(
+                        OcrWord("Account", Box(12, 102, 58, 20), region,
+                                source="agreed"),
+                        OcrWord("018057571", Box(80, 102, 62, 20), region,
+                                source="text"),
+                        OcrWord("logo", Box(150, 102, 58, 20), region,
+                                source="ocr"),
+                    ),
+                ),
+            ),
+        )
+    )
+    out = draw_layers(_blank(), PageDebug(ocr=ocr), ["ocr"])
+    drawn = _colors(out)
+
+    assert _WORD_COLOR in drawn
+    assert _AGREED_COLOR in drawn
+    assert _REPAIRED_COLOR in drawn
+
+
+def test_ocr_layer_is_all_grey_without_a_text_layer():
+    """Every input that has no text layer keeps the previous single-colour
+    picture — the colours appear only when something corroborated a reading."""
+    from pii.core.debug_overlay import _AGREED_COLOR, _REPAIRED_COLOR
+
+    out = draw_layers(_blank(), PageDebug(ocr=_ocr()), ["ocr"])
+    drawn = _colors(out)
+    assert _AGREED_COLOR not in drawn
+    assert _REPAIRED_COLOR not in drawn

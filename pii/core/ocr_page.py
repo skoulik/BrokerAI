@@ -17,20 +17,63 @@ from dataclasses import dataclass
 
 from pii.core.ocr import Box, _union
 
+# What an `OcrWord.source` may say — the vocabulary lives here, beside the
+# field, because `pii.core.text_layer` (which sets it) and
+# `pii.core.debug_overlay` (which colours by it) must not disagree about the
+# spellings, and neither may be imported from here.
+SOURCE_OCR = "ocr"  # nothing corroborated this reading
+SOURCE_AGREED = "agreed"  # the document's text layer confirmed it
+SOURCE_TEXT = "text"  # the document's text layer replaced it
+
+
+@dataclass(frozen=True)
+class FontSpec:
+    """A face, as a document describes it — the fact, not the file.
+
+    No OCR engine supplies this; it is filled by traceback from a PDF's own
+    text layer (`pii.core.text_layer`), which also documents why `serif` is
+    derived from the font NAME and not from the PDF's own serifed flag.
+
+    `size` is in PIXELS OF THE PAGE RASTER, like every other measurement on
+    these objects — converting at extraction is what keeps dpi out of
+    `pii.core.paint`, which resolves a spec to an actual face at draw time.
+
+    Render-only: a placeholder is drawn in the face it replaces. A font must
+    never reach a detection decision — we deliberately distrust the text layer,
+    and its idea of the typeface is the least load-bearing thing it carries.
+    """
+
+    name: str = ""
+    size: float = 0.0
+    bold: bool = False
+    italic: bool = False
+    mono: bool = False
+    serif: bool = False
+
 
 @dataclass(frozen=True)
 class OcrWord:
-    """Word geometry within a line. Rich attributes (font, per-word conf,
-    box_source) are deferred — for now a word is recognized text + its pixel
-    box, plus `region_box`: the detection-line box the word came from. The
-    paint layer grows a run out to `region_box` because engine word boxes
-    are inset from the glyph ink. Per-word (not per-line): a visual row can
-    aggregate words from several detection regions, each with its own region
-    box. None means glyph-tight — `region` then falls back to `box`."""
+    """Word geometry within a line: recognized text + its pixel box, plus
+    `region_box`, the detection-line box the word came from. The paint layer
+    grows a run out to `region_box` because engine word boxes are inset from
+    the glyph ink. Per-word (not per-line): a visual row can aggregate words
+    from several detection regions, each with its own region box. None means
+    glyph-tight — `region` then falls back to `box`.
+
+    `font` and `source` are filled only by PDF text-layer traceback
+    (`pii.core.text_layer`) and are `None` / `"ocr"` from any OCR engine.
+    `source` says what the word's TEXT is owed to — `ocr` nothing corroborated
+    it, `agreed` the text layer confirmed it, `text` the text layer replaced it
+    — and is what `pii.core.debug_overlay` colours the perception layer by.
+    Per-word rather than per-line because a text layer routinely covers only
+    part of a page.
+    """
 
     text: str
     box: Box
     region_box: Box | None = None
+    font: FontSpec | None = None
+    source: str = SOURCE_OCR
 
     @property
     def region(self) -> Box:
@@ -43,15 +86,16 @@ class OcrLine:
     `_line_box`: it CONTAINS the glyph ink, so it is the union of the word
     boxes with their region boxes, not the word boxes alone. `conf` is the
     native line confidence (0-100) or None if the engine doesn't score lines.
-    `font` is None from any OCR engine (filled only by PDF-traceback,
-    diagnostics-only)."""
+    `font` is the face most of the line's words carry — None from any OCR
+    engine, filled only by PDF text-layer traceback
+    (`pii.core.text_layer`)."""
 
     text: str
     box: Box
     words: tuple[OcrWord, ...]
     conf: float | None = None
     polygon: tuple | None = None  # reserved (skew); None for now
-    font: object | None = None
+    font: FontSpec | None = None
 
 
 @dataclass(frozen=True)

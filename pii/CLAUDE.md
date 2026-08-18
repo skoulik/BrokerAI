@@ -244,6 +244,28 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   lengths) on the source map.
 - **An OCR line is never dropped.** Every row carrying words becomes an `OcrLine`, with no
   filtering or scoring step in between. A dropped line is unredacted PII.
+- **The text layer is a repair source constrained by OCR geometry, never a detection source.**
+  Only a word the OCR already saw is repaired; a word it missed is never added. Same shape as
+  "a model box is a search constraint, not paint geometry" — an untrusted source is admissible
+  exactly where a trusted one pins it down, which is what keeps this from reopening the
+  hidden-text-layer leak class that made PDFs be treated as images.
+- **A repair changes a word's CHARACTERS and nothing else**, and runs BEFORE `linearize`. Not
+  its box, not its word count — that is what lets offsets, painting and the pseudonym map be
+  built from repaired words with no remapping anywhere. A gate that lets a token grow (the
+  text layer's hundred leader dots) is changing extent, not reading, and is rejected.
+- **The correspondence is an ALIGNMENT, never a nearest-box pairing.** Independent per-word
+  overlap drifts by one across a whole line wherever OCR boxes are interpolated — eight
+  consecutive wrong pairs between two IDENTICAL word sequences on the first page measured
+  (2026-08-18). Geometry buckets text words onto a line; order-preserving alignment picks the
+  partner within it.
+- **The page-level repair guard counts READING agreement alone.** A pair refused for its
+  geometry or its extent is a good correspondence we decline to act on; counting those against
+  the text layer disables repair on a page whose only problem is an interpolated box.
+- **A font is render-only and must never reach a detection decision** — we deliberately
+  distrust the text layer, and its idea of the typeface is the least load-bearing thing it
+  carries. Do not resolve the document's EMBEDDED font either: 8 of 11 fonts on one reference
+  page are Identity-H CID subsets that render a placeholder as zero-height nothing, which is a
+  filled box with an invisible label.
 - **`_rows` visual banding is load-bearing, now for a different reason.** It defines what "the
   same line" MEANS, and the left attachment band is a line — so a label beside its value in
   another column of the same printed row is still reachable, while the neighbouring column is

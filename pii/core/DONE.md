@@ -1582,6 +1582,91 @@ the move; new completed tasks append to the matching section with their records.
       forms — which is why this bug and its 2026-08-09 twin were both invisible to every corpus
       run ever made, and both were found by hand on a real document.
 
+- [x] **OCR repair from the PDF's own text layer, and the font traceback that rides it**
+      *(2026-08-18; asked for by Sergei 2026-08-14 — "an OCR repair pass for PDFs with text —
+      match text blocks from the PDF and OCR and repair broken symbols" — and again 2026-08-18
+      with the font half and the debug colouring)*. Design in
+      [ARCHITECTURE.md](ARCHITECTURE.md); `pii/core/text_layer.py`,
+      `tests/pii/core/test_text_layer.py`.
+
+      **The specimen.** `ServletRetrieve (6).pdf` p1: OCR reads the account number `018057571`
+      as `O18057571` and the footer ABN as `32 O09 656 74O`. Neither matches any rule — a
+      five-to-ten digit run cannot start after a letter — so both survive a `--layer0 off` run
+      unredacted. Verified end to end after the change, same document, same flags:
+
+      | | with `--text-repair off` | with it on (default) |
+      |---|---|---|
+      | p1 ABN | not detected | `AU_ABN 1.00 '32 009 656 740'` — checksum PASSES |
+      | account number, p1 and p2 | not detected | `AU_BANK_ACCOUNT '018057571'` |
+      | detections | 40 | 43 |
+
+      Those three are the whole difference — the diff of the two `--report`
+      outputs contains nothing else, in either direction.
+
+      **Corpus run** (11 reference statements, first 2 pages each, 300 dpi): 4,798 OCR words,
+      4,198 aligned to a text-layer word, 3,941+ readings confirmed, **21 repaired, every one
+      of them correct** — `O18057571`->`018057571` (x2), `O09`->`009`, `74O`->`740`,
+      `2O23`->`2023`, `ÁBN`->`ABN`, `396`->`395`, `$120.47cR`->`$120.47CR`, typographic
+      apostrophes, a restored `$` on six amounts, `013795_1BMR`->`013795_1__BMR`. Reading
+      agreement per page runs 90-99%; the page-level guard never fired on the corpus.
+
+      **What the design iterations killed, in order.** Each of these produced a WRONG repair on
+      a real page before the gate that stops it was added:
+
+      1. *Independent per-word best-overlap pairing* (the shape the TODO item proposed).
+         Off-by-one drift across a whole line on the FIRST page measured — `AND`->`ADVISE`,
+         `ADVISE`->`US`, `US`->`PROMPTLY`, `PROMPTLY`->`OF`, eight in a row, between two
+         IDENTICAL word sequences whose OCR boxes were interpolated. Only the similarity gate
+         rejected them (24 of 188 pairs lost). Replaced by per-line sequence alignment: 188 of
+         188, and the same run confirms instead of failing.
+      2. *Applying merges.* With merges applied, 1:N pairs produced `31`->`-31`, `O`->`&O`,
+         `Please`->`lPlease` (a bullet glyph), `BUSINESS`->`WBUSINESS`, `571.33`->`$571.33`:
+         a text word that squashes to NOTHING joins any pair for free — the same failure class
+         as the locator's "every piece of a wrapped match must earn a character of the needle".
+         Merges are now aligned (they keep the line in step) and never applied; every valuable
+         repair in the corpus is 1:1.
+      3. *Two-way overlap as the extent guard.* `185871` -> `185871` + 100 leader dots, and
+         `30-743-3257` -> the same + 30 dots, from a table of contents. Squash drops the dots,
+         so the two are at distance ZERO; and overlap does not separate them either — 0.36 for
+         the worst leader against 0.41 for a REAL repair (`74O`) whose OCR box was interpolated.
+         The dots really are on the page, which is why the geometry cannot see it. Fixed by a
+         separate extent gate on raw length: a repair changes what a token says, never how much
+         of the page it covers.
+      4. *Preferring the text layer unconditionally.* `014-936` -> `014­936`: the ANZ
+         statement's text layer renders the BSB separator as a SOFT HYPHEN, which would delete
+         it from the `[ -]` class and unmatch the rule. A text layer can be worse than the OCR
+         — the reason PDFs are treated as images at all. Non-graphic characters are refused.
+      5. *A page guard counting all four gates.* Drift depresses the geometry gate without the
+         text layer being at fault, so a page whose OCR merely interpolated some boxes could
+         have repair disabled outright. The guard counts reading agreement alone.
+
+      **Digit-for-digit repairs are allowed** (Sergei, 2026-08-18, on `396`->`395`, overlap
+      0.75/0.93): the standing "a digit read as another digit is a different value" rule
+      answers *are these the same value*, while here the alignment and the geometry have
+      already answered *is this the same printed word*.
+
+      **Rotation.** `get_text` returns UNROTATED page coordinates while `get_pixmap` applies
+      `/Rotate`: on a 90° page `x * dpi/72` puts a word at x=104 where the ink is at x=1041.
+      `page.rotation_matrix * Matrix(s, s)` verified against rendered ink at 0/90/180/270. A
+      shifted CropBox needs nothing — `page.rect` is normalized to the origin (also measured,
+      against the TODO item's guess that it would need handling).
+
+      **Fonts: the embedded font was tried and rejected.** pymupdf extracts them, but 8 of the
+      11 fonts on `ServletRetrieve` p1 are Identity-H CID subsets and Pillow renders
+      `PERSON_1` through them as zero-height nothing (`getbbox` -> `(0, 37, 160, 37)`): a
+      filled box with an invisible label. `FontSpec` describes the face instead and `paint.py`
+      resolves it to a system one. The PDF serifed FLAG is unusable — measured across the
+      corpus, `ArialMT` and `Helvetica` each appear with it both set and clear in different
+      documents, and `FrutigerLTPro`, `Roboto`, `MyriadPro`, `MuseoSans` and `Gotham` are all
+      flagged serifed, while not one true serif face appears; bold/italic/mono flags are right
+      (`Arial-BoldMT`=16, `Courier`=8, `Calibri,Italic`=6).
+
+      **The eval could NOT see this**, contrary to the TODO item's claim that it could:
+      `pii_eval/render.py` builds corpus PDFs with Pillow's PDF writer from page images, so
+      they carry no text layer and repair is a no-op on them. Recorded as a follow-up in
+      [TODO.md](TODO.md); covered meanwhile by 23 pytest cases, one per gate plus the
+      end-to-end pair through `strip_pdf`.
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

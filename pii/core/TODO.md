@@ -391,9 +391,6 @@ below gets picked up against the old shape of the tool.
       presidio-image-redactor chain in DONE.md). Preprocessed image feeds OCR only; painting
       stays on original pixels. Needs the eval degradation tier to measure.
 
-- [ ] **Font traceback** (diagnostics-only): fill `OcrLine.font` from the PDF text layer
-      (pymupdf `get_text("dict")` spans matched to line boxes) — it is `None` from any OCR
-      engine. Must never feed the strip decision (we deliberately distrust the text layer).
 
 ## Detection pipeline
 
@@ -449,72 +446,31 @@ below gets picked up against the old shape of the tool.
       rule is *"hopelessly ambiguous without context"* by its own docstring), so widening them
       buys recall against a much weaker guard. Measure before touching.
 
-      The two items below are the general answer to that damage, one for each half of the
-      corpus: repair from the document's own text layer where there is one, folding where there
-      is not.
+      The general answer to that damage is one mechanism per half of the corpus: repair from
+      the document's own text layer where there is one — shipped 2026-08-18, design in
+      [ARCHITECTURE.md](ARCHITECTURE.md) — and folding where there is not, which is the item
+      below.
 
-- [ ] **OCR repair from the PDF's own text layer** *(Sergei, 2026-08-14: "an OCR repair pass for
-      PDFs with text — match text blocks from the PDF and OCR and repair broken symbols")*.
-      A text PDF carries the true characters already; the OCR that layer 1 reads does not. On
-      `ServletRetrieve (6).pdf` p1 the OCR read the account number `018057571` as `O18057571`,
-      and **no rule matched anything at all** — `\b\d{5,10}\b` cannot start after a letter — so a
-      customer's account number survives a `--layer0 off` run unredacted. The text layer of that
-      same page has the digits.
+- [ ] **The eval corpus has no text layer, so it cannot see OCR repair** *(2026-08-18, found
+      while shipping it — the closed item claimed the opposite)*. `pii_eval/render.py` builds
+      corpus PDFs with **Pillow's** PDF writer from page images, so every generated PDF is
+      pixels only and `--text-repair` is a no-op on the whole harness. Repair is covered by
+      pytest (`tests/pii/core/test_text_layer.py`, one case per gate) and measured by hand on
+      the reference corpus (records in [DONE.md](DONE.md)), which leaves it outside the thing
+      that runs on every change — the standing dual-coverage rule.
 
-      **Measured before proposing it** (box overlap ≥ 0.4, PDF points × dpi/72):
-
-      | page | OCR words | matched to text layer | of those, differing |
-      |---|---|---|---|
-      | ServletRetrieve p1 | 194 | 183 (94%) | 23 |
-      | Amplify p1 | 353 | 314 (89%) | 2 |
-      | Amplify p3 | 227 | 192 (85%) | 1 |
-
-      and the differences are the bugs themselves: `O18057571` -> `018057571`, `O09` -> `009`.
-
-      **Similarity gating is part of the feature, not a refinement.** Tokenization diverges
-      between the two sources, and on that same page position alone picks the wrong partner:
-      OCR `944600` best-overlaps the text-layer word `000731114,`, and OCR `(from` overlaps
-      `944600,000731114,`. Swapping on position would replace a correct BSB with a different
-      account number — a repair that MANUFACTURES a value, which is worse than the damage. Gate
-      on a small edit distance under `fuzzy.py`'s confusion tables: `O18057571` vs `018057571`
-      passes, `944600` vs `000731114,` is nowhere near.
-
-      **"Text PDF" is not the boundary; "the part of the page the text layer covers" is.** The
-      Amplify p3 ABN would NOT be repaired — that footer has no text-layer counterpart at all
-      (`Westpac` and `457 141` are absent from the last page's text), it lives inside an
-      embedded image. The page still reports 85% coverage, which is the trap: a page-level
-      average hides WHICH words are missing, and here the missing ones are where the damage is.
-
-      **It does not overturn the treat-PDFs-as-images decision, provided the rule is: the text
-      layer is a repair source CONSTRAINED BY OCR GEOMETRY, never an independent detection
-      source.** Same shape as "a model box is a search constraint, not paint geometry" — an
-      untrusted source is admissible exactly where a trusted one pins it down. Only repair a
-      word the OCR already saw, only when positionally matched and similar, and never ADD words
-      the OCR missed. (Hidden text cannot leak into the output regardless: the output PDF is
-      rebuilt from pixels and has no text layer.)
-
-      **The seam is clean.** Repair at the `OcrPage` WORD level, before `linearize`: the source
-      map is then built from repaired words, so offsets, boxes, painting and the pseudonym map
-      stay consistent by construction with no remapping anywhere, and boxes stay OCR boxes,
-      which is what painting needs.
-
-      **The eval can already see this one** — rare here. The image tier renders pages from known
-      text, so "repaired OCR text vs the text it was rendered from" is a direct metric on data
-      that exists; no new probe is needed, unlike the folding item below.
-
-      Risks to design against: a text layer that does not match the pixels (a different
-      revision, or another tool's OCR baked in) — guard with a page-level match-rate and
-      similarity check and disable repair for THAT PAGE rather than the document; and the
-      coordinate transform, where dpi/72 held on these rotation-0 pages but rotation and cropbox
-      need the render matrix rather than a scalar. Worth stating in the record: this repairs
-      names, addresses and organizations too, not only digits — cleaner needles for
-      `locate_borrowed` and less work for every fuzzy tier.
+      The fix is to render the image tier's PDFs through pymupdf instead, so the page carries
+      the text it was drawn from. That also makes the metric free and exact: "repaired OCR text
+      vs the text the page was rendered from" needs no new ground truth. Worth pairing with the
+      damage-injection probe the folding item below wants, since the two measure opposite
+      halves of the same corpus — repair where the document carries the truth, folding where it
+      does not.
 
 - [ ] **Fold OCR-confusable letters into digit runs, for content with no text layer**
       *(2026-08-14; kept on Sergei's instruction — "yours still makes sense for non text
-      content"). Complementary to the repair item above, not an alternative to it*: repair
-      where the document carries the truth, fold where it does not — scans, and the parts of a
-      text PDF the text layer does not cover, of which the Amplify p3 footer is a live specimen
+      content"). Complementary to text-layer repair (shipped 2026-08-18), not an alternative
+      to it*: repair where the document carries the truth, fold where it does not — scans, and
+      the parts of a text PDF the text layer does not cover, of which the Amplify p3 footer is a live specimen
       (`ABN 33 O07 457 141`, and in `ServletRetrieve (6).pdf` layer 0 read the same ABN as
       `32 o09 656 74o`, so the glyphs really are ambiguous rather than the OCR being careless).
 
@@ -542,9 +498,12 @@ below gets picked up against the old shape of the tool.
       **The corpus cannot see any of this**, which is now the fourth instance of that lesson
       (separator forms, label spellings, and this): the generator emits clean text, so no eval
       run could ever catch an OCR-damage bug. The probe comes first — damage injection into
-      truth-bearing values on the image tier. And if the repair item lands first, re-measure
-      what damage is actually left before tuning this: repair removes most of it on text PDFs,
-      and the remainder is what this item exists for.
+      truth-bearing values on the image tier. **Repair landed first (2026-08-18), so
+      re-measure before tuning this**: on the reference corpus it fixed 21 readings including
+      both the `O18057571` account number and the `32 O09 656 74O` ABN, so what is left for
+      folding is the content the text layer does not cover — the Amplify p3 footer, scans, and
+      any page whose text layer is refused. That is a much smaller and differently-shaped
+      target than the one this item was written against.
 
 - [ ] **A keep entry is filed under a class the pipeline may not settle on** *(found
       2026-08-12 while looking at the 1.pdf false positives)*. `entity_keep.txt` is sectioned by
