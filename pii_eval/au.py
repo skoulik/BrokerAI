@@ -121,6 +121,20 @@ def bsb(rng: random.Random, bank: str | None = None) -> str:
     return f"{prefix}{rest[0]}-{rest[1:]}"
 
 
+def bsb_grouped_2_4(rng: random.Random, bank: str | None = None) -> str:
+    """CommBank's house grouping: `06 3118`, not the conventional `063-118`.
+
+    Its own function rather than a style inside `bsb()`. The 3-3 spelling is
+    what the rest of the corpus prints, and making the grouping a per-draw
+    choice would re-roll every existing seed for a form exactly one probe
+    needs (same reasoning as the derived-Random note in
+    `templates_text.loan_application`).
+    """
+    prefix = dict(BANKS).get(bank) or rng.choice(BANKS)[1]
+    rest = "".join(str(rng.randrange(10)) for _ in range(4))
+    return f"{prefix} {rest}"
+
+
 def account_number(rng: random.Random) -> str:
     styles = [
         lambda s: s,                        # 018057571

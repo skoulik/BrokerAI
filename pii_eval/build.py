@@ -21,8 +21,12 @@ CORPUS_KEEP_FILE = Path(__file__).with_name("entity_keep.txt")
 # 2026-08-09: it was a per-form probe while the NER layer left a residual, and
 # layer 0 closed it at 100% on seeds 42/123/7 (see
 # core/reports/2026-08-09-text-layer0-vs-gliner2.md).
+# AU_BANK_ACCOUNT_BSB_2_4 joined 2026-08-18 gated from the start: it is a bank
+# account number under a different name, and layer 1 covers it deterministically
+# once its BSB grouping is known (`AuBsbRule`).
 CRITICAL = {
     "AU_TFN", "AU_MEDICARE", "AU_BANK_ACCOUNT", "AU_BSB",
+    "AU_BANK_ACCOUNT_BSB_2_4",
     "CREDIT_CARD", "PERSON", "PERSON_JOINT", "PERSON_REVERSED",
 }
 

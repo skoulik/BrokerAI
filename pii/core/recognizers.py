@@ -293,8 +293,9 @@ class CreditCardRule(ChecksumRule):
 
 
 class AuBsbRule(PatternRule):
-    """BSB codes: 3 digits, separator, 3 digits; a following account number
-    makes the BSB unambiguous enough to score high without context words.
+    """BSB codes: six digits in the groupings banks print them in; a following
+    account number makes the BSB unambiguous enough to score high without
+    context words.
 
     The combined BSB+account forms emit TWO spans, not one (issue #8b,
     2026-07-22): a single AU_BSB span over both mislabeled the account half
@@ -303,6 +304,13 @@ class AuBsbRule(PatternRule):
     as a lookahead, and AuAccountNumberRule carries the mirror-image
     lookbehind patterns — two spans, two placeholders, so a bare '111873883'
     elsewhere aliases to the SAME ACCOUNT_n.
+
+    **A grouping this rule does not know costs the ACCOUNT, not the BSB.**
+    Without a combined-form match the account half falls back on the label,
+    and a label two words further left than the BSB half is out of the left
+    band — so the field strips HALF, which reads as redacted (2026-08-18, the
+    CommBank 2-4 spelling below). Every grouping needs both this lookahead and
+    its mirror in AuAccountNumberRule.
     """
 
     entity = "AU_BSB"
@@ -310,6 +318,12 @@ class AuBsbRule(PatternRule):
         Pattern("bsb before account",
                 r"\b\d{3}" + _SEP + r"\d{3}(?=" + _SEP_OPT + r"\d{5,10}\b)",
                 0.6),
+        # CommBank's house grouping — 2 digits, separator, 4 ("06 3118
+        # 10587788"). Not the conventional BBB-BBB, and nothing else matched
+        # it: the account half was left in the clear on all three pages of the
+        # reference statement while the BSB half stripped (2026-08-18).
+        Pattern("bsb 2-4 before account",
+                r"\b\d{2}" + _SEP + r"\d{4}(?=" + _SEP + r"\d{5,10}\b)", 0.6),
         # Transaction-description form: unseparated BSB directly followed by
         # an account number ("from 944600 000731114") — the dominant form
         # inside statement descriptions, where no context words appear.
@@ -369,6 +383,10 @@ class AuAccountNumberRule(PatternRule):
         # otherwise emit a BSB span with no account span beside it.
         Pattern("account after bsb",
                 r"(?<=\b\d{3}" + _SEP + r"\d{3}" + _SEP_OPT + r")\d{5,10}\b",
+                0.55),
+        # Mirror of "bsb 2-4 before account" — CommBank's `06 3118 10587788`.
+        Pattern("account after 2-4 bsb",
+                r"(?<=\b\d{2}" + _SEP + r"\d{4}" + _SEP + r")\d{5,10}\b",
                 0.55),
         Pattern("account after bare bsb",
                 r"(?<=\b\d{6}" + _SEP + r")\d{5,10}\b", 0.55),

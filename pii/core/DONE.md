@@ -3295,3 +3295,70 @@ the move; new completed tasks append to the matching section with their records.
 
       **Accepted residual:** a rotated stripe of one or two characters falls under the 2:1 gate
       and is still treated as upright, exactly as before.
+
+- [x] **A field printed as two identifiers strips in half when one of its groupings is
+      unknown** *(Sergei, 2026-08-18 — "why on Statement20220630.pdf page 1 account digits are
+      only partially detected by level 1").*
+
+      `Account Number 06 3118 10587788` on all three pages of the reference statement: layer 1
+      emitted ONE span, `06 3118`, and left `10587788` in the clear. Reproduced end to end
+      (render → OCR → text-layer repair → linearize → `Analyzer.analyze`); OCR read the line
+      correctly and in one piece, so this was detection, not perception.
+
+      **Two gaps had to line up, and both did.**
+
+      1. *No pattern knew CommBank's 2-4 BSB grouping.* Every combined BSB+account pattern
+         required `\d{3} SEP \d{3}` or a bare `\d{6}`; CommBank prints `06 3118`. So
+         `AuBsbRule/bsb before account` (0.6) never fired — no `AU_BSB` span at all — and
+         `AuAccountNumberRule/account after bsb` (0.55) never fired either, which is the one
+         signal that carries the account half over threshold WITHOUT a label. What did match
+         `06 3118` was the generic `account grouped` (0.15), and it stopped there: its group
+         members are capped at `\d{1,6}` and `10587788` is eight digits.
+
+      2. *The value's own leading component ate the label band.* `10587788`'s only remaining
+         routes both needed the label `Account`, four words back — `Number`, then both words
+         of the BSB — against `AuAccountNumberRule.label_words` of 3 (longest label 1 +
+         `FILLER_ALLOWANCE` 2). Measured: at a floor of 4 the band becomes
+         `Account Number 06 3118` and `account-number` promotes 0.15 → 0.50. The STRICT
+         `labeled account` (0.5) stays dropped at any depth, correctly —
+         `gap_is_clean(" Number 06 3118 ")` is False. The `above` band held `(Page 1 of 3)`.
+
+      That combination is what made it *partial* rather than absent: the BSB half sits one
+      filler word from the label and clears; the account half sits behind two more words OF ITS
+      OWN FIELD and does not. Half a stripped field reads as redacted — the
+      `ACCOUNT_LABELLED_ONCE` failure mode in a new place.
+
+      **Fix: the grouping, not the band.** Added the mirror pair to the existing issue-#8b
+      machinery — `AuBsbRule/bsb 2-4 before account` (0.6) and
+      `AuAccountNumberRule/account after 2-4 bsb` (0.55), both label-independent. Widening
+      `FILLER_ALLOWANCE` was rejected: it is a global precision trade paid for one form's
+      benefit, and it reaches exactly the false promoters the word count exists to exclude
+      (`cheque`, nine words back, measured 2026-08-14). The general residual is recorded in
+      `layout.py` beside the other one — a multi-component form is supposed to carry its own
+      combined pattern, so a field of this shape stripping in half means a grouping
+      `recognizers.py` does not know.
+
+      **False-positive scan before shipping:** the new BSB lookahead matched 6 times across
+      every PDF in `sensitive/` and `db/pdfs*` — all six the true value, on all three pages,
+      via both the text layer and the leading `\b` — and 0 times across 30 generated text
+      corpus documents.
+
+      **Verification.** Real specimen, `--layer0=off`, fresh map: `06 3118` → `AU_BSB` 0.60 and
+      `10587788` → `AU_BANK_ACCOUNT` 0.55 on p1, p2 and p3, painted as
+      `Account Number  BSB_1  ACCOUNT_1`. Two placeholders, per issue #8b. (A map carried over
+      from a pre-fix run keeps its stale `ACCOUNT_n` for `06 3118`: `PseudonymMap` loads and
+      extends an existing file by design, for cross-run placeholder stability.)
+
+      **Dual coverage.** `test_pipeline.py` — the field strips whole into two placeholders, and
+      a second test with no label anywhere near it, guarding against a "fix" that only widens
+      the band. Corpus probe: `templates_text.legacy_statement` probe 4, in the
+      label-attachment block, with `au.bsb_grouped_2_4` and its own truth type
+      `AU_BANK_ACCOUNT_BSB_2_4` (CRITICAL from the start — it is a bank account number under
+      another name). Values come from a Random derived from the already-drawn account rather
+      than `pool.rng`, so the probe left every other value in every seed untouched. Scored on
+      seeds 42/123/7 with the new patterns removed: the BSB half `stripped`, the account half
+      `LEAKED`, all three — the symptom exactly. With them: `stripped` on both halves, all
+      three.
+
+      **The tier-1 eval gate has NOT been run against this change** — it needs a llama-server
+      for layer 0 and none was reachable. Fast suite: **695 passed**.

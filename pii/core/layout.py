@@ -79,6 +79,19 @@ MAX_INTERNAL_GAP = 3.0
 # that far. Residual, accepted and untested-for because it needs a specific
 # layout: a two-column line whose LEFT column ends in a label word, beside a
 # right-column value with fewer than `word_floor` words before it.
+#
+# The other residual, a false NEGATIVE and the one worth knowing about: A
+# VALUE'S OWN LEADING COMPONENT COUNTS AGAINST ITS BAND. A field printed as
+# several matches — `Account Number 06 3118 10587788`, where the BSB and the
+# account are deliberately two spans (issue #8b) — spends the band on its own
+# earlier words, so the FIRST component reaches the label and the LAST does
+# not, and the field strips in half. That is not a miss but something that
+# reads as redacted (2026-08-18). Widening `FILLER_ALLOWANCE` is not the
+# answer: it is a global precision trade paid for one form's benefit, and it
+# reaches the false promoters above. The answer is that a multi-component form
+# is supposed to carry its own combined pattern, which scores above threshold
+# without a label at all — so when a field of this shape strips in half, the
+# missing thing is a grouping `recognizers.py` does not know.
 
 
 class PageLayout:

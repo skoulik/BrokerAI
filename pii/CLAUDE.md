@@ -62,6 +62,12 @@ items move to [core/DONE.md](core/DONE.md) with their records.
 - **The left band is a word COUNT, not a distance.** Measured: the true label sat 462 px from
   its value and the false promoter 748 px from its own, so no threshold separates them — word
   counts do. It is derived per rule from that rule's own longest label; never make it global.
+- **Every BSB grouping needs BOTH a lookahead in `AuBsbRule` and its mirrored lookbehind in
+  `AuAccountNumberRule`.** A value's own leading words count against its band, so with no
+  combined-form match the account half is further from the label than the BSB half and the
+  field strips in HALF — which reads as redacted. CommBank's `06 3118 10587788` leaked its
+  account on all three pages of a reference statement (2026-08-18). Widen the grouping
+  vocabulary, never `FILLER_ALLOWANCE`: that is a global precision trade paid for one form.
 - **Between bands the NEAREST label wins**, edge to edge in line heights — the same rule already
   used within a band, where the closest label is the one that introduces the value. A fixed
   left-then-above order lets a bogus left label outrank a good one directly overhead.

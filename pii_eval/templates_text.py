@@ -126,6 +126,27 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
     doc.raw("Account enquiries to 30 June ")
     doc.pii(str(year), "YEAR_ACROSS_COLUMN", strip_expected=False).pad_to(60)
     doc.raw(f"{rng.randrange(100, 1000)} {rng.randrange(100, 1000)}").nl(2)
+    # 4. The combined BSB+account field under ONE label, in CommBank's 2-4
+    #    grouping (`Account Number 06 3118 10587788`). The account half sits
+    #    FOUR words from the label — `Number`, then both words of the BSB —
+    #    one past AuAccountNumberRule's left band, so nothing but a
+    #    combined-form pattern that knows the grouping can reach it. Until
+    #    2026-08-18 none did, and the field stripped in HALF on all three pages
+    #    of a reference statement: the BSB painted, the account left readable.
+    #    Half a field is the ACCOUNT_LABELLED_ONCE failure in a new place —
+    #    it looks redacted.
+    #
+    #    Two annotations, per the two-placeholder design (issue #8b); the
+    #    account half carries its own truth type because what fails it is the
+    #    band rather than its shape, and it must score separately from the
+    #    labelled account numbers elsewhere in this document. Values come from
+    #    a Random derived from the already-drawn account rather than from
+    #    `pool.rng`, so adding this probe left every other value in every seed
+    #    untouched (see the note in `loan_application`).
+    combo = random.Random(int(au.digits(acct.number)) ^ 0x2B54)
+    doc.raw("Account Number").pad_to(46)
+    doc.pii(au.bsb_grouped_2_4(combo), "AU_BSB").raw(" ")
+    doc.pii(str(combo.randrange(10**7, 10**8)), "AU_BANK_ACCOUNT_BSB_2_4").nl(2)
 
     balance = round(rng.uniform(100, 90000), 2)
     for page in range(1, pages + 1):
@@ -150,7 +171,7 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
         if page < pages:
             doc.pad_to(60).raw("CONTINUED OVERLEAF").nl()
 
-    # 4. The per-occurrence context boost, probed directly (2026-08-18). Layer
+    # 5. The per-occurrence context boost, probed directly (2026-08-18). Layer
     #    1 scores a bare digit run below threshold, and only a label NEAR that
     #    occurrence promotes it — so the same value strips where a label
     #    happens to sit beside it and leaks where none does. Measured on a real

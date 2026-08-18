@@ -141,6 +141,34 @@ def test_bsb_account_combined_splits_into_two_spans(pipeline):
     assert out.count("ACCOUNT_1") == 2, out
 
 
+def test_bsb_2_4_grouping_strips_the_account_half_too(pipeline):
+    # CommBank groups its BSB 2-4, not the conventional 3-3 ('06 3118
+    # 10587788'). No combined-form pattern knew that spelling, so the account
+    # half fell back on the label — and `Account` is FOUR words back from it
+    # (`Number`, `06`, `3118`), one past AuAccountNumberRule's left band. The
+    # BSB half, two words nearer, kept clearing: the field stripped in HALF,
+    # which reads as redacted. All three pages of the reference statement,
+    # 2026-08-18.
+    text = "Account Number 06 3118 10587788"
+    pmap = PseudonymMap()
+    out, _, _ = pipeline.strip(text, pmap)
+    assert "10587788" not in out, out
+    assert "06 3118" not in out, out
+    assert "BSB_1" in out and "ACCOUNT_1" in out, out
+
+
+def test_bsb_2_4_account_half_needs_no_label(pipeline):
+    # The point of the combined form: the BSB is the unambiguity signal, so
+    # neither half depends on a label being in reach. Guards against a "fix"
+    # that only widens the left band — the band is what failed here, but a
+    # value whose own leading component eats it is the general shape, and the
+    # form's own pattern is what has to carry it.
+    text = "Transferred from 06 3118 10587788 on 30 June"
+    pmap = PseudonymMap()
+    out, _, _ = pipeline.strip(text, pmap)
+    assert "10587788" not in out and "06 3118" not in out, out
+
+
 def test_atf_tail_stripped_including_truncated_forms(pipeline):
     # Issue #9: '<company> ATF <trust>' — the doc truncates the field
     # mid-word ('ATF SK BU', '... SK BUSINESS TRU'), defeating NER

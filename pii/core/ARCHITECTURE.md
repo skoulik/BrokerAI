@@ -271,6 +271,17 @@ They must stay separate because reading order flattens the page: with `unrelated
 `unrelated / 12345`, one flat concatenation puts the *value's own left-neighbour* between the
 label and the value and no strict test could pass.
 
+**A word count means a value's own leading component counts against its band, and the answer is
+a pattern rather than a wider band.** A field printed as several matches — `Account Number
+06 3118 10587788`, where the BSB and the account are deliberately two spans — spends the band on
+its own earlier words, so the FIRST component reaches the label and the LAST does not and the
+field strips in half, which reads as redacted (2026-08-18). Widening the filler allowance is not
+the fix: it is a global precision trade paid for one form, and it reaches exactly the
+nine-words-back promoters the count exists to exclude. A multi-component form carries its own
+combined pattern instead, scoring above threshold with no label at all (`AuBsbRule`'s lookaheads
+and `AuAccountNumberRule`'s mirrored lookbehinds, one pair per printed grouping) — so a field of
+this shape stripping in half means a grouping `recognizers.py` does not know.
+
 **Between bands, the NEAREST label wins** (Sergei, 2026-08-14) — measured edge to edge, in line
 heights. It is the rule already used *within* a band, where the label closest to the value is the
 one that introduces it, and a fixed left-then-above order contradicts it the moment a bogus left
