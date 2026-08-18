@@ -12,6 +12,9 @@ source map and not `OcrLine` carries it.
 
 There is one assembly: every line of the page in page order, words joined
 by spaces, lines by newlines, so the recognizer sees the whole page at once.
+A rotated line (a page-edge stripe) is one of those lines like any other — it
+is never merged into a horizontal one, which is a banding rule (`ocr._rows`),
+and here it differs only in the axis its geometry is measured on.
 The per-block feed (`linearize_blocks` / `rebase`) was retired 2026-08-09
 together with the layout backends that produced the blocks; record in
 DONE.md.
@@ -19,7 +22,7 @@ DONE.md.
 
 from dataclasses import dataclass
 
-from pii.core.ocr import Box, _union
+from pii.core.ocr import Box, _oriented_box, _union, cross_extent, reading_extent
 from pii.core.ocr_page import FontSpec, OcrPage
 
 
@@ -32,7 +35,11 @@ class PlacedWord:
 
     `font` and `source` are carried straight off the `OcrWord` (see
     `pii.core.ocr_page`): the face a placeholder is drawn in, and what the
-    reading is owed to. Both are render/diagnostic only."""
+    reading is owed to. Both are render/diagnostic only.
+
+    `rotation` is carried off it too, and is NOT render-only: it says which
+    axis this word's line runs on, so a gap, a paint run and a neighbour
+    midpoint are all measured along the line rather than along x."""
 
     text: str
     box: Box
@@ -42,6 +49,7 @@ class PlacedWord:
     char_end: int
     font: FontSpec | None = None
     source: str = "ocr"
+    rotation: int = 0
 
 
 @dataclass(frozen=True)
@@ -87,6 +95,20 @@ class RecognizerInput:
             return None
         return max(weights.items(), key=lambda item: item[1])[0]
 
+    def rotation_for_span(self, start: int, end: int) -> int:
+        """How the text under this span is printed — the rotation carried by
+        most of the CHARACTERS it covers, by the same argument as
+        `font_for_span`. It is what the painter draws the placeholder at, so a
+        stripe's replacement reads along the stripe."""
+        weights: dict[int, int] = {}
+        for w in self.words:
+            covered = min(end, w.char_end) - max(start, w.char_start)
+            if covered > 0:
+                weights[w.rotation] = weights.get(w.rotation, 0) + covered
+        if not weights:
+            return 0
+        return max(weights.items(), key=lambda item: item[1])[0]
+
     def painted_boxes_for_span(self, start: int, end: int) -> list[Box]:
         """Boxes for painting a span — like boxes_for_span, but each line's
         run is grown out to the detection-line box so no glyph fringe
@@ -100,30 +122,39 @@ class RecognizerInput:
         run's own inset without overpainting a kept neighbour. Never narrower
         than boxes_for_span. The region box is unioned with the word extent
         so a stale region that stops short of its words can't invert the box
-        (negative width -> Image.new ValueError)."""
+        (negative width -> Image.new ValueError).
+
+        All of that is measured ALONG THE LINE, not along x: on a rotated line
+        the neighbour to pull back from sits above or below, and growing to the
+        region across the line is what recovers the inset. Upright, the two
+        axes coincide and the arithmetic is unchanged."""
         by_line: dict[int, list[PlacedWord]] = {}
         for w in self.words:
             if max(start, w.char_start) < min(end, w.char_end):
                 by_line.setdefault(w.line, []).append(w)
         out = []
         for line_idx, run in sorted(by_line.items()):
-            u_left = min(w.box.left for w in run)
-            u_right = max(w.box.right for w in run)
-            regions = [w.region_box for w in run]
-            left = min(min(r.left for r in regions), u_left)
-            right = max(max(r.right for r in regions), u_right)
-            top = min(r.top for r in regions)
-            bottom = max(r.bottom for r in regions)
+            rotation = run[0].rotation
+            extents = [reading_extent(w.box, rotation) for w in run]
+            u_start = min(e[0] for e in extents)
+            u_end = max(e[1] for e in extents)
+            regions = [reading_extent(w.region_box, rotation) for w in run]
+            at = min(min(r[0] for r in regions), u_start)
+            to = max(max(r[1] for r in regions), u_end)
+            across = [cross_extent(w.region_box, rotation) for w in run]
+            near = min(c[0] for c in across)
+            far = max(c[1] for c in across)
             for w in self.words:
                 if w.line != line_idx or max(start, w.char_start) < min(
                     end, w.char_end
                 ):
                     continue
-                if w.box.right <= u_left:
-                    left = max(left, (w.box.right + u_left) // 2)
-                elif w.box.left >= u_right:
-                    right = min(right, (w.box.left + u_right) // 2)
-            out.append(Box(left=left, top=top, width=right - left, height=bottom - top))
+                w_start, w_end = reading_extent(w.box, rotation)
+                if w_end <= u_start:
+                    at = max(at, (w_end + u_start) // 2)
+                elif w_start >= u_end:
+                    to = min(to, (w_start + u_end) // 2)
+            out.append(_oriented_box(rotation, at, to, near, far))
         return out
 
 
@@ -155,6 +186,7 @@ def linearize(page: OcrPage) -> RecognizerInput:
                     char_end=pos + len(w.text),
                     font=w.font,
                     source=w.source,
+                    rotation=w.rotation,
                 )
             )
             parts.append(w.text)

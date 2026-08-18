@@ -306,6 +306,27 @@ items move to [core/DONE.md](core/DONE.md) with their records.
 - **A line box contains its glyph ink.** Build `OcrLine.box` only through
   `ocr_page._line_box` (word boxes ∪ their region boxes) — engine word boxes are inset from the
   ink, so a word-box union slices the first and last glyph.
+- **A rotated line is never banded with anything.** A page-edge stripe is 275-865 px tall, so a
+  y-centre band around it reaches a third of the page: the enquiries phone and the stripe of the
+  reference statement assembled as one line inside one 1488x275 rectangle (2026-08-18). Band the
+  rotated regions apart and merge them back by y-centre — skipping them in the one pass lets a
+  stripe split the row it crosses.
+- **Rotation is decided by GEOMETRY, direction by RECOGNITION** — a region twice as tall as it is
+  wide is a rotated line (measured: no upright region in the corpus exceeds 1.5:1), and which way
+  it reads is settled by reading the crop both ways and keeping the better score. Never make the
+  banding wait on a recognizer: a stripe that reads badly still wrecks the row it lands in.
+- **`rotation` is degrees COUNTER-CLOCKWISE the text is turned from upright**, everywhere it
+  appears — `OcrLine`/`OcrWord`, `PlacedWord`, `TextWord`, `Segment`. 90 is the left margin
+  reading bottom-to-top, 270 the right reading top-to-bottom.
+- **Measure along the line, never along x.** `ocr.reading_extent` / `cross_extent` /
+  `_oriented_box` are the only place that knows what those axes are; a gap, a paint run, a
+  neighbour midpoint, a line "height" and a bucket all go through them. Two words of a stripe
+  share `left` exactly, so an x-gap between them is always 0 — `contiguous` waved every stripe
+  span through before this.
+- **A text word may only pair with an OCR line of the same rotation.** A stripe crosses the
+  y-range of a third of the page's lines; without the match it takes their text words and leaves
+  those lines unrepaired. The same match keeps a page-wide footer from being `above` every stripe
+  it crosses and lending it a label.
 - **Reach OCR only through `get_ocr_page`** — in-process on either paddle wheel since the
   worker subprocess went (2026-08-09). Never import torch into a paddle-GPU process; that is
   what the worker used to isolate and what `ocr_paddle._engine`'s guard now enforces alone.

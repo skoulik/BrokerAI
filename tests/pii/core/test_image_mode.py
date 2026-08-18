@@ -413,3 +413,60 @@ def test_no_font_spec_paints_exactly_as_before():
     ) == list(
         paint_segments(img, [Segment("PERSON_1", [box], font=None)]).getdata()
     )
+
+
+# --- a placeholder over text that was printed sideways ---
+
+
+def _stripe_paint(rotation, label="IDENTIFIER_1"):
+    box = Box(40, 100, 30, 300)
+    img = Image.new("RGB", (200, 500), "white")
+    # PII pixels in the box, so "was it covered" is answerable.
+    ImageDraw.Draw(img).rectangle(
+        (box.left, box.top, box.right - 1, box.bottom - 1), fill=(255, 0, 0)
+    )
+    return box, paint_segments(img, [Segment(label, [box], rotation=rotation)])
+
+
+def _ink_rows(image, box):
+    crop = image.crop((box.left, box.top, box.right, box.bottom)).convert("L")
+    return {
+        y
+        for y in range(crop.height)
+        for x in range(crop.width)
+        if crop.getpixel((x, y)) < 128
+    }
+
+
+def test_a_rotated_placeholder_is_drawn_along_the_line():
+    """Painted upright into a 30x300 box the label shrinks to the minimum size
+    and clips at the box edge: the pixels are covered either way, but the
+    output stops saying what it replaced."""
+    box, along = _stripe_paint(90)
+    _, upright = _stripe_paint(0)
+    assert len(_ink_rows(along, box)) > 4 * len(_ink_rows(upright, box))
+
+
+def test_the_two_rotations_are_the_same_label_turned_the_other_way():
+    box, up = _stripe_paint(90)
+    _, down = _stripe_paint(270)
+    crop = (box.left, box.top, box.right, box.bottom)
+    assert list(up.crop(crop).transpose(Image.ROTATE_180).getdata()) == list(
+        down.crop(crop).getdata()
+    )
+
+
+def test_a_rotated_placeholder_still_covers_every_pixel_of_its_box():
+    box, painted = _stripe_paint(90)
+    covered = painted.crop((box.left, box.top, box.right, box.bottom))
+    assert (255, 0, 0) not in set(covered.getdata())
+
+
+def test_a_rotated_placeholder_paints_nothing_outside_its_box():
+    box, painted = _stripe_paint(90)
+    outside = painted.copy()
+    ImageDraw.Draw(outside).rectangle(
+        (box.left - 2, box.top - 2, box.right + 1, box.bottom + 1),
+        fill=(255, 255, 255),
+    )
+    assert set(outside.getdata()) == {(255, 255, 255)}

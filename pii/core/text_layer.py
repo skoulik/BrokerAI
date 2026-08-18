@@ -27,10 +27,14 @@ behind each of them are in core/ARCHITECTURE.md, and the corpus numbers in
 core/DONE.md. In short, and in the order they run:
 
 1. **Geometry buckets, it does not pair.** Text words are assigned to the OCR
-   line they vertically overlap, and nothing further is decided by position
-   alone: an independent per-word best-overlap pairing drifts by one across a
-   whole line when OCR word boxes are interpolated (measured on the first page
-   of the first specimen).
+   line they overlap ACROSS — vertically for ordinary text, horizontally for a
+   rotated one — and only to a line printed the same way up, and nothing
+   further is decided by position alone: an independent per-word best-overlap
+   pairing drifts by one across a whole line when OCR word boxes are
+   interpolated (measured on the first page of the first specimen). The
+   rotation match is not a refinement: a page-edge stripe crosses the y-range
+   of a third of the page's horizontal lines and, without it, collects their
+   text words and aligns a good reading against them.
 2. **Alignment decides the correspondence** — one order-preserving alignment
    per line, so a neighbour anchors every pair.
 3. **Only a 1:1 match is repaired.** Merges are aligned so the correspondence
@@ -71,7 +75,7 @@ from dataclasses import dataclass, replace
 import unicodedata
 
 from pii.core.fuzzy import CONFUSION_COSTS, budget_for, distance
-from pii.core.ocr import Box
+from pii.core.ocr import Box, cross_extent, reading_extent
 from pii.core.ocr_page import (
     SOURCE_AGREED,
     SOURCE_TEXT,
@@ -86,8 +90,8 @@ from pii.core.vlm import squash_map
 # --- Gates. Every constant here was chosen against the reference corpus; the
 # measurements are in core/DONE.md, the rationale in core/ARCHITECTURE.md. ---
 
-# A text word joins the OCR line it overlaps vertically by this fraction of the
-# shorter height. Bucketing only — which line, not which word.
+# A text word joins the OCR line it overlaps ACROSS by this fraction of the
+# shorter thickness. Bucketing only — which line, not which word.
 _LINE_BUCKET = 0.5
 
 # Alignment: cost of leaving a word unpaired, and the longest run of text words
@@ -119,11 +123,19 @@ _PAGE_MIN_AGREEMENT = 0.5
 
 @dataclass(frozen=True)
 class TextWord:
-    """One word of the PDF's text layer, in page-raster pixels."""
+    """One word of the PDF's text layer, in page-raster pixels.
+
+    `rotation` is how the text layer says the word is PRINTED, in the same
+    terms as `OcrLine.rotation` — read off the writing direction of the span it
+    sits in, through the render matrix, so a rotated page's ordinary text does
+    not read as rotated. It gates which OCR line the word may join, and nothing
+    else: like every other thing the text layer says, it constrains a repair
+    rather than making a detection."""
 
     text: str
     box: Box
     font: FontSpec | None = None
+    rotation: int = 0
 
 
 @dataclass(frozen=True)
@@ -175,29 +187,55 @@ def page_text_words(page, dpi: int) -> tuple[TextWord, ...]:
 
     Word boxes come from `get_text("words")`, which has accurate per-word
     geometry but no font; fonts come from the `get_text("dict")` spans, which
-    have the font but cover several words. Each word takes the font of the span
-    it overlaps most. Both views are the same text layer, so they agree by
-    construction.
+    have the font but cover several words. Each word takes the font — and the
+    writing direction — of the span it overlaps most. Both views are the same
+    text layer, so they agree by construction.
+
+    **The direction goes through the matrix too.** A line's `dir` is in the same
+    unrotated page coordinates as its box, so on a `/Rotate 90` page every
+    ordinary line reports `(1, 0)` while its ink runs down the raster. Mapping
+    the vector through the matrix's linear part is what makes `rotation` mean
+    the same thing here as it does on an `OcrLine`, which is read off the
+    raster.
     """
     import pymupdf
 
     scale = dpi / 72
     matrix = page.rotation_matrix * pymupdf.Matrix(scale, scale)
-    spans: list[tuple[Box, FontSpec]] = []
+    spans: list[tuple[Box, FontSpec, int]] = []
     for block in page.get_text("dict").get("blocks", ()):
         for line in block.get("lines", ()):
+            rotation = _direction(line.get("dir", (1.0, 0.0)), matrix)
             for span in line.get("spans", ()):
                 spans.append((
                     _mapped_box(pymupdf.Rect(span["bbox"]), matrix),
                     _font_spec(span, scale),
+                    rotation,
                 ))
     words = []
     for x0, y0, x1, y1, text, *_ in page.get_text("words"):
         if not text:
             continue
         box = _mapped_box(pymupdf.Rect(x0, y0, x1, y1), matrix)
-        words.append(TextWord(text=text, box=box, font=_font_at(box, spans)))
+        font, rotation = _span_at(box, spans)
+        words.append(
+            TextWord(text=text, box=box, font=font, rotation=rotation)
+        )
     return tuple(words)
+
+
+def _direction(direction, matrix) -> int:
+    """A text line's writing direction, in the raster, as a rotation.
+
+    Only the quarter turns are named: a skewed line (neither axis dominant)
+    and an upside-down one both come back 0, which is what the rest of the
+    engine already assumes about a line it cannot place on an axis."""
+    dx, dy = direction
+    x = dx * matrix.a + dy * matrix.c
+    y = dx * matrix.b + dy * matrix.d
+    if abs(y) <= abs(x):
+        return 0
+    return 270 if y > 0 else 90
 
 
 def repair_page(
@@ -256,9 +294,9 @@ def repair_page(
             # Same printed row is the whole gate for FONT: it is cosmetic,
             # adjacent words share a face, and a word whose reading we declined
             # to trust still sits in the span that describes it. Deliberately
-            # NOT the horizontal gate — that would deny a face to exactly the
-            # drifted words this loop is here to relocate.
-            if _v_overlap(word.box, other.box) < _LEND_V_OVERLAP:
+            # NOT the along-the-line gate — that would deny a face to exactly
+            # the drifted words this loop is here to relocate.
+            if _cross_overlap(word.box, other.box, line.rotation) < _LEND_V_OVERLAP:
                 continue
             # The box travels on its own gates (`_lendable`), not the
             # character ones: a word whose reading needs no repair can still
@@ -319,30 +357,41 @@ def repair_page(
 def _bucket(
     page: OcrPage, words: tuple[TextWord, ...]
 ) -> list[list[int]]:
-    """Assign each text word to the OCR line it vertically overlaps most.
+    """Assign each text word to the OCR line it overlaps ACROSS the most, among
+    the lines printed the same way up.
 
-    Left-to-right within the line, across the whole visual row: `_rows` bands a
-    page visually, so one OCR line can span two columns — and both sources see
-    those columns in the same x order, which is what keeps the alignment below
-    meaningful on a two-column page.
+    In reading order within the line, across the whole visual row: `_rows` bands
+    a page visually, so one OCR line can span two columns — and both sources see
+    those columns in the same order along the line, which is what keeps the
+    alignment below meaningful on a two-column page.
     """
     buckets: list[list[int]] = [[] for _ in page.lines]
     for index, word in enumerate(words):
         best, chosen = _LINE_BUCKET, None
         for line_index, line in enumerate(page.lines):
-            overlap = _v_overlap(word.box, line.box)
+            if line.rotation != word.rotation:
+                continue
+            overlap = _cross_overlap(word.box, line.box, line.rotation)
             if overlap > best:
                 best, chosen = overlap, line_index
         if chosen is not None:
             buckets[chosen].append(index)
-    for bucket in buckets:
-        bucket.sort(key=lambda index: words[index].box.left)
+    for line, bucket in zip(page.lines, buckets):
+        bucket.sort(
+            key=lambda index: reading_extent(words[index].box, line.rotation)
+        )
     return buckets
 
 
-def _v_overlap(a: Box, b: Box) -> float:
-    height = min(a.bottom, b.bottom) - max(a.top, b.top)
-    return height / max(min(a.height, b.height), 1) if height > 0 else 0.0
+def _cross_overlap(a: Box, b: Box, rotation: int = 0) -> float:
+    """How much two boxes overlap ACROSS a line of this rotation, as a fraction
+    of the thinner one. Vertical overlap for ordinary text; the same measure on
+    x for a rotated line, where thickness runs sideways."""
+    a_near, a_far = cross_extent(a, rotation)
+    b_near, b_far = cross_extent(b, rotation)
+    span = min(a_far, b_far) - max(a_near, b_near)
+    thinner = min(a_far - a_near, b_far - b_near)
+    return span / max(thinner, 1) if span > 0 else 0.0
 
 
 # --- Alignment: the correspondence, decided in reading order ---
@@ -519,20 +568,19 @@ def _lendable(word: OcrWord, other: TextWord) -> bool:
     """
     if not _same_extent(word, other):
         return False
-    if _v_overlap(word.box, other.box) < _LEND_V_OVERLAP:
+    if _cross_overlap(word.box, other.box, word.rotation) < _LEND_V_OVERLAP:
         return False
-    # HORIZONTALLY inside, not by area: the drift is horizontal, so that is
-    # the axis on which "how far may a correction travel" is the question, and
-    # the vertical is already answered above. A detection region is glyph-tight
-    # vertically while a text-layer box is a glyph ADVANCE box with room for the
-    # descender, so an area test fails a correct lending on two pixels of
-    # overhang — which is how the credit licence number stayed unpainted the
-    # first time this gate was written.
-    region = word.region
-    inside = max(
-        0, min(other.box.right, region.right) - max(other.box.left, region.left)
-    )
-    return inside >= _LEND_IN_REGION * max(other.box.width, 1)
+    # Inside ALONG THE LINE, not by area: the drift runs along the line, so
+    # that is the axis on which "how far may a correction travel" is the
+    # question, and across it is already answered above. A detection region is
+    # glyph-tight across the line while a text-layer box is a glyph ADVANCE box
+    # with room for the descender, so an area test fails a correct lending on
+    # two pixels of overhang — which is how the credit licence number stayed
+    # unpainted the first time this gate was written.
+    at, to = reading_extent(other.box, word.rotation)
+    r_at, r_to = reading_extent(word.region, word.rotation)
+    inside = max(0, min(to, r_to) - max(at, r_at))
+    return inside >= _LEND_IN_REGION * max(to - at, 1)
 
 
 def _repairable(word: OcrWord, other: TextWord) -> bool:
@@ -658,14 +706,16 @@ def _stemmed(name: str, stems: tuple[str, ...]) -> bool:
     return any(stem in lowered for stem in stems)
 
 
-def _font_at(box: Box, spans: list[tuple[Box, FontSpec]]) -> FontSpec | None:
-    """The font of the span covering `box` most."""
-    best, chosen = 0, None
-    for span_box, spec in spans:
+def _span_at(
+    box: Box, spans: list[tuple[Box, FontSpec, int]]
+) -> tuple[FontSpec | None, int]:
+    """The font and writing direction of the span covering `box` most."""
+    best, chosen = 0, (None, 0)
+    for span_box, spec, rotation in spans:
         width = min(box.right, span_box.right) - max(box.left, span_box.left)
         height = min(box.bottom, span_box.bottom) - max(box.top, span_box.top)
         if width > 0 and height > 0 and width * height > best:
-            best, chosen = width * height, spec
+            best, chosen = width * height, (spec, rotation)
     return chosen
 
 

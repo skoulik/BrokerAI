@@ -3187,3 +3187,111 @@ the move; new completed tasks append to the matching section with their records.
       Sergei's) passes `--context-attach=layout` and must drop the flag.
 
       Fast suite 624 passed.
+
+- [x] **Rotated page-edge lines: read in the right direction, and never banded with the
+      horizontal text they cross** *(Sergei, 2026-08-18 — "implement the 90 degree rotated text
+      handling… We should not combine rotated lines with non-rotated during linearization").
+      Design in [ARCHITECTURE.md](ARCHITECTURE.md#rotated-lines--a-page-edge-stripe-is-a-line-on-its-own-axis-2026-08-18).*
+
+      Financial documents print a batch reference down the page margin at 90 degrees. **Four of
+      the eight reference specimens carry one** — `1.pdf` (pages 1 and 3, right margin, reading
+      top-to-bottom), `Statement20220630.pdf` (all three pages, left margin, bottom-to-top),
+      `dd24ae14-….pdf` (two pages, left, bottom-to-top) and
+      `AmplifyBusiness-….pdf` (all three pages, left, bottom-to-top — and NOT in that document's
+      text layer at all, so OCR is the only thing that can see it).
+
+      **Two separate defects, found by measuring, fixed by two separate mechanisms.**
+
+      1. *Banding contamination — the reported bug.* `_rows` bands by y-centre with a tolerance
+         of half the tallest box, and a stripe is 275-865 px tall, so its band reaches a third of
+         the page. On `1.pdf` p1 the enquiries phone and the stripe assembled as one line,
+         `13 13 14 XPRCAP0022-2309300323`, inside one 1488x275 rectangle.
+      2. *Half of all rotated lines were unreadable.* Paddle turns every crop taller than 1.5x
+         its width COUNTER-CLOCKWISE and recognizes that, so a left-margin line reading
+         bottom-to-top comes back as garbage. Six of the ten rotated regions in the corpus:
+
+         | specimen | before | truth |
+         |---|---|---|
+         | `Statement20220630` p1-3 | `235*`, `523`, `523333` | `1584.3694.1.2 ZZ258R3 0303 SL.R3.S912.D170.O V06.00.35` |
+         | `dd24ae14` p1, p2 | `3340112/01-95`, `84612` | `234/484280500 / E-395 S-806 I-1611395` |
+         | `AmplifyBusiness` p1-3 | `O /13`, `OQ/13` | `BOMW2241_Header 08/13` |
+         | `1.pdf` p1, p3 | `XPRCAP0022-2309300323` ✔ | (paddle's own turn was the right one) |
+
+      **`use_textline_orientation=True` does not fix it.** Measured, not assumed: the flag exists
+      for exactly this, costs an extra model (`PP-LCNet_x1_0_textline_ori`), and returned the
+      same `235*` / `3340112/01-95` on the same pages.
+
+      **What does: read the crop both ways and keep the better score.** Through the pipeline's
+      own recognition model (`_engine(tier).paddlex_pipeline.text_rec_model`) — the identical
+      weights, so the two scores are comparable by construction, and nothing extra is loaded.
+      All fifteen tall candidates in the corpus, winner against loser:
+
+      | candidates | winner | loser |
+      |---|---|---|
+      | the 10 rotated lines | **0.988 - 1.000** | 0.61 - 0.84 |
+      | the 5 near-square lone glyphs (`1`, `:`, `?`) | 0.78 - 1.00 | 0.41 - 1.00 |
+
+      Every one of the ten winners is the correct string. Cost: **0.018 s per read against 5.0 s
+      for the page's own OCR** (measured on the same GPU), and only tall regions are read at all
+      — 15 candidates over 27 pages.
+
+      **The 2:1 nomination gate is measured, not chosen.** Over all **1879 detection regions of
+      the 27-page corpus** the two populations do not touch: tallest upright 1.5:1 (a lone glyph
+      — and paddle's own crop threshold), shortest rotated 10.5:1. Anything in [2, 10] fits the
+      data; 2.0 is the recall-first end of it. Geometry nominates and recognition only names the
+      DIRECTION, so a stripe that reads badly still leaves the banding, which is the half of this
+      that is a leak.
+
+      **Verified end to end** on all four specimens through `get_ocr_page` + `linearize`. `1.pdf`
+      p1 now yields `13 13 14` and `XPRCAP0022-2309300323` as two lines; the three previously
+      garbled specimens read in full, with word boxes stacked in reading order — on
+      `Statement20220630` p1 the first word `*#*` is the LOWEST on the page (top=2494) and the
+      last, `V06.00.35`, the highest (top=1675).
+
+      **Dual coverage.** 28 tests: `test_ocr_paddle.py` (a stripe never banded; a stripe not
+      splitting the row it crosses; reading order and direction; the shape-only fallback with no
+      `rec_rotations`; a lone glyph left in its row; `_reread_rotated` against a scripted
+      recognizer — the better reading wins, an upright region is never re-read, an unchanged
+      reading keeps its word boxes, nothing legible keeps what paddle read),
+      `test_linearization.py` (paint growth and neighbour-midpoint clamping on both rotations,
+      `rotation_for_span`), `test_layout.py` (a gap measured along the stripe; a horizontal
+      region never `above` one), `test_text_layer.py` (the writing direction, its composition
+      with the render matrix, a stripe not collecting the text words it crosses, a stripe
+      repaired from a stripe, the gate both ways, reading-order bucketing),
+      `test_image_mode.py` (the placeholder drawn along the line, the two rotations as one
+      label turned the other way, full coverage of the box, nothing painted outside it).
+
+      Corpus probe: `pii_eval/render.py` now prints each document's own critical value down a
+      page margin, on every page, alternating direction by document index. It carries a value
+      the truth already knows, so no ground truth changes — the stripe simply gives that value
+      one more printing to survive at. On a rendered s7 corpus (12 docs), OCR before and after:
+
+      | | stripes read correctly | stripes merged into a horizontal line |
+      |---|---|---|
+      | before | 6 / 12 | 12 / 12 |
+      | after | **12 / 12** | **0 / 12** |
+
+      The merges were not cosmetic: `MARIO HERNANDEZ Account Number :289078-666` put a person's
+      name onto the account-number line, and `AA 18JAN23 DD BUDGET DIRECT INSURANCE POLICY …`
+      spliced the stripe's misreading into a transaction row.
+
+      **A garbled stripe was also a FALSE POSITIVE, and that is now gone.** Full
+      `strip --pdf --layer0=off --report` on `Statement20220630.pdf` before and after: the
+      pseudonym map loses exactly one entry, `ACCOUNT_3` → `523333` — page 3's stripe, misread,
+      typed as a bank account and pseudonymized. The other nine entries and all 14 detections are
+      identical, and the text-layer repair is unaffected (11 readings repaired, 775 boxes
+      corrected, 791 confirmed of 815 words; the page guard never fires). So the reading fix pays
+      on both axes: a value that could not be found becomes findable, and a value that was never
+      there stops being invented.
+
+      **The painting half is verified on real pixels too**, driven through the production
+      geometry (`painted_boxes_for_span` + `rotation_for_span` + `paint_segments`) on OCR'd
+      corpus pages: `ACCOUNT_1` reads up the left margin over a 14x91 box, `PERSON_1` down the
+      right over a 22x188 one, each covering its stripe.
+
+      **The tier-1 eval gate has NOT been run against this change** — it needs a llama-server for
+      layer 0 and none was reachable at commit time. What is verified is the OCR half, end to
+      end on real specimens and on a rendered corpus, plus the fast suite: **693 passed**.
+
+      **Accepted residual:** a rotated stripe of one or two characters falls under the 2:1 gate
+      and is still treated as upright, exactly as before.

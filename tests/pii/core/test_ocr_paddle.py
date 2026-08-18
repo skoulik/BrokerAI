@@ -10,17 +10,19 @@ import pytest
 from pii.core.linearization import linearize
 from pii.core.ocr import get_ocr_page
 from pii.core.ocr_page import OcrFrame
-from pii.core.ocr_paddle import result_to_page
+from pii.core.ocr_paddle import _reread_rotated, result_to_page
 
 _FRAME = OcrFrame(width=1000, height=1000, page=1,
                   backend="paddle", tier="v6_medium")
 
 
-def _result(texts, boxes, scores, words=None, word_boxes=None):
+def _result(texts, boxes, scores, words=None, word_boxes=None, rotations=None):
     d = {"rec_texts": texts, "rec_boxes": boxes, "rec_scores": scores}
     if words is not None:
         d["text_word"] = words
         d["text_word_boxes"] = word_boxes
+    if rotations is not None:
+        d["rec_rotations"] = rotations
     return d
 
 
@@ -246,6 +248,174 @@ class TestWordGeometry:
         boxes = ocr.boxes_for_span(start, start + len("123 456"))
         assert len(boxes) == 1  # same line unions into one box
         assert boxes[0].right <= 320
+
+
+class TestRotatedLines:
+    """A page-edge stripe: never banded with the horizontal text it crosses,
+    and measured along its own axis.
+
+    The geometry here is the reference statement's, scaled: a stripe is ~30 px
+    wide and hundreds tall, so its y-centre lands in the middle of the page and
+    a y-centre band around it reaches a third of it."""
+
+    def test_a_stripe_is_never_banded_with_the_lines_it_crosses(self):
+        # 1.pdf p1: the enquiries phone and the stripe assembled as ONE line,
+        # `13 13 14 XPRCAP0022-2309300323`, inside one 1488x275 box — a paint
+        # box, a label neighbourhood and a `contiguous` answer all at once.
+        assert _text(_result(
+            texts=["Account number 12345678", "XPRCAP0022", "Phone 13 13 14"],
+            boxes=[
+                [200, 300, 900, 340],   # body line, centre 320
+                [40, 100, 70, 900],     # the stripe, centre 500, h800
+                [200, 500, 900, 540],   # body line, centre 520
+            ],
+            scores=[0.9, 0.9, 0.9],
+            rotations=[0, 90, 0],
+        )).split("\n") == [
+            "Account number 12345678", "XPRCAP0022", "Phone 13 13 14",
+        ]
+
+    def test_a_stripe_does_not_split_the_row_it_crosses(self):
+        # Banded in one pass, a stripe whose centre sorts BETWEEN the two
+        # regions of a row would stop the second from joining the first and cut
+        # the row in half. Rotated regions are banded apart and merged back.
+        assert _text(_result(
+            texts=["Interest charged", "STRIPE", "$12.34"],
+            boxes=[
+                [200, 498, 600, 538],   # left column, centre 518
+                [40, 119, 70, 919],     # the stripe, centre 519
+                [700, 500, 900, 540],   # right column, centre 520
+            ],
+            scores=[0.9, 0.9, 0.9],
+            rotations=[0, 90, 0],
+        )).split("\n") == ["Interest charged $12.34", "STRIPE"]
+
+    def test_rotation_reaches_the_line_and_every_word(self):
+        (line,) = _page(_result(
+            texts=["AAA BBB"], boxes=[[40, 100, 70, 900]], scores=[0.9],
+            rotations=[270],
+        )).lines
+        assert line.rotation == 270
+        assert [w.rotation for w in line.words] == [270, 270]
+
+    def test_a_bottom_to_top_line_runs_up_the_page(self):
+        # `Statement20220630` p1: the left-margin stripe reads upward, so the
+        # FIRST word is the LOWEST on the page. Sorting a rotated row by `left`
+        # — or interpolating it along x — would reverse it or collapse it.
+        (line,) = _page(_result(
+            texts=["AAA BBB"], boxes=[[40, 100, 70, 900]], scores=[0.9],
+            rotations=[90],
+        )).lines
+        first, second = line.words
+        assert (first.text, second.text) == ("AAA", "BBB")
+        assert first.box.top > second.box.top
+        assert first.box.left == second.box.left == 40
+        assert first.box.right == second.box.right == 70
+
+    def test_a_top_to_bottom_line_runs_down_the_page(self):
+        (line,) = _page(_result(
+            texts=["AAA BBB"], boxes=[[40, 100, 70, 900]], scores=[0.9],
+            rotations=[270],
+        )).lines
+        first, second = line.words
+        assert first.box.top < second.box.top
+        assert first.box.left == second.box.left == 40
+
+    def test_a_tall_region_is_unbanded_even_with_no_rotations_given(self):
+        # A result dict from anywhere but `_reread_rotated` — the direction is
+        # unknown, but the banding damage a stripe does is a fact about its
+        # SHAPE and must not wait on a recognizer.
+        page = _page(_result(
+            texts=["Phone 13 13 14", "XPRCAP0022"],
+            boxes=[[200, 500, 900, 540], [40, 100, 70, 900]],
+            scores=[0.9, 0.9],
+        ))
+        assert [line.text for line in page.lines] == [
+            "XPRCAP0022", "Phone 13 13 14",
+        ]
+        assert [line.rotation for line in page.lines] == [270, 0]
+
+    def test_a_lone_glyph_is_not_a_rotated_line(self):
+        # The gate is 2:1 and the tallest upright region measured over the
+        # reference corpus is 1.5:1 — a single glyph, which must stay in its
+        # row.
+        assert _text(_result(
+            texts=["$", "1,234.00"],
+            boxes=[[200, 500, 230, 540], [260, 500, 460, 540]],
+            scores=[0.9, 0.9],
+        )) == "$ 1,234.00"
+
+
+class _Reader:
+    """A stand-in for the pipeline's recognition model: scripted answers, in
+    call order (`_read_both_ways` reads 90 first, then 270)."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.calls = 0
+
+    def predict(self, array):
+        self.calls += 1
+        text, score = self.answers.pop(0)
+        return [{"rec_text": text, "rec_score": score}]
+
+
+class TestRereadRotated:
+    """`_reread_rotated`: which direction a rotated region is read in, decided
+    on the pixels. Model-free — the recognizer is scripted."""
+
+    def _image(self):
+        from PIL import Image
+
+        return Image.new("RGB", (200, 1000), "white")
+
+    def test_the_better_reading_wins_and_names_the_direction(self):
+        # The measured case: paddle turns every tall crop one way and read
+        # `1584.3694.1.2 ZZ258R3 ...` as `235*` at 0.555.
+        result = _result(
+            texts=["235*"], boxes=[[40, 100, 70, 900]], scores=[0.555],
+            words=[["235", "*"]],
+            word_boxes=[[[40, 700, 70, 890], [40, 100, 70, 690]]],
+        )
+        reader = _Reader([("1584.3694.1.2 ZZ258R3", 0.99), ("1331223.35", 0.71)])
+        out = _reread_rotated(result, self._image(), recognizer=reader)
+        assert out["rec_rotations"] == [90]
+        assert out["rec_texts"] == ["1584.3694.1.2 ZZ258R3"]
+        assert out["rec_scores"] == [0.99]
+        # The fragments describe characters that are no longer there.
+        assert out["text_word"] == [[]] and out["text_word_boxes"] == [[]]
+
+    def test_an_upright_region_is_never_re_read(self):
+        reader = _Reader([])  # popping from it would raise
+        out = _reread_rotated(
+            _result(["Total 12.00"], [[40, 100, 400, 140]], [0.9]),
+            self._image(), recognizer=reader,
+        )
+        assert out["rec_rotations"] == [0] and reader.calls == 0
+        assert out["rec_texts"] == ["Total 12.00"]
+
+    def test_an_unchanged_reading_keeps_its_word_boxes(self):
+        # 1.pdf: paddle's own turn was the right one. Its fragments describe
+        # the reading that stands, so they are better geometry than
+        # interpolation and must survive.
+        result = _result(
+            texts=["XPRCAP0022"], boxes=[[40, 100, 70, 900]], scores=[1.0],
+            words=[["XPRCAP0022"]], word_boxes=[[[40, 110, 70, 890]]],
+        )
+        reader = _Reader([("3RC2932", 0.70), ("XPRCAP0022", 1.0)])
+        out = _reread_rotated(result, self._image(), recognizer=reader)
+        assert out["rec_rotations"] == [270]
+        assert out["text_word"] == [["XPRCAP0022"]]
+
+    def test_nothing_legible_keeps_what_paddle_read(self):
+        # A dropped line is unredacted PII, so an unreadable stripe keeps its
+        # reading — and paddle's own crop direction with it.
+        reader = _Reader([("", 0.9), ("   ", 0.8)])
+        out = _reread_rotated(
+            _result(["235*"], [[40, 100, 70, 900]], [0.555]),
+            self._image(), recognizer=reader,
+        )
+        assert out["rec_texts"] == ["235*"] and out["rec_rotations"] == [270]
 
 
 def test_frame_carried():

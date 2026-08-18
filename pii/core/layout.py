@@ -37,12 +37,20 @@ between them. As two bands, the `above` band holds only `ABN:`, because
 **Distances are measured in line heights, not pixels**, so the same constants
 hold at any DPI and any font size; the height comes from the candidate's own
 line, so a value in small print gets a proportionally small neighbourhood.
+
+**A rotated line has its own axes**, and both bands are computed on them
+(`ocr.reading_extent` / `ocr.cross_extent`): "along the line" is vertical for a
+page-edge stripe, and "above" it is sideways. A region of a DIFFERENT rotation
+is never in a band — a label and its value are printed the same way up, and
+without that rule a full-width footer would sit "above" every stripe it crosses
+and lend it a label.
 """
 
 from __future__ import annotations
 
 from pii.core.engine import Context, ContextWord
 from pii.core.linearization import PlacedWord, RecognizerInput
+from pii.core.ocr import Box, _oriented_box, cross_extent, reading_extent
 
 # How far above a candidate a label may sit, in line heights. Two rather than
 # one so a label that WRAPS ("Australian Financial / Services Licence") still
@@ -86,7 +94,9 @@ class PageLayout:
         self._regions: dict[tuple[int, tuple], list[PlacedWord]] = {}
         for word in source.words:
             self._by_line.setdefault(word.line, []).append(word)
-            self._regions.setdefault((word.line, tuple(word.region_box)), []).append(word)
+            self._regions.setdefault(
+                (word.line, tuple(word.region_box)), []
+            ).append(word)
         for line in self._by_line.values():
             line.sort(key=lambda w: w.char_start)
         for region in self._regions.values():
@@ -99,13 +109,12 @@ class PageLayout:
             # nothing rather than guess: a caller mixing sources gets no
             # attachment, never a wrong one.
             return []
-        line, left, right, top, height = anchor
-        box = (left, top, right, top + height)
+        line, rotation, box, height = anchor
         out = []
         band = self._left_band(line, start, word_floor)
         if band:
             out.append(_assemble("left", band, box, height))
-        band = self._above_band(left, right, top, height)
+        band = self._above_band(rotation, box, height)
         if band:
             out.append(_assemble("above", band, box, height))
         return out
@@ -125,11 +134,15 @@ class PageLayout:
         )
         if len(words) < 2:
             return True
-        height = max(w.box.height for w in words) or 1
+        height = max(_thickness(w.box, w.rotation) for w in words) or 1
         for a, b in zip(words, words[1:]):
             if a.line != b.line:
                 return False
-            if b.box.left - (a.box.left + a.box.width) > MAX_INTERNAL_GAP * height:
+            gap = (
+                reading_extent(b.box, b.rotation)[0]
+                - reading_extent(a.box, a.rotation)[1]
+            )
+            if gap > MAX_INTERNAL_GAP * height:
                 return False
         return True
 
@@ -143,18 +156,24 @@ class PageLayout:
         if not covering:
             return None
         line = min(w.line for w in covering)
-        boxes = [w.box for w in covering if w.line == line]
-        left = min(b.left for b in boxes)
-        right = max(b.left + b.width for b in boxes)
-        top = min(b.top for b in boxes)
+        on_line = [w for w in covering if w.line == line]
+        rotation = on_line[0].rotation
+        extents = [reading_extent(w.box, rotation) for w in on_line]
+        at = min(e[0] for e in extents)
+        to = max(e[1] for e in extents)
+        near = min(cross_extent(w.box, rotation)[0] for w in on_line)
         height = max(
-            max(b.height for b in boxes),
+            max(_thickness(w.box, rotation) for w in on_line),
             # A one-line value of small type still sits on a line; use the
             # line's own height when it is taller, so the band scales with the
             # page rather than with a single short glyph run.
-            max((w.box.height for w in self._by_line.get(line, ())), default=0),
+            max(
+                (_thickness(w.box, rotation) for w in self._by_line.get(line, ())),
+                default=0,
+            ),
         )
-        return line, left, right, top, height
+        box = _oriented_box(rotation, at, to, near, near + height)
+        return line, rotation, box, height
 
     def _left_band(self, line, start, word_floor):
         if word_floor <= 0:
@@ -162,17 +181,29 @@ class PageLayout:
         before = [w for w in self._by_line.get(line, ()) if w.char_end <= start]
         return before[-word_floor:]
 
-    def _above_band(self, left, right, top, height):
+    def _above_band(self, rotation: int, box: Box, height):
+        """The regions overhead, in the candidate's OWN frame: nearer the tops
+        of its glyphs, within `V_ABOVE` line heights, and overlapping the run
+        of the line it occupies.
+
+        A region printed at a different rotation is never overhead, whatever
+        its geometry says. A label and its value are set the same way up, and a
+        page-wide footer crossing a page-edge stripe would otherwise be `above`
+        every stripe on the page and lend it a label."""
         reach = V_ABOVE * height
         slack = X_TOLERANCE * height
+        at, to = reading_extent(box, rotation)
+        near, _ = cross_extent(box, rotation)
         band: list[PlacedWord] = []
         for (_, region_box), words in self._regions.items():
-            r_left, r_top, r_width, r_height = region_box
-            if r_top + r_height > top:
+            if words[0].rotation != rotation:
                 continue
-            if top - (r_top + r_height) > reach:
+            region = Box(*region_box)
+            r_at, r_to = reading_extent(region, rotation)
+            _, r_far = cross_extent(region, rotation)
+            if r_far > near or near - r_far > reach:
                 continue
-            if r_left + r_width < left - slack or r_left > right + slack:
+            if r_to < at - slack or r_at > to + slack:
                 continue
             band.extend(words)
         band.sort(key=lambda w: (w.line, w.char_start))
@@ -205,17 +236,24 @@ def _assemble(relation, band: list[PlacedWord], box, height: float) -> Context:
     return Context(relation, " ".join(parts), words=tuple(words))
 
 
-def _distance(word, box, height: float) -> float:
+def _distance(word: Box, box: Box, height: float) -> float:
     """Edge-to-edge distance between a word and the candidate, in line heights.
 
     Edge to edge rather than centre to centre so the measure means the same
     thing in both directions: for a label on the same line it is the whitespace
     between them, for one overhead it is the leading. Centres would make a long
     label read as far away merely for being long.
+
+    Rotation-free by construction: a distance between two rectangles is the
+    same number whichever way their text runs.
     """
-    wx0, wy0 = word.left, word.top
-    wx1, wy1 = word.left + word.width, word.top + word.height
-    bx0, by0, bx1, by1 = box
-    dx = max(0, bx0 - wx1, wx0 - bx1)
-    dy = max(0, by0 - wy1, wy0 - by1)
+    dx = max(0, box.left - word.right, word.left - box.right)
+    dy = max(0, box.top - word.bottom, word.top - box.bottom)
     return ((dx * dx + dy * dy) ** 0.5) / height if height else 0.0
+
+
+def _thickness(box: Box, rotation: int) -> int:
+    """A box's extent ACROSS its line — the "line height" of the constants
+    above, on the axis the line's own rotation puts it."""
+    near, far = cross_extent(box, rotation)
+    return far - near

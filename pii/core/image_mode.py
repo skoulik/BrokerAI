@@ -699,6 +699,7 @@ def _paint_plan(
             ),
             boxes=ocr.painted_boxes_for_span(r.start, r.end),
             font=ocr.font_for_span(r.start, r.end),
+            rotation=ocr.rotation_for_span(r.start, r.end),
         )
         for r in spans
     ] + list(extra)

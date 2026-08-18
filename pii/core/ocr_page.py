@@ -67,6 +67,9 @@ class OcrWord:
     — and is what `pii.core.debug_overlay` colours the perception layer by.
     Per-word rather than per-line because a text layer routinely covers only
     part of a page.
+
+    `rotation` is its line's (see `OcrLine`), copied here because every
+    consumer of the source map holds words, not lines.
     """
 
     text: str
@@ -74,6 +77,7 @@ class OcrWord:
     region_box: Box | None = None
     font: FontSpec | None = None
     source: str = SOURCE_OCR
+    rotation: int = 0
 
     @property
     def region(self) -> Box:
@@ -88,7 +92,13 @@ class OcrLine:
     native line confidence (0-100) or None if the engine doesn't score lines.
     `font` is the face most of the line's words carry — None from any OCR
     engine, filled only by PDF text-layer traceback
-    (`pii.core.text_layer`)."""
+    (`pii.core.text_layer`).
+
+    `rotation` is how the line is PRINTED: degrees counter-clockwise its text
+    is turned from upright (`pii.core.ocr.ROTATIONS` — 90 reads bottom-to-top,
+    270 top-to-bottom, 0 is ordinary text). A line has ONE rotation because a
+    rotated region is never banded with anything else, which is what makes
+    "along this line" and "across this line" answerable per line at all."""
 
     text: str
     box: Box
@@ -96,6 +106,7 @@ class OcrLine:
     conf: float | None = None
     polygon: tuple | None = None  # reserved (skew); None for now
     font: FontSpec | None = None
+    rotation: int = 0
 
 
 @dataclass(frozen=True)
@@ -144,12 +155,16 @@ def build_page(rows, frame: OcrFrame) -> OcrPage:
     """Build an OcrPage from assembled visual rows.
 
     `rows` is the output of pii.core.ocr._rows: a list of lines, each a list
-    of word items (text, box, conf) or (text, box, conf, region_box). Each
-    non-empty row becomes one OcrLine, in row order — which is the order
-    `pii.core.linearization.linearize` then assembles them in.
+    of word items (text, box, conf), optionally with a region box and then a
+    rotation appended. Each non-empty row becomes one OcrLine, in row order —
+    which is the order `pii.core.linearization.linearize` then assembles them
+    in.
 
     Every row carrying words becomes a line, unconditionally: a dropped line
     is unredacted PII.
+
+    The line's rotation is its first word's: a rotated region is never banded
+    with another region, so every word of a row shares one.
     """
     lines = []
     for row in rows:
@@ -160,6 +175,7 @@ def build_page(rows, frame: OcrFrame) -> OcrPage:
                 text=item[0],
                 box=item[1],
                 region_box=item[3] if len(item) > 3 else None,
+                rotation=item[4] if len(item) > 4 else 0,
             )
             for item in row
         )
@@ -169,6 +185,7 @@ def build_page(rows, frame: OcrFrame) -> OcrPage:
                 box=_line_box(words),
                 words=words,
                 conf=row[0][2] if len(row[0]) > 2 else None,
+                rotation=words[0].rotation,
             )
         )
     return OcrPage(frame=frame, lines=tuple(lines))

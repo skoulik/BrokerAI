@@ -204,3 +204,52 @@ def test_an_ordinary_word_space_inside_a_value_is_kept():
     page = _page([[(0, "Account"), (200, "133 174")]])
     found = Analyzer([_Grouped()]).analyze(page.text, 0.4, PageLayout(page))
     assert [page.text[d.start:d.end] for d in found] == ["133 174"]
+
+
+# --------------------------------------------- a stripe has its own axes
+
+
+def _stripe_page(gap):
+    """A stripe reading bottom-to-top, of two words `gap` pixels apart ALONG
+    the line, with a horizontal label ending just to its left.
+
+    The stripe is 30 px wide (its line "height") and its words stack in y, so
+    every measure `PageLayout` makes has to be taken on the other axis. The
+    label sits where "above" points for a bottom-to-top line — glyph tops face
+    left — and within the two-line-height reach, so only the rotation match
+    keeps it out of the band."""
+    region = Box(400, 100, 30, 400 + gap)
+    words = [
+        PlacedWord("133", Box(400, 300 + gap, 30, 100), region, 0, 0, 3,
+                   rotation=90),
+        PlacedWord("174", Box(400, 200, 30, 100), region, 0, 4, 7, rotation=90),
+    ]
+    label = Box(300, 300, 70, LINE_HEIGHT)
+    words.append(PlacedWord("Account", label, label, 1, 8, 15))
+    return RecognizerInput("133 174\nAccount", tuple(words))
+
+
+def test_a_gap_along_a_stripe_is_measured_along_the_stripe():
+    """Two words of a rotated line share `left` exactly, so the horizontal gap
+    between them is always zero and `contiguous` would wave through a value
+    spanning half the page."""
+    layout = PageLayout(_stripe_page(gap=400))
+    assert layout.contiguous(0, 7) is False
+
+
+def test_a_printed_space_along_a_stripe_is_still_contiguous():
+    layout = PageLayout(_stripe_page(gap=20))
+    assert layout.contiguous(0, 7) is True
+
+
+def test_a_horizontal_region_is_never_above_a_stripe():
+    """A label and its value are printed the same way up. Without the rotation
+    match a page-wide footer would sit `above` every stripe it crosses and lend
+    it a label it has nothing to do with."""
+    source = _stripe_page(gap=20)
+    bands = {
+        c.relation: c.text
+        for c in PageLayout(source).contexts(0, 3, word_floor=4)
+    }
+    assert "Account" not in bands.get("above", "")
+    assert "Account" not in bands.get("left", "")

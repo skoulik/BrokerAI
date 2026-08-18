@@ -7,9 +7,9 @@ without the debug path pulling in the analysis stack — image_mode imports the
 detection pipeline, this module imports only Pillow + the neutral geometry.
 
 A `Segment` is a label plus the pixel boxes it covers — and, where the input
-could tell us, the face that text was set in, so a filled placeholder reads
-like the line it replaces instead of like an annotation. `paint_segments`
-renders a list of them in one of two styles:
+could tell us, the face that text was set in and the rotation it was printed
+at, so a filled placeholder reads like the line it replaces instead of like an
+annotation. `paint_segments` renders a list of them in one of two styles:
 
 - ``style="fill"`` (production strip): fill each box with the page background
   and draw the label into it — the content is gone (pseudonymization).
@@ -46,11 +46,19 @@ class Segment:
     `font` is the face the replaced text was set in, where the input told us
     (`pii.core.text_layer` traceback of a PDF's own text layer). None — every
     non-PDF input, and any word the text layer did not cover — falls back to
-    the painter's default face and its box-height sizing."""
+    the painter's default face and its box-height sizing.
+
+    `rotation` is how the replaced text was PRINTED (`pii.core.ocr.ROTATIONS`),
+    so a placeholder over a page-edge stripe is drawn along the stripe. Painted
+    upright into a 29x475 box it would shrink to the minimum size and clip
+    anyway: the fill covers the pixels either way, but the output stops being
+    self-describing, and a placeholder nobody can read cannot be rehydrated by
+    hand."""
 
     label: str
     boxes: list[Box]
     font: FontSpec | None = None
+    rotation: int = 0
 
 
 def paint_segments(
@@ -98,7 +106,7 @@ def paint_segments(
                 )
                 continue
             if style == "fill":
-                _paint(out, grown, seg.label, fill, ink, seg.font)
+                _paint(out, grown, seg.label, fill, ink, seg.font, seg.rotation)
             else:
                 _frame(out, grown, seg.label, color, width, chip)
     return out
@@ -115,7 +123,7 @@ def _grow(box: Box, margin: int, image: Image.Image) -> Box:
     )
 
 
-def _paint(image, box: Box, label: str, fill, ink, spec=None) -> None:
+def _paint(image, box: Box, label: str, fill, ink, spec=None, rotation=0) -> None:
     """Fill the box and draw the label into it, shrinking the font to fit
     the width. Drawn on a box-sized layer, so an oversized label clips at
     the box edge instead of overpainting neighboring text.
@@ -125,18 +133,31 @@ def _paint(image, box: Box, label: str, fill, ink, spec=None) -> None:
     at the document's own point size rather than a guess from the box. The box
     is grown and includes the region's ink margin, so `height * 0.8` overstates
     the real face; the true size is used where it is known and still capped to
-    the box."""
-    layer = Image.new("RGB", (box.width, box.height), fill)
+    the box.
+
+    `rotation` replaces text that was printed sideways. The label is drawn
+    upright on a layer of the box's own dimensions SWAPPED — so all the fitting
+    above still reads "along the line" and "across the line" without a second
+    version of it — and the layer is then turned by the rotation, which lands it
+    exactly on the box."""
+    width, height = (
+        (box.height, box.width) if rotation else (box.width, box.height)
+    )
+    layer = Image.new("RGB", (width, height), fill)
     draw = ImageDraw.Draw(layer)
     if spec is not None and spec.size:
-        size = max(min(int(round(spec.size)), box.height), _MIN_FONT)
+        size = max(min(int(round(spec.size)), height), _MIN_FONT)
     else:
-        size = max(int(box.height * 0.8), _MIN_FONT)
+        size = max(int(height * 0.8), _MIN_FONT)
     font = _face(spec, size)
-    while size > _MIN_FONT and draw.textlength(label, font=font) > box.width - 2:
+    while size > _MIN_FONT and draw.textlength(label, font=font) > width - 2:
         size -= 1
         font = _face(spec, size)
-    draw.text((1, box.height // 2), label, font=font, fill=ink, anchor="lm")
+    draw.text((1, height // 2), label, font=font, fill=ink, anchor="lm")
+    if rotation:
+        layer = layer.transpose(
+            Image.ROTATE_90 if rotation == 90 else Image.ROTATE_270
+        )
     image.paste(layer, (box.left, box.top))
 
 

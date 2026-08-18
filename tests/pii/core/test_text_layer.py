@@ -26,11 +26,15 @@ from pii.core.text_layer import (
 )
 
 
-def _page(rows: list[list[tuple[str, Box]]]) -> OcrPage:
-    """An OcrPage from (text, box) rows — one OcrLine per row."""
+def _page(rows, rotations=None) -> OcrPage:
+    """An OcrPage from (text, box) rows — one OcrLine per row. `rotations`
+    gives the rows' rotations, defaulting to upright."""
     lines = []
-    for row in rows:
-        words = tuple(OcrWord(text=text, box=box) for text, box in row)
+    for index, row in enumerate(rows):
+        rotation = rotations[index] if rotations else 0
+        words = tuple(
+            OcrWord(text=text, box=box, rotation=rotation) for text, box in row
+        )
         left = min(w.box.left for w in words)
         top = min(w.box.top for w in words)
         lines.append(
@@ -42,14 +46,21 @@ def _page(rows: list[list[tuple[str, Box]]]) -> OcrPage:
                     max(w.box.bottom for w in words) - top,
                 ),
                 words=words,
+                rotation=rotation,
             )
         )
-    return OcrPage(frame=OcrFrame(width=800, height=200, page=1),
+    return OcrPage(frame=OcrFrame(width=800, height=800, page=1),
                    lines=tuple(lines))
 
 
 def _words(*items: tuple[str, Box]) -> tuple[TextWord, ...]:
     return tuple(TextWord(text=text, box=box) for text, box in items)
+
+
+def _rotated_words(rotation, *items: tuple[str, Box]) -> tuple[TextWord, ...]:
+    return tuple(
+        TextWord(text=text, box=box, rotation=rotation) for text, box in items
+    )
 
 
 ACCOUNT = Box(100, 40, 120, 20)
@@ -105,6 +116,49 @@ def test_page_text_words_lands_on_the_ink_at_any_rotation(tmp_path, rotation):
     # Glyph boxes are looser than the ink they contain, never tighter.
     assert left <= ink[0] and top <= ink[1]
     assert right >= ink[2] and bottom >= ink[3]
+    doc.close()
+
+
+def test_page_text_words_carries_the_writing_direction(tmp_path):
+    """A page-edge stripe reads bottom-to-top on the left margin and
+    top-to-bottom on the right; both occur in the reference corpus. The
+    direction is read off the span's own `dir`, and checked here against where
+    the words actually land: a bottom-to-top line puts its SECOND word higher
+    up the page."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=400)
+    page.insert_text((200, 300), "UPWARD one", fontsize=12, rotate=90)
+    page.insert_text((100, 100), "DOWNWARD two", fontsize=12, rotate=270)
+    page.insert_text((20, 380), "PLAIN three", fontsize=12)
+    doc.save(tmp_path / "r.pdf")
+    doc.close()
+    doc = pymupdf.open(tmp_path / "r.pdf")
+
+    words = {w.text: w for w in page_text_words(doc[0], dpi=72)}
+    assert words["UPWARD"].rotation == 90
+    assert words["one"].box.top < words["UPWARD"].box.top
+    assert words["DOWNWARD"].rotation == 270
+    assert words["two"].box.top > words["DOWNWARD"].box.top
+    assert words["PLAIN"].rotation == 0
+    doc.close()
+
+
+def test_the_writing_direction_goes_through_the_render_matrix(tmp_path):
+    """`dir` is in the same unrotated page coordinates as the boxes, so on a
+    /Rotate 90 page every ordinary line reports `(1, 0)` while its ink runs
+    down the raster. Un-composed, a whole page of body text would look rotated
+    and would be pulled out of its rows."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=400)
+    page.insert_text((20, 380), "PLAIN three", fontsize=12)
+    doc.save(tmp_path / "p.pdf")
+    doc.close()
+    doc = pymupdf.open(tmp_path / "p.pdf")
+    doc[0].set_rotation(90)
+
+    words = {w.text: w for w in page_text_words(doc[0], dpi=72)}
+    assert words["PLAIN"].rotation == 270
+    assert words["three"].box.top > words["PLAIN"].box.top
     doc.close()
 
 
@@ -558,3 +612,86 @@ def test_a_word_the_text_layer_never_saw_keeps_its_own_box():
     page = _drifted_page(["ABN", "logo"], [0, 95])
     repaired, _ = repair_page(page, (TextWord("ABN", Box(100, 40, 70, 20)),))
     assert repaired.lines[0].words[1].box.left == 275
+
+
+# --- rotated lines: a stripe pairs with the stripe, and with nothing else ---
+
+
+def _stripe_page():
+    """A page-edge stripe, and a footer line that RUNS THROUGH its column.
+
+    The footer's words sit inside the stripe's y-range and across its x-range,
+    so each is a candidate for the other's bucket on whichever axis is
+    measured, and the stripe is offered first. Only the rotation match keeps
+    them apart."""
+    return _page(
+        [
+            [("XPRCAPOO22", Box(40, 100, 30, 500))],
+            [("LNDSTMN7", Box(20, 500, 110, 20)),
+             ("RTBLP14O", Box(140, 500, 110, 20))],
+        ],
+        rotations=[90, 0],
+    )
+
+
+def test_a_stripe_does_not_collect_the_text_words_it_crosses():
+    """The footer word that runs through the stripe's column is the one at
+    risk: bucketed onto the stripe it leaves its OWN line unpaired, and the
+    damage that repair exists to fix survives on the footer."""
+    page = _stripe_page()
+    repaired, report = repair_page(
+        page,
+        _words(("LNDSTMNT", Box(20, 500, 110, 20)),
+               ("RTBLP140", Box(140, 500, 110, 20))),
+    )
+    assert [w.text for w in repaired.lines[1].words] == ["LNDSTMNT", "RTBLP140"]
+    # ...and neither reached the stripe, whose reading stands.
+    assert repaired.lines[0].words[0].text == "XPRCAPOO22"
+    assert report.words == 3 and report.paired == 2 and report.repaired == 2
+
+
+def test_a_stripe_is_repaired_from_a_stripe():
+    """The rotation match is a gate, not a refusal: a text word printed the
+    same way up pairs normally, and repairs the reading. `1.pdf`'s own text
+    layer carries the exact stripe string its OCR misreads."""
+    page = _stripe_page()
+    repaired, report = repair_page(
+        page, _rotated_words(90, ("XPRCAP0022", Box(40, 100, 30, 500))),
+    )
+    assert repaired.lines[0].words[0].text == "XPRCAP0022"
+    assert report.repaired == 1
+
+
+def test_a_horizontal_line_is_not_repaired_from_a_stripe():
+    """The gate runs both ways: a word the text layer says is printed sideways
+    never reaches a horizontal line, however exactly it sits on it. The same
+    pair repairs when the text word is upright (the test above)."""
+    page = _stripe_page()
+    repaired, report = repair_page(
+        page, _rotated_words(90, ("RTBLP140", Box(140, 500, 110, 20))),
+    )
+    assert repaired.lines[1].words[1].text == "RTBLP14O"
+    assert report.paired == 0 and report.repaired == 0
+
+
+def test_a_stripe_pairs_in_reading_order_up_the_page():
+    """A bucket is sorted along the LINE, which for a bottom-to-top stripe runs
+    up the page: sorted by `left` — every word of a stripe shares one — the
+    alignment would see the text layer's words in an arbitrary order."""
+    page = _page(
+        [[("1584.3694", Box(40, 300, 30, 100)),
+          ("ZZ258R3", Box(40, 150, 30, 120))]],
+        rotations=[90],
+    )
+    repaired, report = repair_page(
+        page,
+        # Offered in PAGE order, down the raster — the order the stripe reads
+        # in is the opposite one.
+        _rotated_words(
+            90,
+            ("ZZ258R4", Box(40, 150, 30, 120)),
+            ("1584.3694", Box(40, 300, 30, 100)),
+        ),
+    )
+    assert [w.text for w in repaired.lines[0].words] == ["1584.3694", "ZZ258R4"]
+    assert report.paired == 2 and report.repaired == 1

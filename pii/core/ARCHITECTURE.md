@@ -55,7 +55,7 @@ the planned GUI is `pii/gui/` — both build on this package and never import ea
 | `grouping.py` | The fold between the two sweeps: every page's findings → document-wide entity groups, class elected by majority vote |
 | `locator.py` | Layer-0 findings → spans. Three placement paths: box-guided in the OCR text (`locate_findings`, three geometry tiers), document-wide values against one page (`locate_borrowed`), and plain occurrence search in document text (`locate_in_text`) |
 | `fuzzy.py` | Confusion-weighted Levenshtein — the fuzzy tier of location, admissible only inside a box |
-| `ocr.py` | OCR-engine seam (`get_ocr_page`) + the shared pixel toolkit (`Box`, `_rows` banding, word-box normalization) |
+| `ocr.py` | OCR-engine seam (`get_ocr_page`) + the shared pixel toolkit (`Box`, `_rows` banding, word-box normalization, and the rotated-line axes `reading_extent`/`cross_extent`) |
 | `ocr_page.py` | Perception: `OcrPage` → `OcrLine` → `OcrWord` + `OcrFrame`. Geometry only, no character offsets |
 | `linearization.py` | `OcrPage` → `RecognizerInput`: the flat page string plus the source map that turns a span back into pixel boxes |
 | `ocr_paddle.py` | PaddleOCR adapter: line-oriented det/rec → per-word `OcrPage`; in-process on either wheel, and holds the torch guard that keeps it safe |
@@ -938,6 +938,7 @@ purpose, which is why it is as small as it is — the layout/segmenter half of i
   line — which is how context promotion reaches an account number sitting in a column beside its
   own label (`d11.p2`). A tall neighbour (a logo) must not bridge two stacked lines, hence the
   x-overlap guard: two regions sharing an x-column are stacked lines, not one row (issue #6).
+  A ROTATED region is exempt from banding altogether — see "Rotated lines" below.
 - **Linearization is a separate layer (`linearization.py`).** The recognizer and the locator both
   run on one flat string; `linearize(OcrPage) -> RecognizerInput` produces it plus a **source
   map** (each char range → the OCR geometry it came from). Character offsets are born *here* — an
@@ -1008,6 +1009,62 @@ the shipping default. Numbers in
 [reports/2026-07-27-per-block-feed-bakeoff.md](reports/2026-07-27-per-block-feed-bakeoff.md) and
 [reports/2026-07-25-layout-bakeoff-doclayoutv3.md](reports/2026-07-25-layout-bakeoff-doclayoutv3.md);
 the adapters are one revert away in git history, the same disposition as Tesseract and Surya.
+
+### Rotated lines — a page-edge stripe is a line on its own axis (2026-08-18)
+
+Financial documents print a batch reference down the page MARGIN, turned 90 degrees: four of
+the eight reference specimens carry one, on both margins and in both directions. Two separate
+things were wrong with them, and they are fixed by two separate mechanisms.
+
+**Rotation is decided by GEOMETRY; direction by RECOGNITION.** Two decisions on two kinds of
+evidence, the same split as "a model box is a search constraint, not paint geometry".
+
+- A detection region at least **twice as tall as it is wide** holds a rotated line
+  (`ocr.is_rotated`, `ROTATED_MIN_RATIO`). Measured over the 1879 regions of the 27-page
+  reference corpus the two populations do not touch: the tallest upright region is 1.5:1 (a lone
+  glyph — also paddle's own crop-rotation threshold), the shortest rotated one 10.5:1. Geometry
+  alone, so the rule holds for a scan with no text layer and for a stripe that reads badly.
+- Which way it reads is settled on the pixels: the crop is turned upright each way and read
+  through the pipeline's own recognition model, and the better score wins
+  (`ocr_paddle._reread_rotated`). Paddle turns every tall crop counter-clockwise, so **the other
+  direction — the commoner one, the left margin — was garbage before this**: `1584.3694.1.2
+  ZZ258R3 …` read as `235*`. `use_textline_orientation=True`, which exists for exactly this, was
+  measured not to fix it. Numbers and the per-specimen table in [DONE.md](DONE.md).
+
+**`rotation` means one thing everywhere: degrees COUNTER-CLOCKWISE the text is turned from
+upright** — 90 the left margin reading bottom-to-top, 270 the right reading top-to-bottom. It
+lives on `OcrLine`/`OcrWord`, travels onto `PlacedWord`, and is read off the writing direction
+(through the render matrix) on `TextWord`. 180 is not handled; nothing prints upside down.
+
+**A rotated region is never banded — with anything, in either direction** (`ocr._rows`). A
+stripe is 275-865 px tall, so a y-centre band around it reaches a third of the page: the
+enquiries phone and the stripe of the reference statement assembled as ONE line, `13 13 14
+XPRCAP0022-2309300323`, inside one 1488x275 rectangle — simultaneously a paint box, a label
+neighbourhood and a `contiguous` answer. Rotated regions are banded apart and merged back by
+y-centre, rather than skipped in the one pass, so a stripe crossing the middle of a page cannot
+split a horizontal row by landing between its two column regions. Two stripes are not joined to
+each other either: speculative, with a context error to lose and nothing to gain.
+
+**Everything downstream measures along the line, not along x.** `ocr.reading_extent` /
+`cross_extent` / `_oriented_box` are the one place that knows what those mean, and they are
+oriented so consumers need no direction branch of their own — reading grows in reading order,
+cross grows away from the tops of the glyphs. Upright the two axes coincide and every
+calculation is unchanged, which is why this cost no measured behaviour on ordinary pages:
+
+| Where | What it now measures on the line's axis |
+|---|---|
+| `ocr._interpolate` | fallback word boxes split along the line, in its direction — the first word of a bottom-to-top stripe is the LOWEST |
+| `linearization.painted_boxes_for_span` | growth to the region box, and the pull-back to a neighbour's midpoint |
+| `layout.contiguous` | the internal gap — two words of a stripe share `left` exactly, so the old x-gap was always 0 and every stripe span read as contiguous |
+| `layout._above_band` | "overhead", plus a rotation match: a label and its value are printed the same way up, and without it a page-wide footer is `above` every stripe it crosses |
+| `text_layer._bucket` | which line a text word joins, plus the same rotation match — a stripe crosses the y-range of a third of the page's lines and would otherwise take their words, leaving those lines unrepaired |
+
+**A placeholder is drawn along the stripe** (`paint.Segment.rotation`). Painted upright into a
+29x475 box the label shrinks to the minimum size and clips: the pixels are covered either way,
+so this is not a leak — but an unreadable placeholder cannot be rehydrated by hand.
+
+**Accepted residual:** a rotated stripe of one or two characters falls under the 2:1 gate and is
+treated as upright, exactly as before this change.
 
 ### Tesseract retired (2026-07-17)
 

@@ -37,6 +37,16 @@ Each document renders to one PNG per page and is also assembled into a
 PDF, so the same rendered pixels feed both scoring modalities: `--modality
 image` strips page by page (no cross-page knowledge — the control) and
 `--modality pdf` runs the real two-sweep `strip_pdf` over them.
+
+Page-edge stripes (2026-08-18): every page also carries the document's own
+critical value printed DOWN A MARGIN at 90 degrees, the print-batch
+reference real statements carry there (four of the eight reference
+specimens have one). It is the corpus probe for rotated-text handling —
+the value is already in the truth, so nothing about the ground truth
+changes and the stripe simply gives that value one more printing to
+survive at. Both directions occur in print and both are exercised, chosen
+by document index rather than from the shared RNG so the font and size
+draws stay byte-identical for a seed.
 """
 
 import csv
@@ -68,6 +78,13 @@ _CSV_ROWS_PER_PAGE = 28
 # page comes out at its natural physical size and score_pdf's re-render at
 # the same DPI reproduces these pixels.
 _RENDER_DPI = 150
+
+# The page-edge stripe (see the module docstring). Smaller than the body, as
+# print-batch furniture is, but not so small that reading it stops being a
+# question about ROTATION and becomes one about resolution — the reference
+# specimens run 7-9pt against 9-11pt body text.
+_STRIPE_SIZE = 16
+_STRIPE_MARGIN = 8
 
 
 def _is_fixed_column(filename: str) -> bool:
@@ -158,6 +175,53 @@ def render_page(text: str, font_name: str, size: int) -> Image.Image:
     return page
 
 
+def stripe_value(doc: dict) -> str | None:
+    """What a document's page-edge stripe carries: its first CRITICAL value,
+    else its first value at all.
+
+    A value the truth already knows, deliberately — a stripe carrying
+    something new would need a truth entry, and the truth is the TEXT corpus's,
+    where every entity has character offsets into a file this stripe is not in.
+    So the probe adds a printing, not an entity: the same value, one more place
+    it has to be found."""
+    entities = doc.get("entities") or []
+    for entity in entities:
+        if entity.get("critical"):
+            return entity["value"]
+    return entities[0]["value"] if entities else None
+
+
+def draw_stripe(
+    image: Image.Image, text: str, rotation: int, font_name: str
+) -> bool:
+    """Print `text` down a page margin, turned 90 degrees. False if it does not
+    fit, and then the page is left alone rather than given a clipped stripe.
+
+    `rotation` is the engine's (`pii.core.ocr.ROTATIONS`): 90 down the left
+    margin reading bottom-to-top, 270 down the right reading top-to-bottom,
+    which is where each occurs in print."""
+    font = ImageFont.truetype(font_name, _STRIPE_SIZE)
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    ascent, descent = font.getmetrics()
+    length = int(probe.textlength(text, font=font)) + 4
+    thickness = ascent + descent
+    if length > image.height - 2 * _STRIPE_MARGIN:
+        return False
+    if thickness > _PAD - _STRIPE_MARGIN:
+        return False
+    layer = Image.new("RGB", (length, thickness), "white")
+    ImageDraw.Draw(layer).text((2, 0), text, font=font, fill="black")
+    layer = layer.transpose(
+        Image.ROTATE_90 if rotation == 90 else Image.ROTATE_270
+    )
+    left = (
+        _STRIPE_MARGIN if rotation == 90
+        else image.width - _STRIPE_MARGIN - layer.width
+    )
+    image.paste(layer, (left, (image.height - layer.height) // 2))
+    return True
+
+
 def render(corpus: str, outdir: str) -> Path:
     """Render every doc of a text corpus to PNG; write manifest.json."""
     corpus_path = Path(corpus)
@@ -178,7 +242,7 @@ def render(corpus: str, outdir: str) -> Path:
         "docs": [],
     }
     total_pages = 0
-    for doc in truth["docs"]:
+    for index, doc in enumerate(truth["docs"]):
         text = (corpus_path / doc["file"]).read_text("utf-8")
         is_csv = doc["file"].endswith(".csv")
         if _is_fixed_column(doc["file"]):
@@ -199,6 +263,18 @@ def render(corpus: str, outdir: str) -> Path:
         height = max(im.height for im in images)
         images = [_on_canvas(im, width, height) for im in images]
 
+        # The rotated probe, on the finished canvas so it lands in the page
+        # MARGIN rather than beside the text block (see the module docstring).
+        stripe = stripe_value(doc)
+        rotation = 90 if index % 2 == 0 else 270
+        # Eager, not short-circuited: `all(...)` over a generator would leave a
+        # stripe on the pages before the first that did not fit and then report
+        # the document as unstriped. (Pages of a document share a raster size
+        # by now, so in practice they fit or fail together.)
+        striped = bool(stripe) and all(
+            [draw_stripe(im, stripe, rotation, font_name) for im in images]
+        )
+
         names = []
         for number, image in enumerate(images, 1):
             name = f"{stem}.p{number}.png"
@@ -210,10 +286,13 @@ def render(corpus: str, outdir: str) -> Path:
 
         manifest["docs"].append(
             {"pages": names, "pdf": pdf_name, "source": doc["file"],
-             "font": font_name, "size": size}
+             "font": font_name, "size": size,
+             "stripe": {"value": stripe, "rotation": rotation}
+             if striped else None}
         )
         print(f"  rendered {stem} [{len(images)} page(s), {font_name} "
-              f"{size}px {width}x{height}]")
+              f"{size}px {width}x{height}"
+              f"{f', stripe {rotation}' if striped else ''}]")
 
     (out / "manifest.json").write_text(
         json.dumps(manifest, indent=1), encoding="utf-8"

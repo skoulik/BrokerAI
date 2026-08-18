@@ -165,6 +165,60 @@ def test_painted_run_before_stale_region_left_no_negative_width():
     assert box.right == (230 + 205) // 2
 
 
+# --- rotated lines: the same growth and clamping, measured along the line ---
+
+
+def _stripe(rotation):
+    """A page-edge stripe of three stacked words, in page order down the page,
+    inside a region inset from them on both axes — the rotated counterpart of
+    `_inset_mid`. Word order in the LINE is reading order, which for a
+    bottom-to-top stripe runs up the page."""
+    region = _box(95, top=90, width=30, height=280)
+
+    def w(top, word):
+        return (word, _box(100, top=top, width=20, height=60), 90.0, region,
+                rotation)
+
+    stacked = [w(100, "TOP"), w(200, "MID"), w(300, "LOW")]
+    return _ri([stacked if rotation == 270 else list(reversed(stacked))])
+
+
+def test_painted_rotated_grows_across_and_clamps_along_the_line():
+    result = _stripe(270)
+    start = result.text.index("MID")
+    (box,) = result.painted_boxes_for_span(start, start + len("MID"))
+    # ACROSS the line the run grows out to the region, recovering the inset.
+    assert (box.left, box.right) == (95, 125)
+    # ALONG it, back to the midpoint of the gap to each neighbour — never over
+    # the words above or below, which are not in the span.
+    assert box.top == (160 + 200) // 2
+    assert box.bottom == (300 + 260) // 2
+
+
+def test_painted_rotated_clamps_the_same_way_reading_upward():
+    # The clamp follows the READING direction, not the page: on a bottom-to-top
+    # stripe the word before `MID` in the string is the one BELOW it.
+    result = _stripe(90)
+    start = result.text.index("MID")
+    (box,) = result.painted_boxes_for_span(start, start + len("MID"))
+    assert (box.left, box.right) == (95, 125)
+    assert box.top == (160 + 200) // 2
+    assert box.bottom == (300 + 260) // 2
+
+
+def test_painted_rotated_span_over_the_whole_stripe_is_the_region():
+    result = _stripe(90)
+    boxes = result.painted_boxes_for_span(0, len(result.text))
+    assert boxes == [_box(95, top=90, width=30, height=280)]
+
+
+def test_rotation_for_span_is_the_rotation_of_its_characters():
+    result = _stripe(90)
+    start = result.text.index("MID")
+    assert result.rotation_for_span(start, start + 3) == 90
+    assert _two_lines().rotation_for_span(0, 4) == 0
+
+
 def test_painted_without_region_matches_boxes_for_span():
     # 3-tuple rows supply no region geometry (region falls back to the word
     # box), so painting must not differ from boxes_for_span.
