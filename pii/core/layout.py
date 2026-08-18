@@ -52,6 +52,14 @@ V_ABOVE = 2.0
 # neighbouring column.
 X_TOLERANCE = 0.5
 
+# The widest gap that may sit INSIDE one value, in line heights. A printed
+# space measures about 0.8 of one; the column jump that made `From 1 January
+# 2022 to 30 June 2022` and an enquiries phone into the account number
+# `2022 133 174` measured 34. Three is generous enough for a wide fixed-column
+# field and nowhere near a column boundary, which is why the constant is not
+# delicate.
+MAX_INTERNAL_GAP = 3.0
+
 # There is deliberately no horizontal distance limit: the left band is the last
 # `word_floor` words on the line and nothing else. Measured on the specimen page
 # (300 dpi, 34 px lines, 2396 px wide), a distance limit cannot separate the
@@ -91,14 +99,38 @@ class PageLayout:
             # attachment, never a wrong one.
             return []
         line, left, right, top, height = anchor
+        box = (left, top, right, top + height)
         out = []
         band = self._left_band(line, start, word_floor)
         if band:
-            out.append(_assemble("left", band))
+            out.append(_assemble("left", band, box, height))
         band = self._above_band(left, right, top, height)
         if band:
-            out.append(_assemble("above", band))
+            out.append(_assemble("above", band, box, height))
         return out
+
+    def contiguous(self, start: int, end: int) -> bool:
+        """Whether a span could be ONE value, or spans a column boundary.
+
+        The separator classes in `recognizers.py` bound how much whitespace may
+        sit between the groups of an identifier, and on this path they cannot
+        work: `linearize` joins every word with a single space, so a column gap
+        and a word space are the same character. The geometry still knows, and
+        this is where it is asked.
+        """
+        words = sorted(
+            (w for w in self.source.words if w.char_start < end and start < w.char_end),
+            key=lambda w: w.char_start,
+        )
+        if len(words) < 2:
+            return True
+        height = max(w.box.height for w in words) or 1
+        for a, b in zip(words, words[1:]):
+            if a.line != b.line:
+                return False
+            if b.box.left - (a.box.left + a.box.width) > MAX_INTERNAL_GAP * height:
+                return False
+        return True
 
     def _anchor(self, start: int, end: int):
         """The candidate's own line and box — its FIRST line if it wraps, since
@@ -146,16 +178,43 @@ class PageLayout:
         return band
 
 
-def _assemble(relation: str, band: list[PlacedWord]) -> Context:
-    """Words -> one string in reading order, plus the map back to their spans.
+def _assemble(relation, band: list[PlacedWord], box, height: float) -> Context:
+    """Words -> one string in reading order, plus the map back to their spans
+    and how far each sits from the candidate.
 
     Joined with single spaces regardless of what separated them on the page:
     the gap between two words is not evidence, and a run of OCR whitespace
-    would only make the strict test harder to satisfy for no reason.
+    would only make the strict test harder to satisfy for no reason. The
+    distance is kept per word rather than per band, because the engine picks
+    the NEAREST label and a band holds several.
     """
     words, parts, at = [], [], 0
     for word in band:
-        words.append(ContextWord(word.text, word.char_start, word.char_end, at))
+        words.append(
+            ContextWord(
+                word.text,
+                word.char_start,
+                word.char_end,
+                at,
+                _distance(word.box, box, height),
+            )
+        )
         parts.append(word.text)
         at += len(word.text) + 1
     return Context(relation, " ".join(parts), words=tuple(words))
+
+
+def _distance(word, box, height: float) -> float:
+    """Edge-to-edge distance between a word and the candidate, in line heights.
+
+    Edge to edge rather than centre to centre so the measure means the same
+    thing in both directions: for a label on the same line it is the whitespace
+    between them, for one overhead it is the leading. Centres would make a long
+    label read as far away merely for being long.
+    """
+    wx0, wy0 = word.left, word.top
+    wx1, wy1 = word.left + word.width, word.top + word.height
+    bx0, by0, bx1, by1 = box
+    dx = max(0, bx0 - wx1, wx0 - bx1)
+    dy = max(0, by0 - wy1, wy0 - by1)
+    return ((dx * dx + dy * dy) ** 0.5) / height if height else 0.0

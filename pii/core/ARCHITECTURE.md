@@ -268,6 +268,23 @@ They must stay separate because reading order flattens the page: with `unrelated
 `unrelated / 12345`, one flat concatenation puts the *value's own left-neighbour* between the
 label and the value and no strict test could pass.
 
+**Between bands, the NEAREST label wins** (Sergei, 2026-08-14) — measured edge to edge, in line
+heights. It is the rule already used *within* a band, where the label closest to the value is the
+one that introduces it, and a fixed left-then-above order contradicts it the moment a bogus left
+label outranks a good one directly overhead. Edge to edge rather than centre to centre so the
+measure means the same thing in both directions; a long label must not read as distant merely for
+being long. Where a layout supplies no geometry there is one band and no distances, and the
+tie-breaks reproduce plain reading order exactly — so text and CSV are untouched by the change.
+
+**A match that straddles a column is not one value.** `linearize` joins every word with a single
+space, so a 1400 px column gap and an ordinary word space are the same character and the
+separator classes in `recognizers.py` — bounded at 1-3 spaces precisely to stop two columns
+joining — cannot see the difference on this path at all. Geometry can, so `Layout.contiguous`
+rejects a span whose internal gap exceeds three line heights before it is scored. Found on a
+statement whose date range and enquiries phone matched as the account number `2022 133 174`: the
+gap inside that "value" was 34 line heights against a median word gap of 0.8. The check is the
+geometric sibling of the issue-#3 amount guard, which does the same job in text with a lookahead.
+
 **Two attachment strengths, so that no rule ended up weaker than before.** `NEAR` means a label
 is in a neighbourhood, and it boosts, exactly as the context word always did. `STRICT`
 additionally requires everything between label and value to be separators and fillers

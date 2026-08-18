@@ -145,3 +145,62 @@ def test_strict_attachment_over_a_page(rows, expected):
     page = _page(rows, gap=1.0)
     found = Analyzer([_Labelled()]).analyze(page.text, 0.4, PageLayout(page))
     assert bool([d for d in found if page.text[d.start : d.end] == "12345"]) is expected
+
+
+class _Phoneish(PatternRule):
+    entity = "TEST"
+    context = ("account", "enquir")
+    patterns = (Pattern("digits", r"\d{5,}", 0.15),)
+
+
+class _Grouped(PatternRule):
+    entity = "TEST"
+    context = ("account",)
+    patterns = (Pattern("grouped", r"\b\d{2,6}(?:[ -]\d{1,6}){1,3}\b", 0.15),)
+
+
+# ------------------------------------------------- nearest label wins
+
+
+def test_the_nearest_label_wins_across_bands():
+    """Left-then-above priority lets a bogus left label outrank a good one
+    directly overhead. On the specimen page the value's own column carried
+    `Enquiries` one line up while the line to its left carried a date range."""
+    page = _page([[(0, "Account Statement"), (400, "Enquiries")],
+                  [(0, "From 1 January 2022 to 30 June"), (400, "133174")]],
+                 gap=1.0)
+    found = Analyzer([_Phoneish()]).analyze(page.text, 0.4, PageLayout(page))
+    hit = next(d for d in found if page.text[d.start:d.end] == "133174")
+    assert hit.attachment.term == "Enquiries"
+    assert hit.attachment.relation == "above"
+
+
+def test_a_closer_left_label_still_beats_one_overhead():
+    """Nearest-wins is a distance rule, not a preference for `above`."""
+    page = _page([[(400, "Enquiries")],
+                  [(0, "Account"), (200, "12345")]], gap=1.0)
+    found = Analyzer([_Phoneish()]).analyze(page.text, 0.4, PageLayout(page))
+    hit = next(d for d in found if page.text[d.start:d.end] == "12345")
+    assert hit.attachment.relation == "left"
+    assert hit.attachment.term == "Account"
+
+
+# ------------------------------------------------- one value, one column
+
+
+def test_a_match_straddling_a_column_is_rejected():
+    """`linearize` joins every word with ONE space, so a column gap and a word
+    space are the same character and no separator class can tell them apart.
+    On the specimen page a date range and an enquiries phone matched as the
+    account number `2022 133 174` across a 34-line-height gap."""
+    page = _page([[(0, "Account to 30 June 2022"), (2000, "133 174")]])
+    found = Analyzer([_Grouped()]).analyze(page.text, 0.4, PageLayout(page))
+    assert [page.text[d.start:d.end] for d in found] == []
+
+
+def test_an_ordinary_word_space_inside_a_value_is_kept():
+    """The guard must not touch a value that is merely grouped: a printed space
+    is about 0.8 line heights against the three the check allows."""
+    page = _page([[(0, "Account"), (200, "133 174")]])
+    found = Analyzer([_Grouped()]).analyze(page.text, 0.4, PageLayout(page))
+    assert [page.text[d.start:d.end] for d in found] == ["133 174"]

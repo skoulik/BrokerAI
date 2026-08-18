@@ -248,12 +248,14 @@ class PatternRule(Rule):
 @dataclass(frozen=True)
 class ContextWord:
     """One word of a neighbourhood: its text, where it came from in the
-    analyzed string, and where it landed in the assembled neighbourhood."""
+    analyzed string, where it landed in the assembled neighbourhood, and how
+    far it sits from the candidate (edge to edge, in line heights)."""
 
     text: str
     start: int
     end: int
     at: int
+    distance: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -279,10 +281,25 @@ class Context:
         """Where `text[lo:hi]` came from in the analyzed string."""
         if self.origin is not None:
             return self.origin + lo, self.origin + hi
-        touched = [w for w in self.words if w.at < hi and lo < w.at + len(w.text)]
+        touched = self._touching(lo, hi)
         if not touched:
             return None
         return touched[0].start, touched[-1].end
+
+    def distance_at(self, lo: int, hi: int) -> float | None:
+        """How far `text[lo:hi]` sits from the candidate, in line heights.
+
+        None where the neighbourhood has no geometry (a contiguous cut of the
+        analyzed string), which is what makes nearest-label selection degrade
+        to the plain reading order those layouts already have.
+        """
+        touched = self._touching(lo, hi)
+        if not touched:
+            return None
+        return min(w.distance for w in touched)
+
+    def _touching(self, lo: int, hi: int) -> list[ContextWord]:
+        return [w for w in self.words if w.at < hi and lo < w.at + len(w.text)]
 
 
 class Layout(Protocol):
@@ -298,8 +315,19 @@ class Layout(Protocol):
     def contexts(self, start: int, end: int, word_floor: int) -> list[Context]:
         ...
 
+    def contiguous(self, start: int, end: int) -> bool:
+        ...
 
-class WindowLayout:
+
+class _NoGeometry:
+    """The `contiguous` half of `Layout` for a layout that has no pixels: it
+    cannot tell a field gap from a column gap, so it never rejects."""
+
+    def contiguous(self, start: int, end: int) -> bool:
+        return True
+
+
+class WindowLayout(_NoGeometry):
     """RETIRING: the flat 60-character lookback.
 
     Kept only so one corpus can be scored both ways while the geometric layout
@@ -319,7 +347,7 @@ class WindowLayout:
         return [Context(self.relation, self.text[lo:start], origin=lo)]
 
 
-class TextLayout:
+class TextLayout(_NoGeometry):
     """Left-only proximity for input with no geometry: plain text and CSV
     cells (Sergei, 2026-08-14 — "let's only [use] left proximity for text now").
 
@@ -382,6 +410,13 @@ class Analyzer:
         results: list[Detection] = []
         for rule in self.rules:
             found = rule.detect(text)
+            # A match that straddles a COLUMN is not one value. `linearize`
+            # joins every word with a single space, so a 1400 px gap between
+            # two printed columns and an ordinary word space are the same
+            # character and no separator class can tell them apart — only
+            # geometry can (2026-08-14: `From ... 30 June 2022` beside an
+            # enquiries phone matched as the account number `2022 133 174`).
+            found = [d for d in found if layout.contiguous(d.start, d.end)]
             if rule.context:
                 found = [d for d in found if _attach(d, rule, layout) is not False]
             results.extend(found)
@@ -399,55 +434,60 @@ def _attach(detection: Detection, rule: Rule, layout: Layout):
     strict = rule.strength(detection.pattern) == STRICT
     if detection.score >= MAX_SCORE and not strict:
         return None
-    for context in layout.contexts(detection.start, detection.end, rule.label_words):
-        found = _nearest_label(context.text, rule.label_pattern)
-        if found is None:
-            continue
-        term, at, after = found
-        if strict and not gap_is_clean(context.text[after:]):
-            continue
-        span = context.source_span(at, after)
-        detection.attachment = Attachment(
-            term=term,
-            relation=context.relation,
-            start=span[0] if span else None,
-            end=span[1] if span else None,
+    best = None
+    for order, context in enumerate(
+        layout.contexts(detection.start, detection.end, rule.label_words)
+    ):
+        for term, at, after in _label_candidates(context.text, rule.label_pattern):
+            if strict and not gap_is_clean(context.text[after:]):
+                continue
+            distance = context.distance_at(at, after)
+            # NEAREST wins, across bands and not only within one (Sergei,
+            # 2026-08-14). It is the rule already used inside a band — the
+            # label closest to the value is the one that introduces it — and a
+            # fixed left-then-above order contradicts it the moment a bogus
+            # left label outranks a good one directly overhead. Where a layout
+            # supplies no geometry there is one band and no distance, and the
+            # tie-breaks below reproduce the old reading order exactly.
+            key = (0 if distance is None else 1, distance or 0.0, -at, order)
+            if best is None or key < best[0]:
+                best = (key, context, term, at, after)
+    if best is None:
+        return False if strict else None
+    _, context, term, at, after = best
+    span = context.source_span(at, after)
+    detection.attachment = Attachment(
+        term=term,
+        relation=context.relation,
+        start=span[0] if span else None,
+        end=span[1] if span else None,
+    )
+    # A STRICT pattern is GATED by its label, not promoted by it: the
+    # attachment is the evidence its declared score already prices in.
+    # Boosting as well would double-count it, and — the reason this
+    # matters — it is what lets a lookbehind become a STRICT pattern
+    # without changing a single score (2026-08-14).
+    if not strict:
+        detection.score = min(
+            max(detection.score + CONTEXT_BOOST, CONTEXT_FLOOR), MAX_SCORE
         )
-        # A STRICT pattern is GATED by its label, not promoted by it: the
-        # attachment is the evidence its declared score already prices in.
-        # Boosting as well would double-count it, and — the reason this
-        # matters — it is what lets a lookbehind become a STRICT pattern
-        # without changing a single score (2026-08-14).
-        if not strict:
-            detection.score = min(
-                max(detection.score + CONTEXT_BOOST, CONTEXT_FLOOR), MAX_SCORE
-            )
-        return detection.attachment
-    return False if strict else None
+    return detection.attachment
 
 
-def _nearest_label(text: str, pattern) -> tuple[str, int, int] | None:
-    """The label occurrence CLOSEST to the value: (text, start, word end).
-
-    Rightmost wins because the nearest label owns the value: on
-    `BSB 013 795 Account 12345678` the account number's band carries both, and
-    only one of them introduces it.
+def _label_candidates(text: str, pattern):
+    """Every label occurrence in a neighbourhood: (text, start, word end).
 
     The third element is where the label's own WORD ends, which is where the
-    gap begins. It is not the end of the match: a spelling may be a stem
-    (`afs lic` matching `AFS Licence`, `enquir` matching `Enquiries`), and
-    measuring the gap from the middle of the label's own word would leave
+    gap to the value begins. It is not the end of the match: a spelling may be
+    a stem (`afs lic` matching `AFS Licence`, `enquir` matching `Enquiries`),
+    and measuring the gap from the middle of the label's own word would leave
     `ence` sitting in it and fail every strict test.
     """
-    last = None
     for match in pattern.finditer(text):
-        last = match
-    if last is None:
-        return None
-    at, end = last.span()
-    while end < len(text) and text[end].isalnum():
-        end += 1
-    return text[at:end], at, end
+        at, end = match.span()
+        while end < len(text) and text[end].isalnum():
+            end += 1
+        yield text[at:end], at, end
 
 
 def _dedupe(results: list[Detection]) -> list[Detection]:

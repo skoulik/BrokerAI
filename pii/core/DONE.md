@@ -2817,3 +2817,61 @@ the move; new completed tasks append to the matching section with their records.
       Fast suite 619 passed. Accepted residual, named because it needs a specific layout rather
       than being hypothetical: a two-column line whose LEFT column ENDS in a label word, beside
       a right-column value with fewer than `word_floor` words before it, still attaches.
+
+- [x] **The nearest label wins, and a match that straddles a column is not one value**
+      *(Sergei, 2026-08-14, on `statement.pdf` p2 — "the 'above' would've been a better match as
+      the 'left'")*. Two refinements to the attachment work committed the same day, both from
+      one page.
+
+      **What the page does.** Two columns: `Macquarie Transaction Account Statement` over
+      `From 1 January 2022 to 30 June 2022` on the left, `Enquiries` over `133 174` on the
+      right. Layer 1 matched **`2022 133 174`** as one grouped account number — the year of the
+      date range plus the enquiries phone — and promoted it off `Account`, which sits above the
+      LEFT half of that span. Measured: the gap inside the "value" is **1411 px against a median
+      word gap of 33 px on that line, and a line height of 42** — 34 line heights.
+
+      **Nearest wins, across bands** (Sergei's call; I had left-priority from his earlier
+      instruction and asked whether this changed it). It is the rule already used *within* a
+      band — the closest label is the one that introduces the value — and a fixed left-then-above
+      order contradicts it as soon as a bogus left label outranks a good one overhead. Distance
+      is edge to edge in line heights, kept per WORD rather than per band because a band holds
+      several labels; centre-to-centre would make a long label read as distant merely for being
+      long. Where a layout has no geometry there is one band and no distances, and the
+      tie-breaks reproduce plain reading order — so text and CSV are untouched. Measured over
+      the corpus and the specimen pages: **zero detection differences**, which is the expected
+      shape of the change. It alters which label is CREDITED, and on the real pages that is
+      visibly better — `13 22 66 <- left 'Enquiries'` where the window had credited a credit
+      card's `Number`, and `13 33 22 <- left 'Phone'`.
+
+      **`Layout.contiguous` rejects a span whose internal gap exceeds three line heights.** The
+      deeper finding is why no existing guard could have caught this: `linearize` joins every
+      word with ONE space, so the separator classes in `recognizers.py` — bounded at 1-3 spaces
+      in 2026-08-12 precisely to stop two columns joining into one candidate — are structurally
+      blind on the OCR path. A column gap and a word space are the same character. Only geometry
+      knows, so the check lives with the layout and runs before scoring. The constant is not
+      delicate: a printed space is 0.8 line heights and the specimen's column jump was 34.
+
+      Considered and rejected: making `linearize` emit gap-proportional whitespace so the
+      existing `{1,3}` guards start working by themselves. It would change the page string that
+      every offset, needle and layer-0 text pass is built on, for a fix a span-level predicate
+      makes without touching anything.
+
+      **What it did NOT fix**, stated because it looks like it should have: the phone `133 174`
+      is still undetected on that page. libphonenumber never offers it as a candidate while the
+      preceding `2022 ` is glued to it — the same refusal that hid `13 22 66 8am-8pm` on the
+      Amplify statement — so there is no candidate for the geometry to rescue. Layer 0 covers it
+      in a full run.
+
+      Dual coverage: four tests in `test_layout.py` (nearest wins across bands; a closer LEFT
+      label still beating one overhead, so the rule is distance and not a new preference; a
+      straddling match rejected; an ordinary word space kept). Corpus: `YEAR_ACROSS_COLUMN`, a
+      keep-probe left column ENDING in a number beside a right column BEGINNING with one — the
+      geometric sibling of the existing `AMOUNT_COLUMN` probe, which guards the same failure in
+      text with a lookahead. Verified on a rendered, OCR'd corpus page:
+
+          window  YEAR_ACROSS_COLUMN       2022    STRIPPED   (the bug)
+          layout  YEAR_ACROSS_COLUMN       2022    kept
+          window  REFERENCE_ACROSS_COLUMN  794022  STRIPPED
+          layout  REFERENCE_ACROSS_COLUMN  794022  kept
+
+      Fast suite 623 passed.

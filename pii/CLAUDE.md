@@ -62,6 +62,12 @@ items move to [core/DONE.md](core/DONE.md) with their records.
 - **The left band is a word COUNT, not a distance.** Measured: the true label sat 462 px from
   its value and the false promoter 748 px from its own, so no threshold separates them — word
   counts do. It is derived per rule from that rule's own longest label; never make it global.
+- **Between bands the NEAREST label wins**, edge to edge in line heights — the same rule already
+  used within a band, where the closest label is the one that introduces the value. A fixed
+  left-then-above order lets a bogus left label outrank a good one directly overhead.
+- **A match that straddles a column is not one value.** `linearize` joins words with ONE space,
+  so every separator class in `recognizers.py` is blind to a column gap on the OCR path;
+  `Layout.contiguous` is what sees it. Never re-derive that guard from the assembled string.
 - **The `above` band selects detection REGIONS, not words.** Per-word x-overlap contributes only
   the word directly overhead, so `Account Number` above a short value degrades to `Account` and
   a wrapped licence label never assembles.
@@ -82,9 +88,10 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   evidence, and a fixed-width statement field printed `SK BUSINESS TRUST` as `SK BUSINESS TRUS`,
   destroying the evidence while keeping the identifying name — kept three times on one page
   (2026-08-11). A mangled fragment cannot fake presence on a list someone wrote down.
-- **A label is evidence, not part of the value.** Labeled identifier patterns match the label
-  as a LOOKBEHIND. A span covering "TFN: 123 456 782" keys the pseudonym map on a different
-  string than a bare occurrence of the same TFN, forking one identifier into TFN_1 and TFN_2.
+- **A label is evidence, not part of the value.** A labelled pattern matches the value's SHAPE
+  and nothing else; the label lives in `context` and is attached by the engine (it was a regex
+  lookbehind until 2026-08-14, same rule). A span covering "TFN: 123 456 782" keys the pseudonym
+  map on a different string than a bare occurrence, forking one identifier into TFN_1 and TFN_2.
 - **Layer 1 must not import torch — nor anything that does.** Nothing in the strip path may
   pull in spaCy/thinc/presidio (thinc imports real torch eagerly). This is not hygiene: the
   paddle-GPU wheel cannot share a Windows process with torch, and OCR runs in-process now that

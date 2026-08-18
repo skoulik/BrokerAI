@@ -116,6 +116,16 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
         "REFERENCE_ACROSS_COLUMN",
         strip_expected=False,
     ).nl(2)
+    # 3. The geometric sibling of the AMOUNT_COLUMN probe: a left column ENDING
+    #    in a number beside a right column BEGINNING with one. `linearize` joins
+    #    them with a single space, so a grouped pattern reads `2022 133 174` as
+    #    one account number spanning two columns — a value printed nowhere on
+    #    the page (found on a real statement, 2026-08-14). The year must
+    #    survive; only geometry can reject the join, so this is an image-tier
+    #    probe and a known text-tier over-strip.
+    doc.raw("Account enquiries to 30 June ")
+    doc.pii(str(year), "YEAR_ACROSS_COLUMN", strip_expected=False).pad_to(60)
+    doc.raw(f"{rng.randrange(100, 1000)} {rng.randrange(100, 1000)}").nl(2)
 
     balance = round(rng.uniform(100, 90000), 2)
     for page in range(1, pages + 1):
