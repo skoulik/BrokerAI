@@ -298,7 +298,8 @@ def _report_repair(reports, file=None) -> None:
     file = file if file is not None else sys.stderr
     print(
         f"text layer: {total.repaired} OCR reading(s) repaired, "
-        f"{total.agreed} confirmed, of {total.words} word(s)",
+        f"{total.relocated} box(es) corrected, {total.agreed} confirmed, "
+        f"of {total.words} word(s)",
         file=file,
     )
     refused = [n for n, report in enumerate(reports, 1) if report.disabled]

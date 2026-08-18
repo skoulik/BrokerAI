@@ -1667,6 +1667,69 @@ the move; new completed tasks append to the matching section with their records.
       [TODO.md](TODO.md); covered meanwhile by 23 pytest cases, one per gate plus the
       end-to-end pair through `strip_pdf`.
 
+- [x] **A confirmed pair lends its BOX, not only its characters** *(2026-08-18, same day, found
+      by Sergei on the shipped feature: "on ServletRetrieve p1 footer, the ACLN is misaligned
+      after L1 output")*. Design in [ARCHITECTURE.md](ARCHITECTURE.md); `_lendable` in
+      `pii/core/text_layer.py`.
+
+      **It was a leak, not a misalignment.** The painted box for the credit licence number
+      started at its LAST digit: `24461` stayed readable in the output and `GPO BO` of the
+      address was destroyed instead. Coverage of the value's own ink: **24.5%**.
+
+      **The drift is per detection REGION, not per line, and that is what shaped the fix.**
+      Shifts of the OCR word boxes against the text layer along p1's footer line: 10, 22, 24,
+      26, 30, 34, 42, 49, 56, 74, 77, 89, **95** (the licence number, whose own width is 110),
+      111, 115, 129, 139, 141, 148, 158. On a transaction row they run 12, 12, 16, 44, 93, 139
+      and then **reset to 12** — because `_rows` bands several paddle regions into one visual
+      row and each region has its own origin with its fragments stretched inside it. That reset
+      is why the region became the bound on how far a lent box may travel.
+
+      **Corpus-wide effect** (11 statements, first 2 pages, painted spans measured against the
+      text layer's own boxes as ground truth):
+
+      | | before | after |
+      |---|---|---|
+      | spans covering <90% of their value's ink | 6 | 0 |
+      | spans over-painting by >4 characters | 0 | 0 |
+
+      The 6 were: the credit licence at 24.5%, an account number at 37.2%, a BSB at 50.0%, two
+      spans at 77.4%, and one artefact of the metric (a Medicare number printed VERTICALLY as a
+      page-edge stripe, where comparing horizontal extents is meaningless — the value is
+      correctly painted, and it is unchanged before and after).
+
+      **Correcting the geometry cannot cost a detection** — checked, because `PageLayout`'s
+      label bands read the same word boxes, so this moves layer 1's attachment inputs and not
+      only the paint. A/B over the corpus with the boxes corrected and not, OCR run once and
+      repaired twice: **0 detections lost, 0 gained.** Two spans on `ServletRetrieve` p2 change
+      score (0.90 -> 0.55) because `Repayment` is no longer directly above `000731114` once the
+      boxes are right — the honest answer on true geometry, and both stay well above threshold.
+
+      **Three wrong turns, each caught by measurement rather than review:**
+
+      1. *Gating a lent box on horizontal overlap.* Circular: overlap is the identity evidence
+         for a CHARACTER substitution, and on the words worth relocating it fails — `244616.`
+         overlaps its own true box by 0.25 against a 0.3 gate. Geometry cannot be both the
+         evidence and the thing being corrected. Identity comes from the alignment and the
+         reading instead, with vertical agreement and region containment as the guards.
+      2. *Testing region containment by AREA.* A detection region is glyph-tight vertically
+         while a text-layer box is a glyph ADVANCE box with room for the descender, so an area
+         test scored 0.86 against a 0.9 gate and refused the correct lending — the licence
+         number stayed unpainted through the first version of the fix. Containment is measured
+         horizontally, which is the axis the drift is on.
+      3. *Leaving merges on their original coordinates.* A 1:N merge repairs no characters, so
+         the first cut lent it no box either — which put two coordinate systems on one line. A
+         lent box then started INSIDE an unlent neighbour, and `painted_boxes_for_span`'s
+         midpoint pull-back (which assumes non-overlapping words) let one span over-paint
+         `Repayment(from` by **217 px**. Fixed by lending the union extent: which characters
+         belong where is unestablished, the extent is not.
+
+      Also considered and rejected: a per-line affine fit of OCR x against text-layer x, as a
+      consistency check. Fitting on box CENTRES looked catastrophic (max residual 436 px) until
+      it turned out to be an artefact of leader dots and dropped `$` glyphs skewing the centre;
+      on LEFT EDGES the whole corpus fits within 0.9 word-widths and 95% within 0.15. So the
+      check would have rejected almost nothing while adding a fitted parameter — and the two
+      lines it would have rejected are exactly the ones carrying the BSB and the account number.
+
 ## Evaluation
 
 - [x] **Tier 1 — synthetic corpus, text tier** (image tier iteration 1 below; degradation

@@ -20,6 +20,7 @@ from pii.core.ocr import Box
 from pii.core.ocr_page import FontSpec, OcrFrame, OcrLine, OcrWord, OcrPage
 from pii.core.text_layer import (
     TextWord,
+    _overlaps,
     page_text_words,
     repair_page,
 )
@@ -143,11 +144,12 @@ def test_repairs_a_letter_read_for_a_digit():
     assert report.agreed == 2
 
 
-def test_a_repair_changes_characters_and_nothing_else():
-    """Boxes, region boxes and the word COUNT are what painting, the source map
-    and the pseudonym map are built from. Repair runs before `linearize`
-    precisely so none of them has to be remapped — which only holds if it never
-    touches them."""
+def test_a_repair_keeps_the_same_words_in_the_same_order():
+    """The word COUNT, the order and the REGION box are what painting, the
+    source map and the pseudonym map are built from. Repair runs before
+    `linearize` precisely so none of them has to be remapped — which only holds
+    if it never touches them. (The word's own box may move; that is
+    `_lendable`, tested below.)"""
     page = _page([[("O18057571", ACCOUNT), ("paid", Box(240, 40, 50, 20))]])
     repaired, _ = repair_page(
         page, _words(("018057571", ACCOUNT), ("paid", Box(240, 40, 50, 20))),
@@ -156,8 +158,8 @@ def test_a_repair_changes_characters_and_nothing_else():
     before = [w for line in page.lines for w in line.words]
     after = [w for line in repaired.lines for w in line.words]
     assert len(before) == len(after)
-    assert [w.box for w in before] == [w.box for w in after]
-    assert [w.region for w in before] == [w.region for w in after]
+    assert [w.text for w in after] == ["018057571", "paid"]
+    assert [w.region_box for w in before] == [w.region_box for w in after]
 
 
 def test_repaired_text_reaches_the_linearized_page():
@@ -437,3 +439,122 @@ def test_strip_pdf_text_repair_off_leaves_the_damage(
     assert "O18057571" in page_result.ocr.text
     assert page_result.repair.words == 0
     assert page_result.spans == []
+
+
+# --- lending the box, not only the characters ---
+
+# A drifted line: the OCR read every word correctly but boxed each one further
+# right than the last, all inside ONE detection region. The measured shape on
+# `ServletRetrieve (6).pdf` p1, scaled down — shifts there ran 10, 22, ..., 158
+# along the footer and reset to 12 at the next region.
+REGION = Box(100, 40, 500, 20)
+
+
+def _drifted_page(texts, shifts):
+    words = tuple(
+        OcrWord(text=text, box=Box(100 + 80 * i + shift, 40, 70, 20),
+                region_box=REGION)
+        for i, (text, shift) in enumerate(zip(texts, shifts))
+    )
+    line = OcrLine(text=" ".join(texts), box=REGION, words=words)
+    return OcrPage(frame=OcrFrame(width=800, height=200, page=1),
+                   lines=(line,))
+
+
+def _true_words(texts):
+    return tuple(
+        TextWord(text=text, box=Box(100 + 80 * i, 40, 70, 20))
+        for i, text in enumerate(texts)
+    )
+
+
+def test_a_confirmed_pair_lends_its_box():
+    """The case Sergei found: OCR reads the credit licence number correctly and
+    boxes it a word to the right, so the painted box covers 24.5% of its digits
+    and destroys the address beside it instead. A paddle word box is an
+    estimate; a text-layer box is where the renderer drew the glyphs."""
+    texts = ["AUSTRALIAN", "CREDIT", "LICENCE", "244616."]
+    page = _drifted_page(texts, [10, 40, 70, 95])
+    repaired, report = repair_page(page, _true_words(texts))
+
+    assert [w.box for w in repaired.lines[0].words] == [
+        t.box for t in _true_words(texts)
+    ]
+    assert report.relocated == 4
+    assert report.repaired == 0  # every reading was already right
+
+
+def test_the_horizontal_gate_is_not_applied_to_lending():
+    """A word drifted by MORE than its own width overlaps its true box by less
+    than the character gate allows — 0.25 for `244616.`. Geometry cannot be both
+    the evidence for identity and the thing being corrected, so identity comes
+    from the alignment and the reading."""
+    page = _drifted_page(["ABN", "244616."], [0, 95])
+    repaired, _ = repair_page(page, _true_words(["ABN", "244616."]))
+
+    moved = repaired.lines[0].words[1]
+    assert moved.box.left == 180  # the true position, not 275
+    assert _overlaps(Box(275, 40, 70, 20), moved.box) is False
+
+
+def test_a_box_may_not_leave_its_own_detection_region():
+    """The bound on how far a correction may travel. The drift is a stretch
+    INSIDE a paddle detection region — shifts reset at the next one — so the
+    region is exactly the distance a lent box may move, and nothing can fly
+    across the page."""
+    page = _drifted_page(["ABN", "244616."], [0, 95])
+    far = (TextWord("ABN", Box(100, 40, 70, 20)),
+           TextWord("244616.", Box(1400, 40, 70, 20)))
+    repaired, report = repair_page(page, far)
+
+    assert repaired.lines[0].words[1].box.left == 275  # unchanged
+    assert report.relocated == 0  # and 'ABN' was already where it belongs
+
+
+def test_a_partner_on_another_row_lends_nothing():
+    """Vertical agreement is the identity check the drift does not break: the
+    error being corrected is horizontal, so a partner on a different printed row
+    is a mis-assignment rather than a drift."""
+    page = _drifted_page(["ABN", "244616."], [0, 0])
+    other_row = (TextWord("ABN", Box(100, 40, 70, 20)),
+                 TextWord("244616.", Box(180, 140, 70, 20)))
+    repaired, _ = repair_page(page, other_row)
+
+    assert repaired.lines[0].words[1].box.top == 40
+
+
+def test_a_merge_lends_its_union_but_not_its_characters():
+    """OCR read one token where the text layer has two. Which characters belong
+    where is not established, so the reading stands — but the EXTENT is exactly
+    established, and leaving the merge on drifted coordinates while its
+    neighbours move puts two coordinate systems on one line: a lent box then
+    starts inside an unlent one, which over-painted a neighbouring word by
+    217 px on a real page."""
+    region = Box(100, 40, 800, 20)
+    words = (
+        OcrWord("Repayment(from", Box(300, 40, 360, 20), region),
+        OcrWord("944600", Box(700, 40, 140, 20), region),
+    )
+    page = OcrPage(
+        frame=OcrFrame(width=1000, height=200, page=1),
+        lines=(OcrLine(text="Repayment(from 944600",
+                       box=Box(100, 40, 800, 20), words=words),),
+    )
+    repaired, report = repair_page(page, (
+        TextWord("Repayment", Box(280, 40, 200, 20)),
+        TextWord("(from", Box(490, 40, 100, 20)),
+        TextWord("944600", Box(600, 40, 140, 20)),
+    ))
+
+    merged = repaired.lines[0].words[0]
+    assert merged.text == "Repayment(from"  # characters untouched
+    assert (merged.box.left, merged.box.right) == (280, 590)  # union extent
+    assert repaired.lines[0].words[1].box.left == 600
+    assert report.repaired == 0
+    assert report.relocated == 2
+
+
+def test_a_word_the_text_layer_never_saw_keeps_its_own_box():
+    page = _drifted_page(["ABN", "logo"], [0, 95])
+    repaired, _ = repair_page(page, (TextWord("ABN", Box(100, 40, 70, 20)),))
+    assert repaired.lines[0].words[1].box.left == 275

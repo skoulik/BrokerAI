@@ -15,11 +15,12 @@ source **constrained by OCR geometry, never an independent detection source**
 Only a word the OCR already saw is repaired, only where positionally matched
 and similar, and a word the OCR missed is never added.
 
-**A repair changes a word's CHARACTERS and nothing else** — not its box, not
-its `region_box`, not how many words the page has. Repair runs at the `OcrPage`
-word level, BEFORE `linearize`, so the source map is built from repaired words
-and offsets, boxes, painting and the pseudonym map stay consistent by
-construction, with no remapping anywhere.
+**A repair keeps the same words in the same order**, with the same
+`region_box`; a word's `text` and its `box` are what may change, and they change
+on separate evidence. Repair runs at the `OcrPage` word level, BEFORE
+`linearize`, so the source map is built from repaired words and offsets, boxes,
+painting and the pseudonym map stay consistent by construction, with no
+remapping anywhere.
 
 What "matches" means is the whole feature; the gates and the measurements
 behind each of them are in core/ARCHITECTURE.md, and the corpus numbers in
@@ -48,6 +49,15 @@ different revision, another tool's OCR baked in) disables repair for THAT PAGE.
 It counts gate 4 alone — a pair refused by 5, 6 or 7 is a good correspondence
 we decline to act on, and holding those against the layer would disable repair
 on a page whose only problem is that OCR interpolated some boxes.
+
+**The BOX is corrected too, and on its own gates** (`_lendable`): a paddle word
+box is a stochastic estimate, a text-layer box is where the renderer drew the
+glyphs. The two corrections are independent because their common cases are
+disjoint — the reading `O18057571` is wrong where its box is right, and the
+reading `244616.` is right where its box is a word off, which painted 24.5% of
+a credit licence number and destroyed the address beside it. Gate 6 explicitly
+does NOT apply to a box; gates 5, plus vertical agreement and containment in
+the word's own detection region, do.
 
 The same pairing fills `OcrWord.font` / `OcrLine.font`, which no OCR engine can
 supply. Font is RENDER-ONLY (pii.core.paint draws a placeholder in the face it
@@ -92,6 +102,12 @@ _MERGE_MAX = 4
 # leader dots (measured f_ocr=1.00, f_txt=0.06).
 _MIN_OVERLAP = 0.3
 
+# Lending a box: the two axes that are not broken by the drift being corrected
+# (see `_lendable`) — the boxes must agree vertically, and the lent box must sit
+# this far inside the OCR word's own detection region, measured horizontally.
+_LEND_V_OVERLAP = 0.5
+_LEND_IN_REGION = 0.9
+
 # The page-level guard: with at least this many aligned pairs, this fraction of
 # them must survive the similarity gate or the text layer is not describing
 # these pixels and the page is left to the OCR alone. No specimen in the
@@ -127,6 +143,7 @@ class RepairReport:
     paired: int = 0  # aligned to a text-layer word
     agreed: int = 0  # ...of those, within the similarity budget
     repaired: int = 0  # ...of those, whose reading actually changed
+    relocated: int = 0  # ...of those, whose BOX moved to the text layer's
     disabled: bool = False
 
     def __bool__(self) -> bool:
@@ -140,6 +157,7 @@ class RepairReport:
             paired=self.paired + other.paired,
             agreed=self.agreed + other.agreed,
             repaired=self.repaired + other.repaired,
+            relocated=self.relocated + other.relocated,
             disabled=self.disabled or other.disabled,
         )
 
@@ -187,11 +205,16 @@ def repair_page(
 ) -> tuple[OcrPage, RepairReport]:
     """Repair `page`'s readings from `words`, and attribute their fonts.
 
-    Returns a new page whose words carry the same boxes in the same order —
-    only `text`, `font` and `source` can differ — plus the report. With no text
-    layer, or with the page-level guard fired, the page comes back untouched
-    (every word `SOURCE_OCR`) and nothing downstream can tell repair was
-    available.
+    Returns a new page whose words are the same words in the same order, with
+    the same `region_box` — `text`, `box`, `font` and `source` can differ —
+    plus the report. With no text layer, or with the page-level guard fired,
+    the page comes back untouched (every word `SOURCE_OCR`) and nothing
+    downstream can tell repair was available.
+
+    Characters and boxes travel on SEPARATE gates (`_repairable` / `_lendable`)
+    because they are corrected against different evidence and the common cases
+    are disjoint: the reading `O18057571` is wrong where its box is right, and
+    the reading `244616.` is right where its box is a word off.
     """
     total = sum(len(line.words) for line in page.lines)
     if not words or not total:
@@ -208,17 +231,15 @@ def repair_page(
     # geometry or its extent is a good correspondence we decline to act on,
     # and counting those against the layer would disable repair on a page
     # whose only problem is that OCR interpolated some boxes.
-    matches: list[list[tuple[int, int, bool]]] = []
+    matches: list[list[tuple[int, TextWord, bool, bool]]] = []
     paired = agreed = 0
     for index, line in enumerate(page.lines):
         line_matches = []
-        for word_index, text_index, single in _matches(line, buckets[index], words):
+        for word_index, partner, single in _matches(line, buckets[index], words):
             paired += 1
-            same = single and _same_reading(
-                line.words[word_index], words[text_index]
-            )
+            same = _same_reading(line.words[word_index], partner)
             agreed += same
-            line_matches.append((word_index, text_index, same))
+            line_matches.append((word_index, partner, single, same))
         matches.append(line_matches)
 
     if paired >= _PAGE_MIN_PAIRS and agreed < _PAGE_MIN_AGREEMENT * paired:
@@ -226,35 +247,47 @@ def repair_page(
             words=total, paired=paired, agreed=agreed, disabled=True
         )
 
-    repaired = 0
+    repaired = relocated = 0
     lines = []
     for line, line_matches in zip(page.lines, matches):
         replacements = {}
-        for word_index, text_index, ok in line_matches:
-            word, other = line.words[word_index], words[text_index]
-            # Font rides the same pairing, but not the similarity gate: it is
-            # cosmetic, adjacent words share a face, and a word whose reading
-            # we declined to trust still sits in the span that describes it.
-            if not _overlaps(word.box, other.box):
+        for word_index, other, single, ok in line_matches:
+            word = line.words[word_index]
+            # Same printed row is the whole gate for FONT: it is cosmetic,
+            # adjacent words share a face, and a word whose reading we declined
+            # to trust still sits in the span that describes it. Deliberately
+            # NOT the horizontal gate — that would deny a face to exactly the
+            # drifted words this loop is here to relocate.
+            if _v_overlap(word.box, other.box) < _LEND_V_OVERLAP:
                 continue
-            # Identical readings are marked `agreed` whatever the repair gates
-            # say: nothing is being substituted, so the gates that guard a
+            # The box travels on its own gates (`_lendable`), not the
+            # character ones: a word whose reading needs no repair can still
+            # need relocating, and that is the common case — the OCR read
+            # `244616.` correctly and boxed it a word to the right.
+            box = word.box
+            if ok and _lendable(word, other):
+                box = other.box
+                relocated += box != word.box
+            # Identical readings are marked `agreed` whatever the CHARACTER
+            # gates say: nothing is being substituted, so the gates that guard a
             # substitution have no bearing on them. A pair that agrees but
             # DIFFERS and is then refused stays `ocr` — we declined the text
             # layer's opinion there, and the overlay should not claim
             # otherwise.
             if ok and word.text == other.text:
                 replacements[word_index] = replace(
-                    word, font=other.font, source=SOURCE_AGREED
+                    word, box=box, font=other.font, source=SOURCE_AGREED
                 )
-            elif ok and _repairable(word, other):
+            elif ok and single and _repairable(word, other):
                 repaired += 1
                 replacements[word_index] = replace(
-                    word, text=other.text, font=other.font,
+                    word, text=other.text, box=box, font=other.font,
                     source=SOURCE_TEXT,
                 )
             else:
-                replacements[word_index] = replace(word, font=other.font)
+                replacements[word_index] = replace(
+                    word, box=box, font=other.font
+                )
         if not replacements:
             lines.append(line)
             continue
@@ -274,7 +307,8 @@ def repair_page(
     return (
         replace(page, lines=tuple(lines)),
         RepairReport(
-            words=total, paired=paired, agreed=agreed, repaired=repaired
+            words=total, paired=paired, agreed=agreed, repaired=repaired,
+            relocated=relocated,
         ),
     )
 
@@ -315,20 +349,43 @@ def _v_overlap(a: Box, b: Box) -> float:
 
 
 def _matches(line: OcrLine, bucket: list[int], words: tuple[TextWord, ...]):
-    """Yield `(word_index, text_index, single)` for one line.
+    """Yield `(word_index, partner, single)` for one line, where `partner` is a
+    `TextWord` — the aligned one, or the pieces of a merge combined.
 
-    `single` marks a 1:1 match — the only kind a repair may act on. A run of
-    text words aligned to one OCR word is reported with `single` False on its
-    FIRST piece: the correspondence is real (it keeps the rest of the line in
-    step) but OCR read those pixels as one token and the text layer as several,
-    so which characters belong where is exactly what is not established.
+    `single` marks a 1:1 match, and it gates the CHARACTERS only. Where OCR read
+    one token and the text layer has several, which characters belong where is
+    not established — but the EXTENT is exactly established, it is the union of
+    those pieces, so a merge still lends its box. Leaving merges on their
+    original coordinates while their neighbours move is worse than either: it
+    puts two coordinate systems on one line, and a lent box then starts inside
+    an unlent one, which is how a span came to over-paint a neighbouring word by
+    217 px in the first cut of box lending.
     """
     if not bucket or not line.words:
         return
     ocr_texts = [w.text for w in line.words]
     text_texts = [words[index].text for index in bucket]
     for word_index, run in _align(ocr_texts, text_texts):
-        yield word_index, bucket[run[0]], len(run) == 1
+        pieces = [words[bucket[index]] for index in run]
+        yield word_index, _combined(pieces), len(run) == 1
+
+
+def _combined(pieces: list[TextWord]) -> TextWord:
+    """One or more aligned text words as a single partner: their readings joined
+    (OCR saw no space between them, or it would have split them too) over their
+    union extent, carrying the first piece's face."""
+    if len(pieces) == 1:
+        return pieces[0]
+    return TextWord(
+        text="".join(p.text for p in pieces),
+        box=Box(
+            left=min(p.box.left for p in pieces),
+            top=min(p.box.top for p in pieces),
+            width=max(p.box.right for p in pieces) - min(p.box.left for p in pieces),
+            height=max(p.box.bottom for p in pieces) - min(p.box.top for p in pieces),
+        ),
+        font=pieces[0].font,
+    )
 
 
 def _align(a: list[str], b: list[str]) -> list[tuple[int, list[int]]]:
@@ -429,6 +486,55 @@ def _same_reading(word: OcrWord, other: TextWord) -> bool:
     return distance(left, right, ceiling=budget, costs=CONFUSION_COSTS) <= budget
 
 
+def _lendable(word: OcrWord, other: TextWord) -> bool:
+    """Whether a confirmed pair may lend its BOX as well as its characters.
+
+    A paddle word box is a stochastic estimate; a text-layer box is the
+    typesetting geometry — where the renderer actually drew the glyphs — so
+    where the two disagree about position, the text layer is right. Measured on
+    `ServletRetrieve (6).pdf` p1 the OCR boxes drift rightwards *within a
+    detection region*, up to 185 px (more than a word width): the painted box
+    for the credit licence number covered 24.5% of its digits and destroyed a
+    chunk of the address instead, and an account number was painted at 37%.
+    Both are partial paints, which is to say leaks.
+
+    **The horizontal overlap gate deliberately does NOT apply here.** It is the
+    evidence `_repairable` uses for identity, and on exactly the words worth
+    relocating it fails — `244616.` overlaps its own true box by 0.25. Geometry
+    cannot be both the evidence and the thing being corrected, so identity comes
+    from the alignment and the reading, and the guards here are the two axes
+    that are NOT broken:
+
+    - **vertically**, the boxes must agree — the drift is horizontal, so a
+      partner on another printed row is a mis-assignment, not a drift;
+    - **horizontally**, the lent box must stay inside the OCR word's own
+      DETECTION REGION. That is the rectangle paddle actually found on the
+      pixels, and the drift is a stretch *inside* it (shifts along one region
+      run 12, 16, 44, 93, 139 and then reset to 12 at the next region), so the
+      region is exactly the distance a correction may legitimately travel and a
+      box can never fly across the page.
+
+    The extent gate applies here MORE than to characters: lending the box of a
+    text word carrying thirty leader dots would over-paint the rest of the line.
+    """
+    if not _same_extent(word, other):
+        return False
+    if _v_overlap(word.box, other.box) < _LEND_V_OVERLAP:
+        return False
+    # HORIZONTALLY inside, not by area: the drift is horizontal, so that is
+    # the axis on which "how far may a correction travel" is the question, and
+    # the vertical is already answered above. A detection region is glyph-tight
+    # vertically while a text-layer box is a glyph ADVANCE box with room for the
+    # descender, so an area test fails a correct lending on two pixels of
+    # overhang — which is how the credit licence number stayed unpainted the
+    # first time this gate was written.
+    region = word.region
+    inside = max(
+        0, min(other.box.right, region.right) - max(other.box.left, region.left)
+    )
+    return inside >= _LEND_IN_REGION * max(other.box.width, 1)
+
+
 def _repairable(word: OcrWord, other: TextWord) -> bool:
     """Whether a pair that agrees may actually be acted on: same place, same
     extent, and a reading fit to substitute.
@@ -443,10 +549,24 @@ def _repairable(word: OcrWord, other: TextWord) -> bool:
     are on the page. A repair changes what a token SAYS, never how much of the
     page it covers.
     """
+    return (
+        _same_extent(word, other)
+        and _admissible(other.text)
+        and _overlaps(word.box, other.box)
+    )
+
+
+def _same_extent(word: OcrWord, other: TextWord) -> bool:
+    """Whether the two cover the same much of the page, measured on raw length.
+
+    Squashing drops separators, so a text layer that puts a hundred
+    table-of-contents leader dots inside its word is at distance ZERO from the
+    number OCR read there. Nothing else in the gate set sees it — two-way
+    overlap does not separate them either (0.36 for the worst leader against
+    0.41 for a real repair whose OCR box was interpolated), because the dots
+    really are on the page."""
     right, _ = squash_map(other.text)
-    if abs(len(other.text) - len(word.text)) > budget_for(right):
-        return False
-    return _admissible(other.text) and _overlaps(word.box, other.box)
+    return abs(len(other.text) - len(word.text)) <= budget_for(right)
 
 
 def _overlaps(a: Box, b: Box) -> bool:

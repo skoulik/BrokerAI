@@ -249,10 +249,23 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   "a model box is a search constraint, not paint geometry" — an untrusted source is admissible
   exactly where a trusted one pins it down, which is what keeps this from reopening the
   hidden-text-layer leak class that made PDFs be treated as images.
-- **A repair changes a word's CHARACTERS and nothing else**, and runs BEFORE `linearize`. Not
-  its box, not its word count — that is what lets offsets, painting and the pseudonym map be
-  built from repaired words with no remapping anywhere. A gate that lets a token grow (the
-  text layer's hundred leader dots) is changing extent, not reading, and is rejected.
+- **A repair keeps the same words in the same order**, with the same `region_box`, and runs
+  BEFORE `linearize` — that is what lets offsets, painting and the pseudonym map be built from
+  repaired words with no remapping anywhere. A gate that lets a token GROW (the text layer's
+  hundred leader dots) is changing extent, not reading, and is rejected.
+- **Characters and boxes are corrected against DIFFERENT evidence, on separate gates.** A
+  paddle word box is an estimate and a text-layer box is where the renderer drew the glyphs, so
+  a confirmed pair lends its box too (`_lendable`) — measured, that took the reference corpus
+  from six partly-painted values to none. Never gate lending on horizontal overlap: that is the
+  identity evidence for a CHARACTER substitution, and on the words worth relocating it fails
+  (`244616.` overlaps its own true box by 0.25). Geometry cannot be both the evidence and the
+  thing being corrected; identity comes from the alignment and the reading, and the guards are
+  the two axes the drift does not break — vertical agreement, and staying inside the word's own
+  detection region.
+- **A merge lends its union box although it repairs no characters.** Which characters belong
+  where is unestablished, the extent is not. Leaving merges on drifted coordinates while their
+  neighbours move puts two coordinate systems on one line, and a lent box starting inside an
+  unlent one over-painted a neighbouring word by 217 px (2026-08-18).
 - **The correspondence is an ALIGNMENT, never a nearest-box pairing.** Independent per-word
   overlap drifts by one across a whole line wherever OCR boxes are interpolated — eight
   consecutive wrong pairs between two IDENTICAL word sequences on the first page measured

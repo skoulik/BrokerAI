@@ -223,9 +223,16 @@ all because a digit run cannot start after a letter, is read as
 `018057571` and redacted. On the reference statements this also restores
 an ABN's checksum (`32 O09 656 74O` → `32 009 656 740`).
 
-The text layer is only ever a **repair source**: no word is added, no box
-moves, and the output is still rebuilt from pixels, so nothing hidden in
-the source can reach it. A page whose text disagrees with its own pixels
+It corrects the word's **position** as well as its characters, and that
+matters more: OCR word boxes drift rightwards along a long line, and on
+one reference page the box for a credit licence number had slid a whole
+word to the right — a quarter of the digits painted, the rest left
+readable, and the address beside it destroyed instead. The text layer
+says where the glyphs actually are.
+
+The text layer is only ever a **repair source**: no word is added, no
+word is split or joined, and the output is still rebuilt from pixels, so
+nothing hidden in the source can reach it. A page whose text disagrees with its own pixels
 — a different revision, another tool's OCR baked in — is refused and read
 from OCR alone, and the run says which pages those were. Words the text
 layer does not reach at all (an embedded image, a scanned footer) simply
@@ -233,7 +240,7 @@ keep their OCR reading; the `ocr` debug overlay colours them so you can
 see which is which.
 
 The run always reports what happened (`text layer: 15 OCR reading(s)
-repaired, 679 confirmed, of 721 word(s)`). `--text-repair off` is the
+repaired, 704 box(es) corrected, 683 confirmed, of 721 word(s)`). `--text-repair off` is the
 OCR-only baseline, for measuring what it buys.
 
 Placeholders are also drawn in the face they replace — bold where the

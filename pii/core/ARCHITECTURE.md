@@ -721,10 +721,11 @@ admissible exactly where a trusted one pins it down. Only a word the OCR already
 repaired, only where positionally matched and similar; a word the OCR missed is never added,
 and hidden text still cannot reach the output, which is rebuilt from pixels.
 
-- **A repair changes a word's CHARACTERS and nothing else** — not its box, not its word count.
-  Repair runs at the `OcrPage` word level, BEFORE `linearize`, so the source map is built from
-  repaired words and offsets, boxes, painting and the pseudonym map stay consistent by
-  construction with no remapping anywhere.
+- **A repair keeps the same words in the same order**, with the same `region_box`. Repair runs
+  at the `OcrPage` word level, BEFORE `linearize`, so the source map is built from repaired
+  words and offsets, painting and the pseudonym map stay consistent by construction with no
+  remapping anywhere. A word's `text` and its `box` are both correctable — on separate
+  evidence, see below.
 - **Geometry buckets; ALIGNMENT decides the correspondence.** Text words are assigned to the
   OCR line they vertically overlap, and the two word sequences of that line are then aligned
   in reading order (Needleman–Wunsch over confusion-weighted character distance). Independent
@@ -760,6 +761,43 @@ and hidden text still cannot reach the output, which is rebuilt from pixels.
   on a 90° page `x * dpi/72` puts a word at x=104 where its ink is at x=1041.
   `page.rotation_matrix * Matrix(s, s)` is correct for all four rotations (measured). A shifted
   CropBox needs no handling — `page.rect` is normalized to the origin.
+
+### A confirmed pair lends its BOX, not only its characters (2026-08-18)
+
+A paddle word box is a stochastic estimate; a text-layer box is the typesetting geometry —
+where the renderer actually drew the glyphs. Where the two disagree about *position*, the text
+layer is right, so a confirmed pair lends its box as well as its reading.
+
+**The damage this repairs is a leak, not a cosmetic offset.** Measured on `ServletRetrieve (6).pdf`
+p1, OCR word boxes drift rightwards *within a detection region* — 10, 22, 26, 34, 56, 89, 95 px
+along the footer, reaching 158 — and reset to ~12 at the next region, because `_rows` bands
+several paddle regions into one visual row and each region has its own origin with its fragments
+stretched inside it. By the credit licence number the drift (95 px) exceeds the word's own width
+(110 px), so the painted box had slid off it: **24.5% of the digits painted, `24461` left
+readable, and a chunk of the address destroyed instead.** Corpus-wide the same defect
+under-painted an account number at 37% and a BSB at 50%. A partial paint is a leak.
+
+- **The horizontal overlap gate deliberately does NOT apply to a box.** It is the identity
+  evidence for a *character* substitution, and on exactly the words worth relocating it fails —
+  `244616.` overlaps its own true box by 0.25, below the 0.3 gate. Geometry cannot be both the
+  evidence and the thing being corrected. Identity comes from the alignment and the reading; the
+  guards are the two axes the drift does not break: the boxes must agree **vertically** (a
+  partner on another printed row is a mis-assignment, not a drift), and the lent box must stay
+  inside the word's own **detection region** (the drift is a stretch inside it, so that is
+  exactly how far a correction may legitimately travel, and no box can fly across the page).
+- **The extent gate applies more here, not less**: lending the box of a text word carrying
+  thirty leader dots would over-paint the rest of the line.
+- **A merge lends its union box although it repairs no characters.** Which characters belong
+  where is unestablished; the extent is not. Leaving merges on drifted coordinates while their
+  neighbours move puts two coordinate systems on one line — a lent box then starts inside an
+  unlent one, and `painted_boxes_for_span`'s midpoint pull-back (which assumes non-overlapping
+  words) let a span over-paint a neighbouring word by 217 px in the first cut.
+- **Measured end to end**: over the reference corpus the number of painted spans covering less
+  than 90% of their value's ink went from **6 to 0**, with no new over-painting. Numbers in
+  [DONE.md](DONE.md).
+
+It also corrects more than painting: `PageLayout`'s left/above bands read the same word geometry,
+so label attachment on those long lines was running on drifted coordinates too.
 
 ### Font traceback, and what it may touch (2026-08-18)
 
