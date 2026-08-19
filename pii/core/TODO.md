@@ -315,6 +315,16 @@ below gets picked up against the old shape of the tool.
          faster load. Q8 was chosen deliberately so a negative capability result could not be
          blamed on quantization; that job is done. Re-score the two hand-verified pages to
          confirm detection quality holds.
+
+         **Partial answer, unplanned (2026-08-19).** The tier-1 gate was run at Q4_0 and the
+         capability check came back with a real, reproducible difference: a spelled-out joint
+         name (`ERIC SMITH AND CASSANDRA SMITH`) is returned as TWO PERSON findings,
+         deterministically over 3/3 repeat calls, where the 2026-08-14 corpus decision recorded
+         it as one span. Not a leak — both names strip — but it is a change in span
+         GRANULARITY, which is the kind of thing "detection quality holds" has to mean here,
+         and it cost `JointNames.CLASSIFY` its input. Whether Q8_0 still returns the compound
+         is untested and is the cheapest way to attribute it; if it does, quant selection is a
+         detection decision and not only a throughput one. Record in DONE.md.
       3. **Qwen3.6-35B-A3B** (3B active vs 27B). Structurally the biggest lever and a candidate
          we wanted to try anyway; needs its own capability check, not just a speed check.
       4. **Multi-slot batching** (`-np > 1`, Sergei's question). Decode should scale near
@@ -817,6 +827,17 @@ text tier's record is in [DONE.md](DONE.md).)
       counts/type, confidence histograms, layer-disagreement rates, cross-OCR-engine
       disagreement). Local side-by-side review UI so manual acceptance checks are a quick
       click-through; only declassified findings are reported back.
+
+- [ ] **Pin which layer-0 model AND quant is production, in the docs** *(2026-08-19, found
+      while starting the server for the gate)*. ARCHITECTURE's dependency table names
+      "Qwen3.6-27B" and no quant; the Mac carries four `~/models/*/serve.sh`, and the last real
+      run on it (Aug 17, ~38k tasks) was the **MoE 35B-A3B UD-Q4_K_XL**, a switch nothing in
+      the repo records. So the two sources disagree and neither pins the quant — which matters
+      more than it looks, because every recorded eval number is only interpretable against the
+      model that produced it: the 2026-08-09 text baseline is Q8_0, the 2026-08-19 gate run is
+      Q4_0, and those two are now known to differ in span granularity (item above). Decide what
+      production is, write it in the dependency table with its quant, and say so in the eval
+      reports' headers. Cheap, and it stops the next comparison being between unknowns.
 
 - [ ] **De-flake the tier-1 gate / revisit `build.CRITICAL`** (2026-08-08; **re-measure before
       acting, 2026-08-12**). Under GLiNER2 the gate passed at seeds 42 and 1 and failed at 2, 3
