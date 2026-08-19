@@ -3763,3 +3763,55 @@ the move; new completed tasks append to the matching section with their records.
       makes them two is pinned rather than assumed. No corpus probe: `PERSON_REVERSED` already
       exists as one, already `CRITICAL`, and already at 100% from layer 0 — there is nothing
       for a new probe to measure. Fast suite: **759 passed**.
+
+- [x] **The tier-1 gate run at last, and the joint-name probe's premise had expired**
+      *(2026-08-19. Sergei: "let's now do the layer-0 sweep that we've been postponing" — the
+      one every commit this session recorded as NOT run — then, on the diagnosis: "let's treat
+      the gate expectation as stale".)*
+
+      **Server.** `~/models/qwen3.6-27b/serve.sh` on the Mac at `Q=Q4_0`, its own default, with
+      the documented flags including `-ctxcp 4`. Sergei chose the quant from three candidates:
+      the evidence conflicted, because ARCHITECTURE names Qwen3.6-27B as layer 0 while the last
+      actual run on that machine (Aug 17, ~38k tasks) was the MoE 35B-A3B — a switch nothing in
+      the repo records. Worth settling separately.
+
+      **First run: FAILED**, 3 critical leaks, one value on three documents —
+      `PERSON_JOINT partial: 'ERIC SMITH AND CASSANDRA SMITH'`.
+
+      **No PII leaked.** The stripped line reads `JOINT ACCOUNT: PERSON_2 AND PERSON_3`. What
+      the scorer counted as partial coverage of a CRITICAL entity is the word `AND`.
+
+      **Not this session's work**, checked rather than assumed: the same document re-run with
+      `DEFAULT_RULES = (JointNames(),)`, the pre-2026-08-19 rule set, produced a byte-identical
+      line. The run also reported `noise findings (matching no injected entity): 0` across the
+      whole corpus, which is the first end-to-end evidence that the three new derived rules
+      invent nothing.
+
+      **Cause: an expired premise, stated in the probe's own comment.** The 2026-08-14 decision
+      that put this probe in the gate ground-truthed the header as one `PERSON_JOINT` *"because
+      the value IS one and layer 0 reads it as a single span"*. On Q4_0 it does not — it returns
+      `ERIC SMITH` and `CASSANDRA SMITH` separately, **deterministically over 3/3 repeat
+      calls**. `JointNames.CLASSIFY` re-types a span whose VALUE is a joint form, so with two
+      spans there is nothing to re-type and the header can never become `PERSON_JOINT`. The
+      annotation was asking for something the tool cannot produce.
+
+      **Fixed at the truth end, the same place and the same argument as the ATF connector
+      earlier the same day.** The header is now two `PERSON` annotations with the connector
+      raw. Both stay CRITICAL, so nothing goes unmeasured except the connector, which is not
+      PII; `PERSON_JOINT` keeps its gated instances in the transaction lines, where
+      `E & C SMITH` is one indivisible token layer 0 does read as one; and it is robust in both
+      directions, since a future compound span would still cover both annotations.
+
+      **The generated document text is byte-identical** — `f"{a} and {b}".upper()` is exactly
+      `a.upper() + " AND " + b.upper()` — so no other probe moved and no seed draw shifted.
+      Entity count 576 -> 579: three legacy headers splitting in two.
+
+      **Second run: PASSED** (905 s, 12 documents). Fast suite 759 passed; the two `model`-marked
+      render tests passed in both runs.
+
+      **Non-critical, and known:** 2 `AU_TFN_INVALID` misses at the `context` and `none` tiers —
+      the open item where the `context` tier lost its only source with GLiNER2.
+
+      **A trap worth remembering:** the first run was reported to the harness as "exit code 0"
+      while pytest had actually FAILED. `timeout ... | tail` masks the exit status. Do not read
+      a background task's exit code as the test result; read the summary line.

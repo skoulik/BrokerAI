@@ -591,6 +591,17 @@ and called it a person (the retired issue-#4 problem was finding `Julie and Bria
 raw prose, which no lexical rule can do), so a mistake here costs a placeholder label, not a
 leak.
 
+**CLASSIFY depends on layer 0 returning the compound as ONE span, and it often does not.**
+Measured 2026-08-19 on Qwen3.6-27B Q4_0: a spelled-out header (`JOINT ACCOUNT: ERIC SMITH AND
+CASSANDRA SMITH`) comes back as two separate PERSON findings, deterministically over repeat
+calls — so there is no compound span to re-type and the header never becomes `PERSON_JOINT`.
+That is not a leak: both names strip and the output reads `PERSON_2 AND PERSON_3`, which models
+two humans as two identities. It is only a leak by the *scorer's* rule, which counts partial
+coverage of a critical entity as one, and it failed the tier-1 gate on three documents until
+the corpus stopped annotating the connector (`pii_eval`, same date; record in DONE.md).
+The initials form is unaffected — `E & C SMITH` is one indivisible token, layer 0 reads it as
+one, and that is where `PERSON_JOINT` keeps its gated instances.
+
 **Every joint form also contributes its surname as a PERSON** (Sergei, 2026-08-14), so a bare
 `MOORE` in a transaction line strips — nothing else in the stack catches that. Keyed to the
 form, `E & J MOORE` would have given better bare-surname recall than `Emily and John Moore`,

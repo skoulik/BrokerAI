@@ -81,12 +81,32 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
     # Both account holders in full, which is what makes the initials form in
     # the transaction lines DERIVABLE (pii.core.derived, 2026-08-14): the joint
     # rule pairs people some layer already detected, so a document that never
-    # names them cannot produce 'E & J CHAVEZ'. Ground-truthed PERSON_JOINT —
-    # the value IS a joint name, and layer 0 reads it as one span.
+    # names them cannot produce 'E & J CHAVEZ'.
+    #
+    # TWO PERSON annotations with the connector RAW (2026-08-19), where this was
+    # one PERSON_JOINT spanning both. That annotation was ground-truthed on the
+    # premise that "layer 0 reads it as one span", and it does not: measured
+    # deterministically over repeat calls, it returns the two people separately,
+    # so `JointNames` has no compound span to re-type and the header can never
+    # become PERSON_JOINT. The tool covered both names and left the word `AND`
+    # standing — no PII, but a `partial` verdict on a CRITICAL entity, which
+    # failed the tier-1 gate on three documents.
+    #
+    # The connector is not part of either name, exactly as `ATF` is not part of
+    # the trust's (see the ORGANIZATION_ATF probe below): annotating it asks the
+    # tool to over-strip. Both names stay CRITICAL, so nothing goes unmeasured —
+    # only the connector does, and it is not PII. Robust in both directions: if
+    # layer 0 ever returns the compound again, `JointNames` re-types it and that
+    # one span still covers both annotations.
+    #
+    # The document text is unchanged — `f"{a} and {b}".upper()` is exactly
+    # `a.upper() + " AND " + b.upper()` — so no other probe and no seed draw
+    # moves. PERSON_JOINT keeps its gated instances in the transaction lines,
+    # where the initials form IS one indivisible token.
     holder_a, holder_b = pool.holders
-    doc.raw("JOINT ACCOUNT: ").pii(
-        f"{holder_a.full} and {holder_b.full}".upper(), "PERSON_JOINT"
-    ).nl(2)
+    doc.raw("JOINT ACCOUNT: ")
+    doc.pii(holder_a.full.upper(), "PERSON").raw(" AND ")
+    doc.pii(holder_b.full.upper(), "PERSON").nl(2)
 
     # Label-attachment probes (2026-08-14). Both are about WHERE a label sits
     # relative to its value, which is the whole of what the geometric
