@@ -623,11 +623,20 @@ like Fee in bank-statement context is not worth further precision engineering, s
 failure is a known trade-off, not an open regression. Record:
 [reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md).
 
-`PERSON_REVERSED` ('MOORE OLGA') stays a per-form probe — two bare caps words admit no
-pattern, so it never had a layer-1 owner and never will — but the residual that kept it out of
-the gate **closed with the layer-2 retirement**: layer 0 scores 100% on seeds 42/123/7 where
-GLiNER2 scored 89/95/95. Promoting the probe into `pii_eval` `build.CRITICAL` is the remaining
-step, and is a TODO item.
+`PERSON_REVERSED` ('MOORE OLGA') admits no PATTERN — two bare caps words have no shape — and it
+never will have a pass-1 owner for that reason. The residual that kept it out of the gate
+**closed with the layer-2 retirement** (layer 0 scores 100% on seeds 42/123/7 where GLiNER2
+scored 89/95/95), and the probe was promoted into `pii_eval` `build.CRITICAL` the same day.
+
+**It does have a pass-2 owner since 2026-08-19** (`derived.ReversedNames`), which is not a
+contradiction but the same distinction this whole module rests on: the form is *derived* from a
+person some layer already read, never guessed from a shape. `John Smith` known anywhere in the
+document makes `SMITH JOHN` searchable everywhere in it — two words only and neither an initial
+(Sergei), which bounds the permutation to one candidate and drops the implausible `Smith J`.
+Measured on seeds 42/123/7 with layer 0 stood in for by the truth PERSON spans: **3/3 probes
+covered, 0 spans matching no truth entity**. It buys no corpus recall — layer 0 already scores
+100% there — so its job is the standing one of layer 1, a deterministic floor under a
+stochastic detector.
 
 ### A trustee clause names two organizations, so it is neither of them (2026-08-19)
 

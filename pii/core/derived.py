@@ -543,4 +543,84 @@ class AtfParties:
         return found
 
 
-DEFAULT_RULES: tuple[DerivedRule, ...] = (JointNames(), AtfParties())
+class ReversedNames:
+    """`John Smith` in the header, `SMITH JOHN` in a fixed-width name field.
+
+    Surname-first is how a statement's own name column prints a person, and the
+    two forms are unreachable from each other by every mechanism the document
+    already has: exact and squash matching see a different string, the borrowed
+    fuzzy tier prices a word swap far above any budget, and grouping's distance
+    runs on the separator-collapsed form where `johnsmith` and `smithjohn` are
+    most of a string apart. Nothing but knowing that a name can be printed
+    either way round reaches it.
+
+    So the reversal is HYPOTHESISED and then searched for, exactly as
+    `JointNames` hypothesises an initials form from two known people. That is
+    the established shape for this: derive a plausible printed form from a
+    value some layer read, and look for it. It is not a normalized form — the
+    thing `grouping` forbids as a needle — because a normalization corresponds
+    to nothing printed anywhere, while `Smith John` is what the name column
+    actually contains.
+
+    **Two words, and neither an initial** (Sergei, 2026-08-19). Two words bounds
+    the permutation space to one candidate and matches the form that is really
+    printed; excluding initials drops `J Smith` -> `Smith J`, which is both an
+    implausible printing and the largest false-match surface in the family.
+
+    Emitted as PERSON, not a form of its own: a reversed name names ONE person,
+    which is what separates it from a joint form. Each surface form still takes
+    its own placeholder, as every class does — the map keys on the value so that
+    rehydration restores what the document had.
+    """
+
+    name = "ReversedNames"
+
+    def apply(
+        self, spans: Sequence[Detection], text: str, known: KnownValues
+    ) -> tuple[list[Detection], list[Detection]]:
+        people = set(known.of_type(PERSON_ENTITY))
+        for span in spans:
+            if span.entity_type == PERSON_ENTITY:
+                people.add(span.full_value or text[span.start : span.end])
+        taken = [(s.start, s.end) for s in spans]
+        return list(spans), self._derive_reversed(people, text, taken)
+
+    def _derive_reversed(
+        self,
+        people: set[str],
+        text: str,
+        taken: Sequence[tuple[int, int]],
+    ) -> list[Detection]:
+        found: list[Detection] = []
+        seen: set[tuple[int, int]] = set()
+        for person in people:
+            words = _words(person)
+            if len(words) != 2:
+                continue
+            if any(regex.fullmatch(_INITIAL, w) for w in words):
+                continue
+            reversed_form = f"{words[1]} {words[0]}"
+            if reversed_form.casefold() == person.casefold():
+                continue
+            pattern = r"\s+".join(regex.escape(w) for w in reversed(words))
+            for m in regex.finditer(rf"\b{pattern}\b", text, regex.I):
+                if any(m.start() < e and s < m.end() for s, e in taken):
+                    continue
+                if (m.start(), m.end()) in seen:
+                    continue
+                seen.add((m.start(), m.end()))
+                found.append(
+                    Detection(
+                        entity_type=PERSON_ENTITY,
+                        start=m.start(),
+                        end=m.end(),
+                        score=DERIVED_PERSON_SCORE,
+                        recognizer=self.name,
+                    )
+                )
+        return found
+
+
+DEFAULT_RULES: tuple[DerivedRule, ...] = (
+    JointNames(), AtfParties(), ReversedNames(),
+)

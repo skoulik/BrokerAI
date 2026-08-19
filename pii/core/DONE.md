@@ -3713,3 +3713,53 @@ the move; new completed tasks append to the matching section with their records.
       the company and the trust separately, which is exactly what a correct split produces, and
       the corpus cannot isolate the derivation from layer 0 detecting the bare mention itself —
       the same coverage-not-class blindness on the standing TODO. Fast suite: **748 passed**.
+
+- [x] **Surname-first name forms derived from a known person** *(Sergei, 2026-08-19, step 3.
+      Scope his: "restrict to two words only. And no initials among them." And his pushback on
+      my objection to searching for a derived form — see below, he was right.)*
+
+      `John Smith` in the header, `SMITH JOHN` in a fixed-width name column. The two are
+      unreachable from each other by every mechanism the document already had: exact and squash
+      matching see a different string, the borrowed fuzzy tier prices a word swap far above any
+      budget, and `grouping`'s distance runs on the separator-collapsed form where `johnsmith`
+      and `smithjohn` are most of a string apart (verified — they cluster apart). So the
+      reversal is HYPOTHESISED and searched for, which is `JointNames`' shape exactly.
+
+      **I argued against making it a needle and was wrong.** The invariant I cited — "never let
+      a normalized form become a needle" — is about the squashed comparison artifact, which
+      corresponds to nothing printed anywhere. `Smith John` is the opposite: it is what the
+      name column actually contains. And `derived.py` already does precisely this in
+      `JointNames._derive_joint` ("search the text for the initials form of every ordered
+      pair"), so it was not even a departure.
+
+      **A second correction, and this one changed the work.** Twice I said a grouping merge
+      would stop `John Smith` and `SMITH JOHN` forking into two placeholders. It would not:
+      `PseudonymMap.placeholder_for` keys on the normalized SURFACE FORM and grouping plays no
+      part in it — and per-form placeholders are deliberate (ARCHITECTURE, the `JOINT_1` /
+      `JOINT_2` decision): giving one person one placeholder would have rehydration restore
+      `John Smith` where the document printed `SMITH JOHN`. So the identity half of step 3 does
+      not exist, the recall half is the whole of it, and no `grouping._related` change was made.
+      What a merge would still buy is class consistency across a stochastic detector's two
+      opinions — narrow, and not attempted here.
+
+      **Measured** on seeds 42/123/7, layer 0 stood in for by the truth PERSON spans:
+      **3/3 `PERSON_REVERSED` probes covered, 0 derived spans matching no truth entity at
+      all.** It buys no corpus recall, because layer 0 already scores 100% on that probe — its
+      job is the standing one of layer 1, a deterministic floor under a stochastic detector,
+      and the corpus cannot show that by construction.
+
+      **Two stale claims found and fixed while working here.** ARCHITECTURE said
+      `PERSON_REVERSED` "never had a layer-1 owner and never will" — now false in the half that
+      matters, and the distinction worth keeping is *pattern* vs *derived*: it still has no
+      pass-1 owner and never will, because two bare caps words have no shape. And two TODO
+      items still listed promoting the probe into `build.CRITICAL` as open work; it was
+      promoted on 2026-08-09 with the rest of that work and the items were never closed.
+
+      **Dual coverage.** New `tests/pii/core/test_reversed_names.py`, 11 cases: the reversal
+      found from the header name; found on a page that names nobody (and NOT found with no
+      document behind it); initials rejected in all three positions; only two-word names
+      reversed; the symmetric name not double-counted; nothing emitted inside an existing span;
+      and the per-surface-form placeholders asserted through `rehydrate`, so the design that
+      makes them two is pinned rather than assumed. No corpus probe: `PERSON_REVERSED` already
+      exists as one, already `CRITICAL`, and already at 100% from layer 0 — there is nothing
+      for a new probe to measure. Fast suite: **759 passed**.

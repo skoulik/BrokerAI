@@ -703,16 +703,6 @@ below gets picked up against the old shape of the tool.
       as pseudonym-consistency scoring in Evaluation below), OCR-damaged variants.
       Ship with a configuration option to turn matching off entirely (privacy-side
       effect: matching *increases* linkability inside the output by design).
-- [ ] **Promote `PERSON_REVERSED` into `pii_eval` `build.CRITICAL`** — all that remains of the
-      reversed-caps person-name residual *(2026-07-15 → closed 2026-08-09)*. The residual was a
-      GLiNER2 label-competition effect (ORGANIZATION claiming an isolated caps line and person
-      collapsing to 0.06–0.31, which windowing could not help) and it **died with the
-      detector**: layer 0 scores 100% on seeds 42/123/7 where GLiNER2 scored 89/95/95
-      ([reports/2026-08-09-text-layer0-vs-gliner2.md](reports/2026-08-09-text-layer0-vs-gliner2.md)).
-      The candidate fixes are moot with it — labels-per-pass isolation, the names database
-      below, a LoRA fine-tune. The promotion is the last step, and PERSON_JOINT is the
-      precedent. Do it together with the gate work in Evaluation below, since promoting a probe
-      into CRITICAL changes what the gate fails on. History in DONE.md.
 - [ ] **Person-names database layer** (Sergei, 2026-07-15) — **contingent, and its trigger has
       not fired**: it was the deterministic recall floor to build *if* reversed/varied-name
       recall stayed unsatisfactory, and layer 0 took it to 100% (item above). Kept because the
@@ -839,11 +829,12 @@ text tier's record is in [DONE.md](DONE.md).)
       layer 0. So: re-measure first, then decide between scoring several seeds and gating on the
       aggregate, or keeping a single seed and listing the accepted losses.
 
-      Two things to settle in the same pass. `CONTEXTUAL_ID` sits at 0% recall at every seed and
+      One thing to settle in the same pass: `CONTEXTUAL_ID` sits at 0% recall at every seed and
       is excluded from `CRITICAL` — decide whether that exclusion is still intended or is
-      masking a real gap; layer 3 is nominally its owner and layer 3 is contingent. And
-      `PERSON_REVERSED` is due for promotion into `CRITICAL` (item in Detection pipeline above),
-      which changes what the gate fails on.
+      masking a real gap; layer 3 is nominally its owner and layer 3 is contingent.
+      (`PERSON_REVERSED` used to be listed here as due for promotion into `CRITICAL`. It was
+      promoted on 2026-08-09 with the rest of that work and the item was never closed; found
+      2026-08-19.)
 
       Note the gate now needs a llama-server, which changes its character: it is no longer a
       cheap model-free check, and `-np 1` is required for the reproducibility it depends on.
