@@ -24,9 +24,14 @@ CORPUS_KEEP_FILE = Path(__file__).with_name("entity_keep.txt")
 # AU_BANK_ACCOUNT_BSB_2_4 joined 2026-08-18 gated from the start: it is a bank
 # account number under a different name, and layer 1 covers it deterministically
 # once its BSB grouping is known (`AuBsbRule`).
+# AU_BANK_ACCOUNT_BSB_COMMA joined 2026-08-19 on the same terms as
+# AU_BANK_ACCOUNT_BSB_2_4 and for the same reason: it is a bank account number
+# under a different name, reached by the comma-joined combined form
+# (`from 944600,000731114`) rather than by a label, and layer 1 covers it
+# deterministically once `AuBsbRule` knows that join.
 CRITICAL = {
     "AU_TFN", "AU_MEDICARE", "AU_BANK_ACCOUNT", "AU_BSB",
-    "AU_BANK_ACCOUNT_BSB_2_4",
+    "AU_BANK_ACCOUNT_BSB_2_4", "AU_BANK_ACCOUNT_BSB_COMMA",
     "CREDIT_CARD", "PERSON", "PERSON_JOINT", "PERSON_REVERSED",
 }
 

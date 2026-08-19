@@ -3362,3 +3362,186 @@ the move; new completed tasks append to the matching section with their records.
 
       **The tier-1 eval gate has NOT been run against this change** — it needs a llama-server
       for layer 0 and none was reachable. Fast suite: **695 passed**.
+
+- [x] **Two layer-1 findings on one insurance footer: a grouped licence detected by nothing,
+      and a batch stamp detected as a Medicare number** *(Sergei, 2026-08-19, on
+      `sensitive/statements/1/1.pdf` p3, `--layer0=off`.)*
+
+      One page, two independent bugs, found by reading the output rather than by a test.
+
+      **1. `AFSL 239 545` was left on the page** while `AFSL 227681` two lines above it was
+      stripped. `AuAfslRule`'s only digit shape was `\b\d{5,6}\b`, and a 3+3 grouping is not a
+      6-digit run. Two printings of the same class of value on one page, one redacted and one
+      not — the inconsistent-redaction shape, which reads as though the page was cleaned:
+
+          ABNABN_3      AFSL 239 545). Although ANZ distributes these
+
+      **Fix: a SECOND pattern, separator required** — `afsl grouped labeled`,
+      `\b\d{3}` + `_SEP` + `\d{3}\b`, mirrored onto `AuCreditLicenceRule` (a shape one sibling
+      accepts and the other does not is the same gap as a spelling one accepts and the other
+      does not, and that mirror is already the rule there). Two rejected alternatives:
+      relaxing the existing pattern to `\d{2,3}` + `_SEP_OPT` + `\d{3}` collapses "grouped"
+      back onto the plain run, which is the `*`-trap the `_SEP` note already narrates; and 2+3
+      additionally starts matching `78 003` inside the grouped ABN on the same line.
+
+      **What keeps the ABN's own 3+3 groups from becoming licences is the ATTACHMENT, not the
+      shape.** `003 191` and `191 035` of `ABN 78 003 191 035, AFSL 239 545` do match the new
+      pattern; they are dropped unattached, because a STRICT label is only ever sought BEHIND
+      the value and the `AFSL` sits to their right. Verified — no new candidates on the page.
+
+      **2. The page-edge batch stamp `XPRCAP0022-2309300323` stripped as `MEDICARE_1`**, taking
+      the whole stamp with it. Its last ten digits pass the real Medicare mod-10, `\b` after a
+      hyphen is a word boundary so `medicare bare` matched them free-standing, and
+      `ChecksumRule.emit` returns `MAX_SCORE` on a passing checksum regardless of the pattern's
+      score or the collection tier. Rotation was incidental: the same string in body text
+      detects identically. Measured base rates, 200k samples each — **10.0%** of random
+      10-digit runs beginning 2-6 pass the Medicare mod-10, ~9% of 9-digit runs pass a TFN's
+      mod-11, ~10% pass Luhn. At document scale this is routine, not a coincidence.
+
+      **Fix: a bare run must stand alone as a whole token.** `ChecksumRule.__init__` wraps
+      `BARE_PATTERNS` — and only those — in `(?<!_GLUE)`/`(?!_GLUE)`, `_GLUE` being
+      `[0-9A-Za-z/‐-―-]`. Bare is the one shape carrying no evidence but its own arithmetic,
+      so standing alone is the cheapest further evidence available and the one thing a slice
+      of a code cannot supply. Applied in the base class so a rule added later cannot forget
+      it; `\b` already excludes an adjacent digit, this adds the letters and the joiners.
+
+      **Why bare-only.** `ABN-11005357522` — the label hyphen-glued to its value — is a real
+      printed form, and the guard would kill it too if it went on every pattern. The LABELLED
+      pattern has evidence of its own and keeps the looser boundary; verified that this form
+      still detects. Two rejected alternatives: requiring a label for the VALID branch inverts
+      "a passing checksum is proof", which every score in `recognizers.py` is tuned against;
+      blocking only a preceding letter does not reach the specimen, whose glue is a hyphen
+      after digits.
+
+      Battery, bare-branch hits only, before → after: `XPRCAP0022-<valid>`, `<valid>-XPRCAP`,
+      `Ref 12-<valid>` and `www.anz.com/<valid>` all detected → none; `reference <valid>`,
+      `(<valid>)`, `Your number is <valid>.` all detected → all still detected. A trailing full
+      stop is not glue and must never cost a detection.
+
+      **Also fixed, both stale prose beside the changed code (Sergei, 2026-08-19: fix the
+      documentation and comments when you change the surrounding code).** `build_rules`
+      commented AFSL/ACL as *"KEPT classes (not in DEFAULT_STRIP_ENTITIES)"*; both have been in
+      `DEFAULT_STRIP_ENTITIES` since 2026-08-14, so the comment was wrong when it was written.
+      And both licence docstrings still called the label *"a LOOKBEHIND"*, stale since
+      2026-08-14 when it became `context` plus STRICT attachment — with it, the same claim in
+      `ARCHITECTURE.md` (the licence paragraph and the `regex` dependency row), the
+      `test_pipeline.py` comment and the `templates_text.py` probe comment. Swept the whole
+      term across `pii/`, `tests/` and `pii_eval/`: what remains is either explicitly
+      historical or the BSB↔account patterns, which really are lookbehinds and are why the
+      engine compiles with `regex`.
+
+      **Verification.** Real specimen end-to-end, `--layer0=off`, fresh map: 15 entities, p3
+      gains `AU_AFSL 0.70 '239 545' <- left 'AFSL'` and loses `AU_MEDICARE 1.00 '2309300323'`;
+      every other detection on all four pages unchanged. Painted output: `AFSLAFSL_3`, and the
+      stamp reads `XPRCAP0022-2309300323` intact.
+
+      **Not fixed, deliberately (Sergei's call).** The same page shows every value harvesting
+      its trailing separator — `722,` `035,` `227681)` `14,` paint whole, so the sentence loses
+      its comma and its closing bracket. Not a detection bug: the spans are clean and the
+      pseudonym map keys carry no punctuation. `RecognizerInput.boxes_for_span` /
+      `painted_boxes_for_span` select words by interval INTERSECTION, recall-first, so a word
+      the span covers partially still contributes its whole box — which is also why the whole
+      batch stamp painted, not just its digits. Left as is for now.
+
+      **Dual coverage.** `test_checksum_rules.py` — a bare run inside five glue shapes is not
+      an identifier, parametrized over all four checksum classes; the punctuation forms still
+      detect; and a test pinning the guard to the bare patterns only, via `ABN-11005357522`.
+      `test_pipeline.py` — the real specimen line, asserting both licences AND that the ABN
+      stays whole and stays an ABN; the credit-licence mirror; and a grouped licence with no
+      label finding nothing, so the widened shape cannot be "fixed" by dropping STRICT. Corpus
+      probes in `templates_text.loan_application`: a 3+3 AFSL and a 3+3 credit licence, and a
+      `DOC_REFERENCE_CODE` keep probe (`Ref XPRCAP<4>-<valid medicare>`, `strip_expected=False`,
+      not CRITICAL — this is the over-strip axis). Checked against layer 1 on seed 42: all 4
+      grouped licences `stripped`, all 4 reference codes `kept`.
+
+      **The tier-1 eval gate has NOT been run against this change** — it needs a llama-server
+      for layer 0 and `$PII_VLM_URL` is unset. Fast suite: **723 passed**.
+
+- [x] **One BSB, three classes: the comma-joined form and the standalone unseparated form**
+      *(Sergei, 2026-08-19, on `sensitive/statements/1/ServletRetrieve (6).pdf` p1-p2,
+      `--layer0=off`. "Why is the same account detected in many different forms?")*
+
+      One ME Bank statement, one BSB (`944600`) and one funding account (`000731114`), and the
+      map allocated five placeholders for four values — with the BSB appearing as both `BSB_1`
+      and `ACCOUNT_2`:
+
+          ACCOUNT_1 = 155634       the loan REFERENCE, not an account
+          ACCOUNT_2 = 944600       the BSB
+          ACCOUNT_3 = 018057571    the loan account      (correct)
+          ACCOUNT_4 = 000731114    the funding account   (correct)
+          BSB_1     = 944600       the same BSB again, under its right class
+
+      **Four independent causes**, diagnosed on the real OCR of both pages. Two fixed here.
+
+      **1. A comma was in no separator class.** The statement writes the pair BOTH ways —
+      `from 944600 000731114` on the interest rows and `from 944600,000731114` on the RCPT
+      rows. `_SEP` is `[-‐-― \t ]{1,3}`; verified directly, the `bsb bare before account`
+      lookahead matches the space form and returns None for `944600,000731114` and
+      `944600, 000731114`. With no combined match both halves fell back to bare digit runs at
+      0.15, promoted to 0.50 by the `Repayment` label — and a bare run is an ACCOUNT. So the
+      grouping cost the BSB its class, not merely the account its span, which extends the
+      2026-08-18 finding rather than repeating it.
+
+      **Fix: `_JOIN` / `_JOIN_OPT`, a separate class for the separator BETWEEN two values**,
+      threaded through all three BSB lookaheads and all three mirrored account lookbehinds.
+      NOT a widening of `_SEP`: a comma inside a number is a thousands separator, so admitting
+      it there makes every printed amount a candidate — the same global-precision-trade
+      argument that keeps `FILLER_ALLOWANCE` fixed.
+
+      **2. No unseparated standalone BSB shape.** `Account BSB 944600`, labelled as plainly as
+      a BSB can be, typed as AU_BANK_ACCOUNT: the standalone `bsb` pattern is
+      `\b\d{3}` + `_SEP` + `\d{3}\b` and REQUIRES an internal separator, so a plain six-digit
+      BSB matched `AuBsbRule` at all only when an account number followed it.
+
+      **Fix: `bsb labeled`, `\b\d{6}\b` at 0.55, STRICT.** STRICT rather than NEAR because a
+      bare six-digit run is one of the commonest on a statement — the label has to be adjacent,
+      not merely in the neighbourhood — and 0.55 clears `AuAccountNumberRule`'s boosted 0.50 so
+      the labelled field types as what it says it is.
+
+      **3. NOT FIXED — `Loan Reference RHL-155634` types as ACCOUNT_1.** First diagnosed as the
+      same bug as the Medicare batch stamp (a digit slice of a hyphenated code) and it is not:
+      with the `_GLUE` guard applied to `account-number`, `155634` survives via the STRICT
+      `labeled account` pattern, whose `loan` label is genuinely adjacent. So it is a label
+      VOCABULARY problem — `Loan Reference` is not an account label — and the bare-pattern
+      guard cannot reach it. Extending `_GLUE` to labelled patterns would break
+      `ABN-11005357522`, which the 2026-08-19 invariant forbids. Left open.
+
+      **4. NOT FIXED (Sergei's standing call) — the comma rows still PAINT as one placeholder.**
+      `944600,000731114,RCPT:` is a single OCR word, so `painted_boxes_for_span` returns the
+      identical box for the BSB span and the account span; two placeholders paint one rectangle
+      and one overwrites the other. Detection and the map are correct after fix 1, but those
+      rows display `ACCOUNT_n` alone where the space rows display `BSB_n ACCOUNT_n`. Not a leak
+      — everything is painted — but the same paint-extent behaviour as the trailing-separator
+      finding, now costing a placeholder rather than punctuation.
+
+      **False-positive scan.** A/B over 35 reference PDFs (`sensitive/`, `db/pdfs*`), 1.76M
+      characters, keyed by OFFSET: 356 detections before and after, **0 added, 0 removed**, and
+      16 retyped — every one of them `AU_BANK_ACCOUNT -> AU_BSB` on `944600` in this document.
+      Nothing in the other 34 PDFs moved. (The first cut of this scan compared SETS of
+      (type, value) per document and reported 0 change: both classes already existed for
+      `944600` from different occurrences, so per-occurrence retyping was invisible. A
+      measurement that cannot see the bug is worse than none.)
+
+      **Verification.** Real specimen end-to-end, fresh map: 43 detections, `944600` now
+      `AU_BSB` at all 9 printings including `Account BSB` (`<- left 'BSB'`), `000731114`
+      AU_BANK_ACCOUNT at all 8. Map down to `BSB_1` + three accounts, with the BSB no longer
+      forked. Painted p1 reads `Account BSB  BSB_1` / `Account Number ACCOUNT_2`.
+
+      **Dual coverage.** `test_pipeline.py` — both join forms in ONE text asserting they AGREE
+      (same class, same placeholder, twice each); a comma inside an amount must not make a BSB;
+      the labelled unseparated field; and a bare six-digit run with the label out of reach
+      finding nothing, guarding against a relaxation of STRICT to a boost. Corpus: `au.bsb_bare`
+      plus probe 5 in `templates_text.legacy_statement` (the labelled field and the comma-joined
+      narrative), with `AU_BANK_ACCOUNT_BSB_COMMA` CRITICAL from the start on the same terms as
+      `AU_BANK_ACCOUNT_BSB_2_4`.
+
+      **The corpus could not have caught this, and now says so.** Scored against the pre-fix
+      pattern set on seed 42, the six new bare-BSB probes all verdict `stripped` while being
+      detected as `AU_BANK_ACCOUNT` — because every scorer verdict is span COVERAGE, not class.
+      The probes therefore guard recall (a future `_JOIN` edit that breaks the combined pattern
+      would leak the account half, which is issue #8b and IS measured); the class is pinned by
+      pytest alone. Recorded as a fourth instance on the standing "the corpus cannot see it"
+      item in [TODO.md](TODO.md), where the axis is the scorer rather than the generator.
+
+      **The tier-1 eval gate has NOT been run against this change** — llama-server, `$PII_VLM_URL`
+      unset. Fast suite: **727 passed**.

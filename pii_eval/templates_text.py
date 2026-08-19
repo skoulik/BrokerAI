@@ -147,6 +147,33 @@ def legacy_statement(pool: Pool, pages: int = STATEMENT_PAGES) -> Doc:
     doc.raw("Account Number").pad_to(46)
     doc.pii(au.bsb_grouped_2_4(combo), "AU_BSB").raw(" ")
     doc.pii(str(combo.randrange(10**7, 10**8)), "AU_BANK_ACCOUNT_BSB_2_4").nl(2)
+    # 5. The unseparated BSB, in the two places ME Bank prints it: its own
+    #    labelled field (`Account BSB 944600`) and a transaction narrative
+    #    joined to the account by a COMMA (`from 944600,000731114`). Both
+    #    typed as AU_BANK_ACCOUNT before 2026-08-19 — the field because the
+    #    standalone BSB pattern required an internal separator, the narrative
+    #    because the comma was in no separator class, so neither reached
+    #    AuBsbRule at all. One BSB was BSB_n on the space-joined rows and
+    #    ACCOUNT_n on the comma-joined ones inside one document.
+    #
+    #    **These probes measure RECALL, not the class.** The scorer's verdicts
+    #    are span coverage (stripped/partial/leaked), so a value covered under
+    #    the WRONG entity type still scores `stripped` and the corpus could
+    #    not have caught this bug — the pytest in `test_pipeline.py` is what
+    #    pins the class. What they do guard is the half of it that IS a
+    #    recall risk: a future edit to `_JOIN` that breaks the combined
+    #    pattern outright would leave the account half on the page, which is
+    #    the issue-#8b failure and is exactly what this axis measures.
+    #    Same derived-Random discipline as probe 4, so existing seeds are
+    #    untouched.
+    bare = random.Random(int(au.digits(acct.number)) ^ 0x5E11)
+    bare_bsb = au.bsb_bare(bare)
+    funding = f"{bare.randrange(10**8, 10**9)}"
+    doc.raw("Account BSB").pad_to(46)
+    doc.pii(bare_bsb, "AU_BSB").nl()
+    doc.raw("  Repayment (from ")
+    doc.pii(bare_bsb, "AU_BSB").raw(",")
+    doc.pii(funding, "AU_BANK_ACCOUNT_BSB_COMMA").raw(", RCPT: FTR3QV2DQG6PJRWG)").nl(2)
 
     balance = round(rng.uniform(100, 90000), 2)
     for page in range(1, pages + 1):
@@ -425,7 +452,7 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     # Australian Credit Licence numbers. Public corporate identifiers, kept
     # until 2026-08-14 and stripped since (Sergei, "for now") — under their
     # OWN classes either way, which is what keeps them distinguishable from a
-    # driver licence in a report. The label is matched as a lookbehind, so the
+    # driver licence in a report. The label is matched OUTSIDE the span, so the
     # probe value is the bare number: a span covering the label would key the
     # map on a different string than an unlabelled occurrence of it.
     doc.raw(f"Credit services arranged by {acct.bank} AFSL ")
@@ -445,5 +472,35 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     doc.pii(f"{rng.randrange(10**5, 10**6)}", "AU_AFSL")
     doc.raw(", broking under Credit Lic ")
     doc.pii(f"{rng.randrange(10**5, 10**6)}", "AU_CREDIT_LICENCE")
+    doc.raw(".").nl()
+    # A licence printed 3+3, which is how a real insurance footer groups one
+    # (`AFSL 239 545`, 1.pdf p3). Its own probe rather than a swap of the
+    # ungrouped form above, for the same reason the half-abbreviated labels
+    # got theirs: the corpus emitting ONE shape is precisely what let
+    # `\b\d{5,6}\b` stand while a grouped licence matched nothing at all, and
+    # the page carried BOTH forms — one stripped, one left, which reads as
+    # though the page was cleaned (2026-08-19). Mirrored on the credit sibling
+    # because a shape one accepts and the other does not is the same gap as a
+    # spelling one accepts and the other does not.
+    grouped = f"{rng.randrange(100, 1000)} {rng.randrange(100, 1000)}"
+    doc.raw("Issued under AFSL ")
+    doc.pii(grouped, "AU_AFSL")
+    doc.raw(", distributed under Australian Credit Licence ")
+    doc.pii(f"{rng.randrange(100, 1000)} {rng.randrange(100, 1000)}",
+            "AU_CREDIT_LICENCE")
+    doc.raw(".").nl()
+    # KEEP probe: a document reference code whose tail is a checksum-VALID
+    # Medicare number. A bare run carries no evidence but its own arithmetic
+    # and that arithmetic is weak — 10.0% of random 10-digit runs beginning
+    # 2-6 pass the mod-10 — so at document scale this is routine rather than a
+    # coincidence: ANZ's page-edge batch stamp `XPRCAP0022-2309300323` painted
+    # as MEDICARE_1, taking the whole stamp with it (Sergei, 2026-08-19). The
+    # guard is that a bare run must stand alone as a whole token, so the probe
+    # must survive INTACT. Own truth type per the convention for known-hard
+    # forms, and not in build.CRITICAL: this is the over-strip axis.
+    doc.raw("Ref XPRCAP")
+    doc.pii(f"{rng.randrange(1000, 10000)}-"
+            f"{au.medicare(rng, irn=False).replace(' ', '')}",
+            "DOC_REFERENCE_CODE", strip_expected=False)
     doc.raw(".").nl()
     return doc

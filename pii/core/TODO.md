@@ -447,6 +447,18 @@ below gets picked up against the old shape of the tool.
       data (`Rule.context`, 2026-08-14), which is what makes varying them in the generator worth
       doing: one list to extend, not nine alternations.
 
+      **Fourth instance, and this one is the SCORER rather than the generator (2026-08-19).**
+      Every text/image/pdf verdict is span COVERAGE — `stripped` / `partial` / `leaked` — so a
+      value covered under the *wrong entity class* scores `stripped` and no run can disagree.
+      Measured on seed 42 against the pre-fix pattern set: the six new bare-BSB probes all
+      scored `stripped` while being detected as `AU_BANK_ACCOUNT`, which is precisely the bug
+      (one BSB pseudonymizing as `BSB_n` on some rows and `ACCOUNT_n` on others; record in
+      [DONE.md](DONE.md)). A class axis is not free — the truth types deliberately do not map
+      1:1 onto entity types (`ADDRESS_WRAPPED`, `PERSON_REVERSED`, `AU_BANK_ACCOUNT_BSB_2_4`
+      are forms, not classes) — so it wants a declared expected-class per truth type, scored
+      as its own column rather than folded into the strip verdict. Until then, class is pinned
+      by pytest only, and a mis-typing is a blind spot on every corpus run.
+
 - [ ] **The ACN inside an ABN can still capture it when OCR damages a DIGIT rather than a
       separator** *(remainder of the 2026-08-12 separator fix)*. The separator class fixed the
       spacing cases, but `ABN I1 005 357 522` — the `1`/`I` confusion, which is the single most

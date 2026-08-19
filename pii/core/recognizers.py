@@ -86,6 +86,26 @@ _SEP = r"[-\u2010-\u2015\u00a0\t ]{1,3}"
 # The same, where the separator is optional — a labeled form may be unspaced.
 _SEP_OPT = r"[-\u2010-\u2015\u00a0\t ]{0,3}"
 
+# The separator between a BSB and the ACCOUNT NUMBER printed after it — `_SEP`
+# plus a comma. Its own class, and deliberately not a widening of `_SEP`: a
+# comma inside an identifier is a thousands separator (`$94,660.96`), so
+# admitting it there would make every amount a candidate, while between two
+# values it is just how one bank writes the pair. ME Bank prints BOTH forms in
+# one statement — `from 944600 000731114` on some rows and
+# `from 944600,000731114` on others — and with no comma at the join the second
+# form matched no combined pattern at all: the BSB fell back to a bare digit
+# run and typed as AU_BANK_ACCOUNT, so one BSB pseudonymized as BSB_n on some
+# rows and ACCOUNT_n on others within one document (2026-08-19).
+_JOIN = r"[-\u2010-\u2015\u00a0\t ,]{1,3}"
+# The same, where the two values may abut with no separator at all.
+_JOIN_OPT = r"[-\u2010-\u2015\u00a0\t ,]{0,3}"
+
+# What may not touch either end of a BARE identifier run: another alphanumeric,
+# a dash or a slash — the characters a document reference code is built out of.
+# `\b` alone already excludes an adjacent digit; this adds the letters and the
+# joiners. See `ChecksumRule.__init__` for why only the bare patterns carry it.
+_GLUE = r"[0-9A-Za-z/\u2010-\u2015-]"
+
 
 # ---------------------------------------------------------------------------
 # Checksummed identifiers: one rule, two outcomes
@@ -117,6 +137,17 @@ class ChecksumRule(PatternRule):
     # of the value. A span covering "TFN: 123 456 782" keys the pseudonym map
     # on a different string than a bare occurrence of the same TFN, so one
     # identifier forks into TFN_1 and TFN_2 inside a single document.
+    # BARE     — the digit shape alone, with no grouping and no label. Wrapped
+    #            in `_GLUE` guards at construction: a bare run carries no
+    #            evidence but its own arithmetic, and that arithmetic is weak
+    #            (measured: 10.0% of random 10-digit runs beginning 2-6 pass
+    #            the Medicare mod-10, ~9% for a TFN's mod-11, ~10% for Luhn),
+    #            so at document scale a passing checksum inside a longer
+    #            reference code is routine rather than a coincidence — ANZ's
+    #            page-edge batch stamp `XPRCAP0022-2309300323` stripped as
+    #            AU_MEDICARE (2026-08-19). Standing alone as a whole token is
+    #            the cheapest further evidence available, and it is the one
+    #            thing a slice of a code cannot supply.
     GROUPED_PATTERNS: tuple[tuple[str, str], ...] = ()
     LABELLED_PATTERNS: tuple[tuple[str, str], ...] = ()
     BARE_PATTERNS: tuple[tuple[str, str], ...] = ()
@@ -132,7 +163,16 @@ class ChecksumRule(PatternRule):
                 Pattern(n, rx, _IN_SPAN_SCORE, attach=STRICT)
                 for n, rx in self.LABELLED_PATTERNS
             ),
-            *(Pattern(n, rx, _IN_SPAN_SCORE) for n, rx in self.BARE_PATTERNS),
+            # The guard goes on the bare patterns ONLY. A grouped or labelled
+            # match has evidence of its own and has earned the looser
+            # boundary: `ABN-11005357522` is a real printed form, and it is
+            # the labelled pattern that must keep matching it. Applied here
+            # rather than spelled into each subclass so a rule added later
+            # cannot forget it.
+            *(
+                Pattern(n, f"(?<!{_GLUE}){rx}(?!{_GLUE})", _IN_SPAN_SCORE)
+                for n, rx in self.BARE_PATTERNS
+            ),
         )
         super().__init__()
 
@@ -311,25 +351,42 @@ class AuBsbRule(PatternRule):
     band — so the field strips HALF, which reads as redacted (2026-08-18, the
     CommBank 2-4 spelling below). Every grouping needs both this lookahead and
     its mirror in AuAccountNumberRule.
+
+    **The separator INSIDE a BSB and the one JOINING it to its account are
+    different classes** (`_SEP` and `_JOIN`, 2026-08-19). A comma is a
+    thousands separator inside a number and a field separator between two of
+    them, so it belongs in exactly one of the two — and a grouping this rule
+    does not know costs the BSB its class as well as the account its span:
+    ME Bank writes the pair both ways in one statement, and the comma form
+    typed the BSB as AU_BANK_ACCOUNT.
     """
 
     entity = "AU_BSB"
     patterns = (
         Pattern("bsb before account",
-                r"\b\d{3}" + _SEP + r"\d{3}(?=" + _SEP_OPT + r"\d{5,10}\b)",
+                r"\b\d{3}" + _SEP + r"\d{3}(?=" + _JOIN_OPT + r"\d{5,10}\b)",
                 0.6),
         # CommBank's house grouping — 2 digits, separator, 4 ("06 3118
         # 10587788"). Not the conventional BBB-BBB, and nothing else matched
         # it: the account half was left in the clear on all three pages of the
         # reference statement while the BSB half stripped (2026-08-18).
         Pattern("bsb 2-4 before account",
-                r"\b\d{2}" + _SEP + r"\d{4}(?=" + _SEP + r"\d{5,10}\b)", 0.6),
+                r"\b\d{2}" + _SEP + r"\d{4}(?=" + _JOIN + r"\d{5,10}\b)", 0.6),
         # Transaction-description form: unseparated BSB directly followed by
         # an account number ("from 944600 000731114") — the dominant form
         # inside statement descriptions, where no context words appear.
         Pattern("bsb bare before account",
-                r"\b\d{6}(?=" + _SEP + r"\d{5,10}\b)", 0.55),
+                r"\b\d{6}(?=" + _JOIN + r"\d{5,10}\b)", 0.55),
         Pattern("bsb", r"\b\d{3}" + _SEP + r"\d{3}\b", 0.2),
+        # A BSB standing on its own, unseparated, under its own label
+        # ("Account BSB 944600"). STRICT because `\b\d{6}\b` is one of the
+        # commonest runs on a statement, so the label has to be adjacent
+        # rather than merely nearby — and it scores above AuAccountNumberRule's
+        # boosted 0.5 so the labelled field types as the BSB it says it is.
+        # Without it the ONLY unseparated BSB shape was the one with an
+        # account number behind it, and a statement's own `Account BSB` field
+        # pseudonymized as ACCOUNT_n (2026-08-19).
+        Pattern("bsb labeled", r"\b\d{6}\b", 0.55, attach=STRICT),
     )
     context = ("bsb", "branch", "bank", "deposit", "transfer")
 
@@ -382,14 +439,14 @@ class AuAccountNumberRule(PatternRule):
         # one side cannot leave the other behind: a double-spaced BSB would
         # otherwise emit a BSB span with no account span beside it.
         Pattern("account after bsb",
-                r"(?<=\b\d{3}" + _SEP + r"\d{3}" + _SEP_OPT + r")\d{5,10}\b",
+                r"(?<=\b\d{3}" + _SEP + r"\d{3}" + _JOIN_OPT + r")\d{5,10}\b",
                 0.55),
         # Mirror of "bsb 2-4 before account" — CommBank's `06 3118 10587788`.
         Pattern("account after 2-4 bsb",
-                r"(?<=\b\d{2}" + _SEP + r"\d{4}" + _SEP + r")\d{5,10}\b",
+                r"(?<=\b\d{2}" + _SEP + r"\d{4}" + _JOIN + r")\d{5,10}\b",
                 0.55),
         Pattern("account after bare bsb",
-                r"(?<=\b\d{6}" + _SEP + r")\d{5,10}\b", 0.55),
+                r"(?<=\b\d{6}" + _JOIN + r")\d{5,10}\b", 0.55),
         # "A/C 7412154728", "a/c 1234 5678", "Acct No: 000 731 114": the
         # a/c-family label matched in-span (the label lands inside the
         # placeholder — harmless, recall-first). Contiguous alternative first
@@ -451,13 +508,30 @@ class AuAfslRule(PatternRule):
     third form matched nothing at all until 2026-08-14, because the acronym was
     the only spelling either the test or the `pii_eval` probe exercised.
 
-    The label is a LOOKBEHIND, so the span is the digits alone — see the module
-    docstring: a span covering "AFSL 233714" would key the pseudonym map on a
-    different string than a bare occurrence of the same number and fork one
-    licence into AFSL_1 and AFSL_2."""
+    The label stays OUTSIDE the span, so the span is the digits alone — see
+    the module docstring: a span covering "AFSL 233714" would key the
+    pseudonym map on a different string than a bare occurrence of the same
+    number and fork one licence into AFSL_1 and AFSL_2. It is `context` plus
+    STRICT attachment that keeps it out (a regex lookbehind until 2026-08-14,
+    same gate judged on the page instead of in the assembled string)."""
 
     entity = "AU_AFSL"
-    patterns = (Pattern("afsl labeled", r"\b\d{5,6}\b", 0.7, attach=STRICT),)
+    # Two digit shapes, because footers print both: the plain run, and the
+    # 3+3 grouping (`AFSL 239 545`). The grouped form is a SECOND pattern with
+    # the separator REQUIRED rather than a relaxation of the first into
+    # `\d{2,3}` + `_SEP_OPT` + `\d{3}` — an optional separator matches zero of
+    # them, at which point "grouped" collapses back onto the plain run and
+    # buys only extra shapes (see the note on `_SEP`), and 2+3 additionally
+    # starts matching inside a grouped ABN (`78 003` of
+    # `ABN 78 003 191 035, AFSL 239 545`). What keeps the 3+3 groups INSIDE
+    # that ABN from becoming licences is the attachment, not the shape: they
+    # match, and are dropped unattached because a STRICT label is only ever
+    # sought BEHIND the value and the `AFSL` sits to their right.
+    patterns = (
+        Pattern("afsl labeled", r"\b\d{5,6}\b", 0.7, attach=STRICT),
+        Pattern("afsl grouped labeled", r"\b\d{3}" + _SEP + r"\d{3}\b", 0.7,
+                attach=STRICT),
+    )
     # Three spellings, as data rather than as a regex alternation (2026-08-14).
     # `afs lic` is a STEM: a label match runs to the end of its own word, so
     # one entry covers `AFS Licence`, `AFS License`, `AFS Lic` and `AFS Lic.`,
@@ -469,16 +543,20 @@ class AuAfslRule(PatternRule):
 
 class AuCreditLicenceRule(PatternRule):
     """Australian Credit Licence numbers — the sibling of AuAfslRule (same
-    rationale, same footer habitat, same label-as-lookbehind rule,
+    rationale, same footer habitat, same label-outside-the-span rule,
     discriminated by label word). The licence word abbreviates the same way it
     does there (`Credit Lic 234527`), and for the same reason: the siblings
     label the same kind of number in the same kind of footer, so a spelling one
     accepts and the other does not is a gap waiting to be found on a document
-    rather than a distinction anyone intended."""
+    rather than a distinction anyone intended. That applies to the digit SHAPE
+    exactly as it does to the label spelling, which is why the 3+3 grouping is
+    mirrored here."""
 
     entity = "AU_CREDIT_LICENCE"
     patterns = (
         Pattern("credit licence labeled", r"\b\d{5,6}\b", 0.7, attach=STRICT),
+        Pattern("credit licence grouped labeled",
+                r"\b\d{3}" + _SEP + r"\d{3}\b", 0.7, attach=STRICT),
     )
     context = ("acl", "credit lic")
 
@@ -659,9 +737,12 @@ def build_rules(invalid_identifiers: str = "likely") -> list[Rule]:
         AuBsbRule(),
         AuAccountNumberRule(),
         PayIdRule(),
-        # KEPT classes (not in DEFAULT_STRIP_ENTITIES): public corporate
-        # licence numbers, detected so reports discriminate them from
-        # AU_DRIVERS_LICENCE.
+        # Public corporate licence numbers. Their own classes, rather than a
+        # generic identifier, so reports discriminate them from
+        # AU_DRIVERS_LICENCE and an operator can keep them by name. Both are
+        # in DEFAULT_STRIP_ENTITIES and are stripped (2026-08-14); the comment
+        # here called them KEPT classes until 2026-08-19, which was already
+        # wrong when it was written.
         AuAfslRule(),
         AuCreditLicenceRule(),
         AtfTailRule(),

@@ -135,6 +135,20 @@ def bsb_grouped_2_4(rng: random.Random, bank: str | None = None) -> str:
     return f"{prefix} {rest}"
 
 
+def bsb_bare(rng: random.Random, bank: str | None = None) -> str:
+    """The unseparated spelling: `944600`, not `944-600`.
+
+    Its own function for the same reason as `bsb_grouped_2_4` — the 3-3
+    spelling is what the rest of the corpus prints, and making the grouping a
+    per-draw choice would re-roll every existing seed. This is the form ME
+    Bank prints in both its `Account BSB` field and its transaction
+    narratives.
+    """
+    prefix = dict(BANKS).get(bank) or rng.choice(BANKS)[1]
+    rest = "".join(str(rng.randrange(10)) for _ in range(4))
+    return f"{prefix}{rest}"
+
+
 def account_number(rng: random.Random) -> str:
     styles = [
         lambda s: s,                        # 018057571

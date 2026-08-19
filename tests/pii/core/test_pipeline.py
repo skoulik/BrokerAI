@@ -169,6 +169,63 @@ def test_bsb_2_4_account_half_needs_no_label(pipeline):
     assert "10587788" not in out and "06 3118" not in out, out
 
 
+def test_a_comma_joined_bsb_and_account_is_the_same_pair(pipeline):
+    """ME Bank writes the pair BOTH ways in one statement — `from 944600
+    000731114` on some rows and `from 944600,000731114` on others — and the
+    comma was in no separator class, so the second form matched no combined
+    pattern at all. Both halves fell back to bare digit runs promoted by
+    `Repayment`, which types the BSB as AU_BANK_ACCOUNT: one BSB
+    pseudonymized as BSB_n on some rows and ACCOUNT_n on others inside one
+    document, and the map allocated a placeholder for a value that is not an
+    account (Sergei, 2026-08-19, ServletRetrieve (6).pdf p1-p2).
+
+    Both forms in one text, so the test is that they AGREE — the same value
+    reaching the same class and the same placeholder either way.
+    """
+    text = ("02 Jul Repayment (from 944600 000731114, FT231832FXL2) "
+            "06 Jul Repayment (from 944600,000731114, RCPT: FTR3QV2DQG6PJRWG)")
+    found = {(d.entity_type, text[d.start:d.end]) for d in pipeline.analyze(text)}
+    assert ("AU_BSB", "944600") in found, found
+    assert ("AU_BANK_ACCOUNT", "000731114") in found, found
+    # The BSB must reach exactly ONE class, or the map forks it.
+    assert {k for k, v in found if v == "944600"} == {"AU_BSB"}, found
+    out, _, _ = pipeline.strip(text, PseudonymMap())
+    assert "944600" not in out and "000731114" not in out, out
+    assert out.count("BSB_1") == 2, out
+    assert out.count("ACCOUNT_1") == 2, out
+
+
+def test_the_comma_joins_two_values_and_never_splits_one(pipeline):
+    """`_JOIN` is not `_SEP` widened, and must never become it: a comma INSIDE
+    a number is a thousands separator, so admitting it there would make every
+    printed amount a BSB candidate."""
+    text = "Closing balance 94,660 and total debits 4,313.46 on 30 June"
+    found = {(d.entity_type, text[d.start:d.end]) for d in pipeline.analyze(text)}
+    assert not [v for k, v in found if k == "AU_BSB"], found
+
+
+def test_an_unseparated_bsb_types_as_a_bsb_under_its_own_label(pipeline):
+    """`Account BSB 944600` — labelled as plainly as a BSB can be — typed as
+    AU_BANK_ACCOUNT, because the only unseparated BSB shape was the one with
+    an account number behind it and the standalone pattern requires an
+    internal separator. So a statement's own BSB field became ACCOUNT_n while
+    the same digits in its transaction rows were BSB_n."""
+    text = "Account BSB 944600 Account Number 018057571"
+    found = {(d.entity_type, text[d.start:d.end]) for d in pipeline.analyze(text)}
+    assert ("AU_BSB", "944600") in found, found
+    assert ("AU_BANK_ACCOUNT", "018057571") in found, found
+
+
+def test_an_unseparated_bsb_needs_its_label_adjacent(pipeline):
+    """STRICT, not NEAR: `\\b\\d{6}\\b` is one of the commonest runs on a
+    statement, so the pattern is only safe while the label has to be beside
+    the value rather than merely somewhere in the neighbourhood. Guards
+    against a "fix" that relaxes it to a boost."""
+    text = "Our bank processed 3 payments totalling 244616 dollars this month"
+    found = {(d.entity_type, text[d.start:d.end]) for d in pipeline.analyze(text)}
+    assert not [v for k, v in found if k == "AU_BSB"], found
+
+
 def test_atf_tail_stripped_including_truncated_forms(pipeline):
     # Issue #9: '<company> ATF <trust>' — the doc truncates the field
     # mid-word ('ATF SK BU', '... SK BUSINESS TRU'), defeating NER
@@ -200,8 +257,8 @@ def test_corporate_licence_numbers_strip_under_their_own_classes(pipeline):
     out, _, _ = pipeline.strip(text, PseudonymMap())
     assert "234527" not in out, out
     assert "233714" not in out, out
-    # The LABEL is evidence, not part of the value: it is matched as a
-    # lookbehind, so it survives and the map keys on the bare number. A span
+    # The LABEL is evidence, not part of the value: it is matched OUTSIDE the
+    # span, so it survives and the map keys on the bare number. A span
     # covering "AFSL 233714" would fork one licence into AFSL_1 and AFSL_2 the
     # moment the same number appeared unlabelled.
     assert "Australian Credit Licence ACL_1" in out, out
@@ -276,6 +333,60 @@ def test_credit_licence_abbreviates_its_label_like_its_afsl_sibling(pipeline):
         assert number not in out, out
     assert "Credit Lic ACL_" in out, out
     assert "Australian Credit Lic. No ACL_" in out, out
+
+
+def test_a_space_grouped_licence_is_the_same_licence(pipeline):
+    """The real specimen line, verbatim from 1.pdf p3 (Sergei, 2026-08-19):
+    two AFSLs in one insurance footer, `227681` stripped and `239 545` left on
+    the page, because the digit shape was `\\b\\d{5,6}\\b` and a 3+3 grouping
+    is not a 6-digit run. Two printings of the same class of value on one page,
+    one redacted and one not — the inconsistent-redaction shape, which reads as
+    though the page was cleaned.
+
+    The ABN on that line is the reason the grouping is a SECOND pattern with
+    the separator required rather than a relaxation of the first: `78 003 191
+    035` contains the 3+3 groups `003 191` and `191 035`, which the new pattern
+    matches. What keeps them from becoming licences is the attachment — a
+    STRICT label is only ever sought BEHIND the value, and the `AFSL` sits to
+    their right — so this test pins the ABN staying whole and staying an ABN.
+    """
+    text = ("ANZ Home Insurance is issued by QBE Insurance (Australia) Limited "
+            "(ABN 78 003 191 035, AFSL 239 545), and by Insurance Australia "
+            "Limited (ABN 11 000 016 722, AFSL 227681).")
+    detections = {
+        (r.entity_type, text[r.start:r.end]) for r in pipeline.analyze(text)
+    }
+    assert ("AU_AFSL", "239 545") in detections, detections
+    assert ("AU_AFSL", "227681") in detections, detections
+    # The grouped ABN is untouched: one span, whole, and still an ABN.
+    assert ("AU_ABN", "78 003 191 035") in detections, detections
+    assert ("AU_ABN", "11 000 016 722") in detections, detections
+    licences = {v for kind, v in detections if kind == "AU_AFSL"}
+    assert licences == {"239 545", "227681"}, licences
+    out, _, _ = pipeline.strip(text, PseudonymMap())
+    assert "239 545" not in out, out
+    assert "AFSL AFSL_" in out, out
+
+
+def test_the_grouped_licence_shape_is_mirrored_on_the_credit_sibling(pipeline):
+    """The siblings label the same kind of number in the same kind of footer,
+    so a SHAPE one accepts and the other does not is the same gap as a
+    spelling one accepts and the other does not."""
+    text = "Broking under Australian Credit Licence 239 545."
+    detections = {
+        (r.entity_type, text[r.start:r.end]) for r in pipeline.analyze(text)
+    }
+    assert ("AU_CREDIT_LICENCE", "239 545") in detections, detections
+
+
+def test_a_grouped_licence_still_needs_its_label(pipeline):
+    """3+3 is a common shape — a date, a reference, an amount without its
+    separator — so the widened pattern is only safe while it stays STRICT.
+    Unlabelled, it must find nothing at all."""
+    text = "Payment of 239 545 processed on 30 September."
+    found = {(d.entity_type, text[d.start:d.end]) for d in pipeline.analyze(text)}
+    assert not {v for kind, v in found if kind in
+                ("AU_AFSL", "AU_CREDIT_LICENCE")}, found
 
 
 def test_a_corporate_licence_is_reversible_by_the_keep_list(tmp_path):

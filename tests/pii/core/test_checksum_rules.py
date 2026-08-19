@@ -180,3 +180,59 @@ def test_wrong_digit_count_matches_nothing():
     """The domain check keeps a rule off values that are not its shape at
     all — an 8-digit run is not a failed TFN, it is not a TFN."""
     assert _types(AuTfnRule("all"), "ref 12345678") == set()
+
+
+# A BARE run is the one shape carrying no evidence but its own arithmetic, and
+# that arithmetic is weak: 10.0% of random 10-digit runs beginning 2-6 pass the
+# Medicare mod-10, ~9% of 9-digit runs pass a TFN's mod-11, ~10% of card-length
+# runs pass Luhn (measured, 200k samples each). At document scale a passing
+# checksum inside a longer reference code is therefore routine, not a
+# coincidence — ANZ prints a page-edge batch stamp `XPRCAP0022-2309300323`
+# whose last ten digits are a checksum-valid Medicare number, and the whole
+# stamp painted as MEDICARE_1 (Sergei, 2026-08-19, 1.pdf p3). So a bare run
+# must additionally stand alone as a whole token.
+GLUED = [
+    pytest.param("XPRCAP0022-{}", id="code-prefix"),
+    pytest.param("{}-XPRCAP0022", id="code-suffix"),
+    pytest.param("Ref 12-{}", id="digits-across-a-hyphen"),
+    pytest.param("www.anz.com/{}", id="url-path"),
+    pytest.param("batch{}", id="letters-abutting"),
+]
+
+
+@pytest.mark.parametrize("template", GLUED)
+@pytest.mark.parametrize("rule_cls,entity,valid,_invalid", CASES)
+def test_a_bare_run_inside_a_reference_code_is_not_an_identifier(
+    rule_cls, entity, valid, _invalid, template
+):
+    bare = valid.replace(" ", "")
+    text = template.format(bare)
+    assert entity not in _types(rule_cls("all"), text), text
+
+
+@pytest.mark.parametrize("rule_cls,entity,valid,_invalid", CASES)
+def test_the_token_guard_leaves_a_genuinely_bare_run_alone(
+    rule_cls, entity, valid, _invalid
+):
+    """The guard asks for a whole token, not for a whole WORD of prose:
+    ordinary punctuation around a value is not glue, and a trailing full stop
+    in particular must never cost a detection."""
+    bare = valid.replace(" ", "")
+    for text in (f"reference {bare}", f"({bare})", f"Your number is {bare}.",
+                 f"{bare}\n", f"[{bare}]"):
+        assert entity in _types(rule_cls(), text), repr(text)
+
+
+def test_the_token_guard_is_on_the_bare_patterns_only():
+    """A grouped or labelled match has evidence of its own and has earned the
+    looser boundary. `ABN-11005357522` — the label hyphen-glued to its value,
+    with no space — is a real printed form, and it is the LABELLED pattern
+    that must keep matching it. Putting the guard on every pattern would take
+    this with it."""
+    from pii.core import PiiPipeline
+
+    pipeline = PiiPipeline()
+    for text in ("ABN-11005357522", "ABN 11005357522"):
+        found = {(d.entity_type, text[d.start:d.end])
+                 for d in pipeline.analyze(text)}
+        assert ("AU_ABN", "11005357522") in found, (text, found)

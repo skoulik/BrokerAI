@@ -23,7 +23,7 @@ or the web app; the only planned shared infrastructure is the local llama-server
 
 | Module | Role |
 |---|---|
-| `regex` | The regex engine layer 1 compiles with — stdlib `re` cannot do the variable-length lookbehind the account-after-BSB and labeled-identifier patterns need. |
+| `regex` | The regex engine layer 1 compiles with — stdlib `re` cannot do the variable-length lookbehind the account-after-BSB patterns need. (The labelled-identifier patterns needed one too until 2026-08-14; their label is `context` plus STRICT attachment now.) |
 | `tldextract`, `phonenumbers` | The two validators worth not writing: public-suffix check for emails, libphonenumber for AU phone numbers. |
 | llama-server (llama.cpp), Qwen3.6-27B | **Layer 0**, the semantic detector — reached over HTTP, never imported. Not a dependency of `pii.core` (stdlib `urllib` transport) but a hard runtime requirement of every strip mode. |
 | PaddleOCR (`paddleocr` + a `paddlepaddle` wheel) | The OCR engine behind the image path — **geometry only, never detection** (Tesseract was the first backend, retired 2026-07-17 — decision below). Runs in-process on either wheel since the torch conflict went (2026-08-09). |
@@ -281,6 +281,19 @@ nine-words-back promoters the count exists to exclude. A multi-component form ca
 combined pattern instead, scoring above threshold with no label at all (`AuBsbRule`'s lookaheads
 and `AuAccountNumberRule`'s mirrored lookbehinds, one pair per printed grouping) — so a field of
 this shape stripping in half means a grouping `recognizers.py` does not know.
+
+**The separator inside a value and the one joining two values are different classes**
+(`_SEP` and `_JOIN`, 2026-08-19). A comma is a thousands separator inside a number and a field
+separator between two of them, so it belongs to exactly one of them; widening `_SEP` to admit it
+would make every printed amount an identifier candidate. And an unknown grouping costs more than
+the account's span — it costs the BSB its CLASS: with no combined match both halves fall back on
+bare digit runs promoted by whatever label is in reach, and a bare run is an account. ME Bank
+prints `from 944600 000731114` and `from 944600,000731114` in one statement, so one BSB
+pseudonymized as `BSB_n` on some rows and `ACCOUNT_n` on others. **A BSB also needs a shape that
+does not depend on an account following it**: the only unseparated form was the combined one, so
+a statement's own `Account BSB 944600` field typed as an account. That pattern is STRICT — a bare
+six-digit run is one of the commonest on a statement, so the label must be adjacent, not merely
+nearby.
 
 **Between bands, the NEAREST label wins** (Sergei, 2026-08-14) — measured edge to edge, in line
 heights. It is the rule already used *within* a band, where the label closest to the value is the
@@ -651,8 +664,19 @@ asserted.
 **Enabling them forced the label out of the span.** Both patterns matched their own label
 (`AFSL 233714`), harmless while nothing was replaced and a bug the moment it strips: the map
 would key on the labelled string, so an unlabelled occurrence of the same number forks into
-`AFSL_1` and `AFSL_2`, and the output loses the word that says what the number is. Rewritten as
-a lookbehind like every other labelled rule — a label is evidence, not part of the value.
+`AFSL_1` and `AFSL_2`, and the output loses the word that says what the number is. Rewritten to
+keep the label out of the span like every other labelled rule — a lookbehind at the time,
+`context` plus STRICT attachment since 2026-08-14. A label is evidence, not part of the value.
+
+**Two digit shapes, because footers print two (2026-08-19).** The plain run and the 3+3
+grouping (`AFSL 239 545`), as separate patterns with the separator REQUIRED on the second — an
+optional separator matches zero of them, at which point "grouped" collapses back onto the plain
+run (the `*`-trap narrated on `_SEP`). Both are mirrored on the credit-licence sibling: a shape
+one accepts and the other does not is the same gap as a spelling one accepts and the other does
+not. The grouping does match the 3+3 groups inside a grouped ABN on the same footer line; what
+keeps those from becoming licences is the attachment, not the shape, since a STRICT label is
+only ever sought BEHIND the value. Found on a real page carrying both forms, one stripped and
+one left (DONE.md).
 
 ### Checksum-invalid identifiers are surfaced, not silently dropped (2026-07-14; one-rule ownership 2026-08-09)
 
@@ -673,6 +697,19 @@ validating rule's name rather than on the entity type — a semantic guess must 
 checksum candidate — and invalid classes always lose the placeholder to valid types on overlap.
 Adopted defaults: `likely` + log + no mask. **The findings log is near-PII** (a typo'd TFN is a
 real TFN minus a digit) — a local-only artifact, like `map.json`.
+
+**A BARE run must stand alone as a whole token (2026-08-19).** Bare — no grouping, no label —
+is the one shape carrying no evidence but its own arithmetic, and that arithmetic is weak:
+measured, 10.0% of random 10-digit runs beginning 2-6 pass the Medicare mod-10, ~9% of 9-digit
+runs pass a TFN's mod-11, ~10% pass Luhn. At document scale a passing checksum inside a longer
+reference code is therefore routine rather than a coincidence — ANZ's page-edge batch stamp
+`XPRCAP0022-2309300323` stripped as `MEDICARE_1`, taking the whole stamp with it. So
+`ChecksumRule` wraps `BARE_PATTERNS`, and only those, in guards against an adjacent
+alphanumeric, dash or slash; `\b` already excludes an adjacent digit. Standing alone is the
+cheapest further evidence available and the one thing a slice of a code cannot supply. The
+guard stays off the grouped and labelled patterns deliberately: they carry evidence of their
+own and have earned the looser boundary, and `ABN-11005357522` — the label hyphen-glued to its
+value — is a real printed form that only the labelled pattern can reach.
 
 Layer 0 disturbed this feature in two ways, both still open (TODO.md): the `context` tier lost
 its only real source when GLiNER2's identifier post-validation went with it, and layer 0 strips

@@ -51,6 +51,12 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   TFN/ABN/ACN/Medicare matched neither and was detected by nothing (2026-08-09).
   `pii/core/checksums.py` is the single source of truth; `pii_eval/au.py` mirrors it so the
   corpus generator and the detector agree.
+- **A BARE checksum run must stand alone as a whole token, and only a bare one.** A passing
+  checksum is not proof on its own — 10.0% of random 10-digit runs beginning 2-6 pass the
+  Medicare mod-10, so a batch stamp `XPRCAP0022-2309300323` stripped as `MEDICARE_1`
+  (2026-08-19). `ChecksumRule` guards `BARE_PATTERNS` against an adjacent alphanumeric, dash or
+  slash. Never extend the guard to the grouped or labelled patterns: they carry their own
+  evidence, and `ABN-11005357522` is a real form only the labelled one reaches.
 - **The context boost's constants are load-bearing.** +0.35, floored to 0.4, capped at 1.0,
   from BEFORE the match only. Every sub-threshold pattern (bare account numbers, PayID digit
   runs, the `context` invalid tier) exists only because that promotion exists, so changing a
@@ -68,6 +74,12 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   field strips in HALF — which reads as redacted. CommBank's `06 3118 10587788` leaked its
   account on all three pages of a reference statement (2026-08-18). Widen the grouping
   vocabulary, never `FILLER_ALLOWANCE`: that is a global precision trade paid for one form.
+  An unknown grouping also costs the BSB its CLASS, not only the account its span — both halves
+  fall back on bare runs, and a bare run is an account (2026-08-19).
+- **`_SEP` is the separator INSIDE a value; `_JOIN` is the one BETWEEN two of them.** Never
+  merge them. A comma joins a BSB to its account (`from 944600,000731114`) and separates
+  thousands inside a number (`$94,660.96`), so admitting it to `_SEP` makes every printed
+  amount an identifier candidate.
 - **Between bands the NEAREST label wins**, edge to edge in line heights — the same rule already
   used within a band, where the closest label is the one that introduces the value. A fixed
   left-then-above order lets a bogus left label outrank a good one directly overhead.
