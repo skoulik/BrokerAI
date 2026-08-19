@@ -353,8 +353,15 @@ def loan_application(pool: Pool, invalid: bool = False) -> Doc:
     # form with the DOC-TRUNCATED trust name real statements produce
     # ('... ATF SK BU') — the layer-1 ATF-tail pattern must strip the
     # clause even though the truncation removes the trust's own marker.
-    truncated_trust = f"ATF {biz.name.split()[0]} FAMILY TRU"
-    doc.raw("  Account name:    ").private_org(biz.name).raw(" ")
+    #
+    # The connector is RAW, not part of the annotated value (2026-08-19). It is
+    # a label — it says the following words are a trust — and a label is
+    # evidence, never part of the value, so annotating it would ask the tool to
+    # over-strip and would score the correct span as `partial`. It stays in the
+    # document because the clause is what makes the truncated fragment
+    # detectable at all.
+    truncated_trust = f"{biz.name.split()[0]} FAMILY TRU"
+    doc.raw("  Account name:    ").private_org(biz.name).raw(" ATF ")
     doc.pii(truncated_trust, "ORGANIZATION_ATF").nl()
     doc.raw("  ABN:             ")
     if invalid:

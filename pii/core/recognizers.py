@@ -577,11 +577,31 @@ class AtfTailRule(PatternRule):
     marker and 'TRU'/'BU' are not 'TRUST'. Since 2026-08-11 an organization
     strips unless the keep list exempts it, so a detected trust fragment needs
     no marker. The rule survives for the other half of its job — CREATING the
-    span over a fragment layer 0 may not report at all."""
+    span over a fragment layer 0 may not report at all.
+
+    **The connector is a LABEL and stays out of the span** (2026-08-19), like
+    every other labelled rule: it is what says the following words are a trust,
+    not part of the trust's name. Inside the span it keyed the pseudonym map on
+    `ATF SK BUSINESS TRUST`, so a bare `SK BUSINESS TRUST` elsewhere in the
+    document forked into a second ORG_n — verbatim the AFSL_1/AFSL_2 argument
+    of 2026-08-14 — and the placeholder swallowed the word that says what the
+    relationship is.
+
+    It is a LOOKBEHIND here rather than `context` + STRICT, which is the shape
+    every other labelled rule was converted to that day, and the exception is
+    forced: a STRICT pattern must still describe the value, and this value has
+    no shape at all. `\\S[^\\n]{0,60}` unanchored matches at every non-space on
+    the page. The connector is doing two jobs — evidence AND anchor — which is
+    exactly `AuAccountNumberRule`'s "account after bsb" situation, and the same
+    reason `regex` is compiled in place of `re`."""
 
     entity = "ORGANIZATION"
     patterns = (
-        Pattern("atf tail", r"\b(?:atf|as\s+trustees?\s+for)\s+\S[^\n]{0,60}", 0.45),
+        Pattern(
+            "atf tail",
+            r"(?<=\b(?:atf|as\s+trustees?\s+for)\s+)\S[^\n]{0,60}",
+            0.45,
+        ),
     )
 
 

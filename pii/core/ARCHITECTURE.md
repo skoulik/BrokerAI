@@ -328,6 +328,17 @@ and the corridor vocabulary is one shared list. A spelling is a stem (`account` 
 `Accounts`, `afs lic` matches `AFS Licence`) and must begin at a word boundary; a spelling too
 short to be safe as a stem is wrapped in `labels.Exact` (`ac`).
 
+**Two rules keep a regex lookbehind, and both for the same reason.** A STRICT pattern must still
+describe its value's SHAPE — the label only gates it — so a value with no shape cannot be
+expressed that way. `AuAccountNumberRule`'s `account after bsb` and `AtfTailRule`'s `atf tail`
+are the two: a bare account run and "the rest of the line after ATF" are anchored by what
+precedes them and by nothing else, so there the preceding text is doing two jobs, evidence and
+anchor, and only a lookbehind does both. They are why layer 1 compiles with `regex` rather than
+`re`. The label still stays out of the span, which is the part that matters:
+`AtfTailRule` carried its connector INSIDE the span until 2026-08-19, keying the map on
+`ATF SK BUSINESS TRUST` so that a bare mention of the same trust forked into a second `ORG_n` —
+the AFSL_1/AFSL_2 failure again, on the last rule that still had it.
+
 **The attachment is recorded and reported.** `Detection.attachment` carries the label, where it
 sat, and which band reached it, and `--report` prints it (`AU_BANK_ACCOUNT 0.50 '0007 3111 4'
 <- left 'Account'`). A mechanism that can change a value's class must not be silent about it —
@@ -1544,7 +1555,10 @@ Two guards keep this from being the grouping vote by another route:
    is unanchored, fragmentary and fuzzy at once — the three-liberty composition the wrapped
    tier is already refused for. Measured: the layer-1 fragment `ATF SK MANAGEMENT` matched
    `Name\nSK MANAGEMENT` on another page at distance 3.0 against a budget of 3.0, crossing a
-   line break and swallowing the field label.
+   line break and swallowing the field label. (That needle reads `SK MANAGEMENT` since
+   2026-08-19, the connector having left the span — but the guard is not about the connector.
+   The extent is still "the rest of the line", which is the artifact, and the same measurement
+   would be reachable from any truncation.)
 2. **A layer-1 needle may add coverage, never re-classify.** Where layer 1 already spoke about
    those pixels on this page, its own per-occurrence verdict stands and the borrowed span is
    dropped *before* the merge. Without that it wins — a borrowed span scores 1.0 and

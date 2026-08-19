@@ -1,9 +1,11 @@
 """Pattern-layer pipeline behaviour and overlap merging (no NER)."""
 
+import pytest
+
 from pii.core.detection import Detection
 
 from pii.core.mapping import PseudonymMap
-from pii.core.pipeline import _merge_overlaps
+from pii.core.pipeline import _merge_overlaps, apply_plan
 from pii.core.recognizers import AuAccountNumberRule
 
 # Checksum-valid literals (pii_eval.au generators, fixed seeds).
@@ -226,19 +228,59 @@ def test_an_unseparated_bsb_needs_its_label_adjacent(pipeline):
     assert not [v for k, v in found if k == "AU_BSB"], found
 
 
-def test_atf_tail_stripped_including_truncated_forms(pipeline):
+@pytest.mark.parametrize(
+    "connector,trust",
+    [
+        ("ATF", "SK BU"),                       # truncated mid-word
+        ("ATF", "SK BUSINESS TRU"),             # truncated further
+        ("ATF", "SK BUSINESS TRUST"),           # whole
+        ("as trustees for", "THE KULIK FAMILY TRUST"),
+    ],
+)
+def test_atf_tail_strips_the_trust_and_keeps_the_connector(
+    pipeline, connector, trust
+):
     # Issue #9: '<company> ATF <trust>' — the doc truncates the field
-    # mid-word ('ATF SK BU', '... SK BUSINESS TRU'), defeating NER
-    # confidence; the layer-1 ATF-tail pattern covers the clause to
-    # end-of-line regardless, and no keep list names it so it strips. The
-    # next line must stay untouched.
-    for tail in ("ATF SK BU", "ATF SK BUSINESS TRU",
-                 "as trustees for THE KULIK FAMILY TRUST"):
-        text = f"ACCOUNT NAME PTY LTD {tail}\nStatement starts 22 February"
-        out, _, _ = pipeline.strip(text, PseudonymMap())
-        assert tail not in out, out
-        assert "ORG_" in out, out
-        assert out.endswith("Statement starts 22 February"), out
+    # mid-word, defeating NER confidence; the layer-1 ATF-tail pattern covers
+    # the clause to end-of-line regardless, and no keep list names it so it
+    # strips. The next line must stay untouched.
+    #
+    # The CONNECTOR is a label and stays out of the span (2026-08-19), so it
+    # survives in the output — asserted explicitly, because "the tail is gone"
+    # is true either way and would pass whether or not the label moved.
+    text = f"ACCOUNT NAME PTY LTD {connector} {trust}\nStatement starts 22 February"
+    detections = {
+        (r.entity_type, text[r.start:r.end]) for r in pipeline.analyze(text)
+    }
+    assert ("ORGANIZATION", trust) in detections, detections
+    out, _, _ = pipeline.strip(text, PseudonymMap())
+    assert trust not in out, out
+    assert f"{connector} ORG_" in out, out
+    assert out.endswith("Statement starts 22 February"), out
+
+
+def test_the_trust_is_one_identity_however_it_is_introduced(pipeline):
+    """The reason the connector had to leave the span. Inside it, the map keyed
+    on `ATF SK BUSINESS TRUST`, so a bare mention of the same trust elsewhere
+    in the document forked into a SECOND ORG_n — one entity, two identities —
+    which is verbatim the AFSL_1/AFSL_2 argument of 2026-08-14.
+
+    Measured before the fix on this exact text: `ORG_1` for the clause and
+    `ORG_2` for the bare mention.
+    """
+    text = ("ACCOUNT NAME PTY LTD ATF SK BUSINESS TRUST\n"
+            "Distribution to SK BUSINESS TRUST on 30 June\n")
+    bare = "SK BUSINESS TRUST"
+    at = text.index(bare, text.index("Distribution"))
+    # The bare mention has no layer-1 shape — an organization is layer 0's to
+    # name — so it is supplied here as the layer-0 span it would be.
+    spans, _ = pipeline.merge_detections(
+        [Detection("ORGANIZATION", at, at + len(bare), 1.0)], text
+    )
+    out = apply_plan(text, spans, PseudonymMap())
+    assert out.count("ORG_1") == 2, out
+    assert "ORG_2" not in out, out
+    assert "ATF ORG_1" in out, out
 
 
 def test_corporate_licence_numbers_strip_under_their_own_classes(pipeline):

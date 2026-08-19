@@ -3606,3 +3606,51 @@ the move; new completed tasks append to the matching section with their records.
       derivation has nowhere to happen there — and the identity axis it would measure is the
       one the scorer is blind to anyway (the standing TODO item). Fast suite: **729 passed**.
       The tier-1 eval gate has NOT been run — llama-server, `$PII_VLM_URL` unset.
+
+- [x] **The ATF connector leaves the span — the last rule keeping its label inside**
+      *(Sergei, 2026-08-19, step 1 of the derived-rule work: "AtfTailRule is one source, only
+      the <trust> part could be harvested".)*
+
+      `AtfTailRule` matched from the connector, so its span was `ATF SK BUSINESS TRUST`. That
+      is a label inside a value, and it produced both symptoms the 2026-08-14 AFSL argument was
+      made about: the map keyed on the labelled string, so a bare mention of the same trust
+      forked into a second `ORG_n`; and the placeholder swallowed the word that says what the
+      relationship is. Measured on `ACCOUNT NAME PTY LTD ATF SK BUSINESS TRUST` plus a later
+      bare `SK BUSINESS TRUST`:
+
+          before   ORG_1 for the clause, ORG_2 for the bare mention   (one trust, two identities)
+          after    ORG_1 twice, and the output reads `ATF ORG_1`
+
+      **A LOOKBEHIND, not `context` + STRICT**, which is the shape every other labelled rule
+      was converted to on 2026-08-14. The exception is forced and worth stating once: a STRICT
+      pattern must still describe its value's SHAPE, because the label only gates it — and this
+      value has no shape. `\S[^\n]{0,60}` unanchored matches at every non-space character on
+      the page. The connector is doing two jobs at once, evidence AND anchor, which is exactly
+      `AuAccountNumberRule`'s `account after bsb` situation and the same reason layer 1 compiles
+      with `regex` rather than `re`. `PatternRule.detect` takes `match.span()` and has no
+      capture-group seam, so a lookbehind is also the only way to anchor on a thing and not
+      span it.
+
+      **False-positive scan.** A/B over 35 reference PDFs, offset-keyed: **356 detections before
+      and after, 0 added, 0 removed**, and every difference the same span minus its connector —
+      `ATF SK BU` → `SK BU`, `ATF SK BUSINESS TRU` → `SK BUSINESS TRU`,
+      `ATF SK MANAGEMENT ` → `SK MANAGEMENT `. The rule's known false hits in policy prose
+      (`as trustee for a trust) are acceptable, only if the`) shrink by the connector and are
+      otherwise unchanged — still the "over-strip of one line tail, safe direction" bargain.
+
+      **The corpus annotated the connector as part of the value, and would have called this a
+      regression.** `templates_text` emitted `doc.pii(f"ATF {…} FAMILY TRU", "ORGANIZATION_ATF")`.
+      Scored against the new spans, all four instances on seed 42 verdict `partial` — the exact
+      shape of a false alarm on the next corpus run. Fixed at the truth end, which is where it
+      was wrong: the connector is now `doc.raw(" ATF ")` and only the trust is annotated. A
+      label is evidence, so annotating it asks the tool to over-strip.
+
+      **Not fixed here:** the span is still "the rest of the line (capped at 60)", so it can
+      carry trailing junk past the trust name. That extent is a separate defect, already
+      acknowledged as the reason a layer-1 needle gets `TEXTUAL_TIERS`, and untouched by this.
+
+      **Dual coverage.** `test_pipeline.py` — the four clause forms parametrized, each asserting
+      the trust strips AND `"<connector> ORG_" in out`, because "the tail is gone" is true
+      either way and would pass whether or not the label moved; plus the fork test, one trust
+      introduced two ways yielding `ORG_1` twice with no `ORG_2`. Corpus: the corrected
+      `ORGANIZATION_ATF` annotation, `stripped` x4 on seed 42. Fast suite: **733 passed**.
