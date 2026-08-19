@@ -557,6 +557,14 @@ different positions.
 Evidence replaces every guard. `P&O Cruises` is unreachable unless a detected person is surnamed
 Cruises; `E & J HOLDINGS` needs two people surnamed Holdings. No word list, no case trickery.
 
+**"Known people" means known to the DOCUMENT** (2026-08-19). The pool is built from
+`derived.KnownValues` — every PERSON value either layer detected on any page — and only the
+search for the initials form runs against the page in hand. Before that the pool was rebuilt
+per page, so a statement that names the couple in its header and prints `E & J MOORE` on a
+later transaction page derived nothing there and the initials form went out in the clear.
+Pinned by `test_pdf_mode.test_pass_two_derives_from_the_whole_document_not_one_page`; the
+narrative is under "Layer 1 is a document-wide recall floor".
+
 **It consumes DETECTIONS, never "layer 0's output"** (Sergei's correction, and the reason pass 2
 exists as a concept rather than as a merge-time fixup). Layer 1 may grow a PERSON source of its
 own later — an NER recognizer, an allow/deny list — and it must feed this rule with no rewiring.
@@ -1509,8 +1517,21 @@ is not a floor.
 **Layer 1 now runs in sweep 1 too, and its spans join the borrowed pass.**
 `image_mode.layer1_needles` reads the page's strip plan (so the keep list has already been
 applied) and `strip_pdf` unions the distinct values across **every** page before the first page
-is redacted. Nothing else moves: the strip plan is still built in sweep 2, where both layers'
-spans exist together, which is the only place `derived.py` can run.
+is redacted. The strip plan is still built in sweep 2, where both layers' spans exist together.
+
+**Layer 1 pass 2 was left behind by this change, and caught up on 2026-08-19.** The note here
+used to say sweep 2 was "the only place `derived.py` can run", and it is not: sweep 1 holds both
+layers' spans per page, and the union over every page is strictly more than any one of them.
+Until then `pii/core/derived.py` rebuilt its pool from ONE page's spans, so `JointNames` could
+derive `E & J MOORE` only on a page that *also* named Emily and John — the same
+per-occurrence defect, in the same shape, on the pass that runs immediately after the one that
+was fixed. Pass 2 now LEARNS document-wide and APPLIES per page: `derived.KnownValues` is every
+value either layer detected anywhere, keep-list filtered, assembled between the sweeps, and each
+rule reads it alongside the page it was handed. The halves separate cleanly because they are
+different kinds of fact — *which values name people* belongs to the values, *where that name is
+printed* belongs to a page. A caller with one page and no document (`strip_text`, `strip_image`,
+the testbench) passes none and every rule falls back to the spans it was given, so for them the
+two regimes coincide exactly.
 
 Two guards keep this from being the grouping vote by another route:
 

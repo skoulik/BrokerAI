@@ -6,16 +6,21 @@ precise — see `test_the_shape_alone_is_never_enough` for the class of failure
 that killed it.
 
 These drive through `PiiPipeline.merge_detections`, which is the production
-path: it is the one place where every layer's spans exist together, so it is
-the only place pass 2 can run. `pipeline.strip()` is pass 1 only and will not
-show joint names.
+path: it is where every layer's spans exist together, so it is where pass 2
+runs. `pipeline.strip()` is pass 1 only and will not show joint names.
+
+They pass no `KnownValues`, which makes each case a single page that is its own
+whole document — the regime `strip_text` and `strip_image` are always in, and
+the one every caller was in before 2026-08-19. What pass 2 does with a
+document-wide pool is a multi-page property and is tested where multiple pages
+exist, in `test_pdf_mode.py`.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from pii.core.derived import JointNames, parse_joint
+from pii.core.derived import JointNames, KnownValues, parse_joint
 from pii.core.detection import Detection
 from pii.core.mapping import PseudonymMap
 from pii.core.pipeline import apply_plan
@@ -198,5 +203,5 @@ def test_pass_two_is_blind_to_which_layer_supplied_a_name():
     text = "Emily Moore and John Moore. Rent E & J Moore\n"
     seed = _person(text, "Emily Moore and John Moore")
     seed.recognizer = "SomeFutureLayer1Rule"
-    _, added = JointNames().apply([seed], text)
+    _, added = JointNames().apply([seed], text, KnownValues())
     assert any(d.entity_type == "PERSON_JOINT" for d in added)

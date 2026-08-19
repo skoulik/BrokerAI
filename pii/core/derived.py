@@ -5,6 +5,27 @@ string and knows nothing about what any other layer found. Pass 2 runs after
 it, over the union of everything detected so far, and derives what only that
 union makes visible.
 
+**That union is the whole DOCUMENT, not one page** (Sergei, 2026-08-19). A
+pass-2 rule learns from `KnownValues` — every value either layer detected
+anywhere, complete before the first page is redacted — and applies what it
+learnt to one page at a time. The two halves are separable because they are
+different kinds of thing: *which values name people* is a property of the
+values, while *where that name is printed* is a property of a page.
+
+Until 2026-08-19 both halves were per page, so `JointNames` could only derive
+`E & J MOORE` on a page that ALSO carried Emily and John Moore: the pool was
+rebuilt from one page's spans every time. That is the defect
+`image_mode.layer1_needles` was created for on 2026-08-18 — "a floor that holds
+per-occurrence is not a floor" — left behind by that change because the
+architecture note of the day said sweep 2 was "the only place `derived.py` can
+run". It is not: sweep 1 holds both layers' spans per page, and the union of
+every page is strictly more than any one of them.
+
+A caller with one page and no document — `strip_text`, `strip_image`, the
+testbench — passes no `KnownValues` at all, and every rule falls back to the
+spans it was handed. For those callers the page IS the document, so the two
+regimes coincide and nothing about their behaviour changed.
+
 **A pass-2 rule consumes person/organization/… detections, never "layer 0's
 output"** (Sergei, 2026-08-14). That distinction is the whole point of the
 split: layer 1 may itself grow a PERSON source later — an NER recognizer, an
@@ -53,22 +74,63 @@ _WORD = r"[\p{Lu}][\p{L}'’-]+"
 _INITIAL = r"\p{Lu}\.?"
 
 
+@dataclasses.dataclass(frozen=True)
+class KnownValues:
+    """Every value either layer detected ANYWHERE in the document.
+
+    Type-and-value pairs, with no offsets and no page numbers, because an
+    offset means nothing on another page and pass 2 only ever needs to know
+    *what* was found — a rule that wanted to know where would be reading
+    geometry, which is not this layer's business.
+
+    The pairs are already through the keep list (`PiiPipeline.strips_value`),
+    so a kept merchant name cannot seed a derivation. That mirrors
+    `merge_detections`, which puts layer-0 spans through the keep list before
+    calling pass 2, and it matters here for the same reason: a derived value
+    inherits the evidence of the value it came from, so admitting a kept one
+    would launder it back into the strip plan under a new name.
+
+    Empty is the honest default: it means "no document-wide view was supplied",
+    and every rule then falls back to the page it was handed.
+    """
+
+    pairs: frozenset[tuple[str, str]] = frozenset()
+
+    @classmethod
+    def of(cls, pairs: Iterable[tuple[str, str]]) -> "KnownValues":
+        return cls(frozenset(pairs))
+
+    def of_type(self, entity_type: str) -> frozenset[str]:
+        return frozenset(v for t, v in self.pairs if t == entity_type)
+
+    def __bool__(self) -> bool:
+        return bool(self.pairs)
+
+
 class DerivedRule(Protocol):
     def apply(
-        self, spans: Sequence[Detection], text: str
+        self, spans: Sequence[Detection], text: str, known: KnownValues
     ) -> tuple[list[Detection], list[Detection]]:
         """(re-typed spans, new spans). `spans` is returned whole, so a rule
-        that re-types nothing still passes every input through."""
+        that re-types nothing still passes every input through.
+
+        `spans` and `text` are ONE PAGE; `known` is the whole document. A rule
+        learns from `known` and this page's own spans together — the page is
+        part of the document, and unioning the two is what makes an empty
+        `known` reproduce the pre-2026-08-19 single-page behaviour exactly."""
 
 
 def apply(
-    spans: Sequence[Detection], text: str, rules: Iterable[DerivedRule] = ()
+    spans: Sequence[Detection],
+    text: str,
+    known: KnownValues = KnownValues(),
+    rules: Iterable[DerivedRule] = (),
 ) -> tuple[list[Detection], list[Detection]]:
     """Run pass 2. Returns (all spans, of which these are new)."""
     added: list[Detection] = []
     current = list(spans)
     for rule in rules or DEFAULT_RULES:
-        current, new = rule.apply(current, text)
+        current, new = rule.apply(current, text, known)
         added.extend(new)
     return current, added
 
@@ -195,15 +257,35 @@ class JointNames:
     3. DERIVE - every ordered pair of known people is searched for as an
        initials form. Ordered, because 'E & J Moore' and 'J & E Moore' name
        the same couple in different positions and only one can be right.
+
+    Steps 1 and 2 read `KnownValues` — the whole document — before they read
+    this page, so the pool is complete however the pages are ordered. Step 3
+    searches THIS page's text, because that is the only place an offset means
+    anything. A document-wide person who is printed nowhere on this page
+    simply matches nothing here, which costs one regex sweep.
     """
 
     name = "JointNames"
 
     def apply(
-        self, spans: Sequence[Detection], text: str
+        self, spans: Sequence[Detection], text: str, known: KnownValues
     ) -> tuple[list[Detection], list[Detection]]:
         people: set[str] = set()
         surnames: set[tuple[str, ...]] = set()
+        # LEARN from the whole document first. A person named on page 1 is a
+        # person on page 4, so the pool a joint form is derived against is the
+        # document's, not this page's — otherwise `E & J MOORE` on the
+        # transaction page derives nothing unless Emily and John happen to be
+        # named there too, which is the per-occurrence defect pass 2 carried
+        # until 2026-08-19. Values only, no offsets: where each one was printed
+        # is this page's business, below.
+        for value in known.of_type(PERSON_ENTITY):
+            parsed = parse_joint(value)
+            if parsed is None:
+                people.add(value)
+                continue
+            people.update(parsed.people)
+            surnames.add(parsed.surname)
         out: list[Detection] = []
         for span in spans:
             if span.entity_type != PERSON_ENTITY:

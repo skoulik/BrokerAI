@@ -3545,3 +3545,64 @@ the move; new completed tasks append to the matching section with their records.
 
       **The tier-1 eval gate has NOT been run against this change** — llama-server, `$PII_VLM_URL`
       unset. Fast suite: **727 passed**.
+
+- [x] **Layer 1 pass 2 becomes document-wide** *(Sergei, 2026-08-19: "pass 2 should run
+      per-document after all pages went through pass 1". Prompted by the derived-rule ideas
+      below; done first, on its own, as the foundation for them.)*
+
+      **The record said the opposite, and the record was wrong.** ARCHITECTURE's account of the
+      2026-08-18 needle work ended *"the strip plan is still built in sweep 2, where both
+      layers' spans exist together, which is the only place `derived.py` can run"*. It is not:
+      sweep 1 holds both layers' spans per page, and the union over every page is strictly more
+      than any one of them. What that sentence did was leave pass 2 carrying the exact defect
+      the same commit had just fixed one layer up — *"a floor that holds per-occurrence is not
+      a floor"* — on the pass that runs immediately after it.
+
+      **The symptom.** `JointNames.apply(spans, text)` rebuilt its pool of known people from
+      ONE page's spans, so `E & J MOORE` on a transaction page derived nothing unless Emily and
+      John were named on that same page. Neither of the other document-wide views could cover
+      it: `grouping`'s needles and `layer1_needles` both find other printings of a value some
+      layer READ, and `E & J MOORE` was read by nobody — it is derived, which is the one thing
+      only pass 2 does.
+
+      **The fix is a split, not a move.** Pass 2 has two halves and only one of them is
+      per-page: *which values name people* is a property of the values, *where that name is
+      printed* is a property of a page. So a rule now LEARNS from `derived.KnownValues` — every
+      value either layer detected anywhere, no offsets, no page numbers — and APPLIES to the
+      page it was handed. `strip_pdf` assembles it between the sweeps beside `grouping` and
+      `needles`, from those two views rather than from the raw reads: grouping carries the
+      ELECTED class for each layer-0 form (the model's vocabulary is not ours) and a layer-1
+      needle comes from a strip plan, so the keep list has already run on it. Layer-0
+      constituents have not, hence `strips_value` — a kept merchant name must not seed a
+      derivation and re-enter the plan under a new name.
+
+      **Omitting it reproduces the old behaviour exactly**, which is what makes this safe for
+      `strip_text` / `strip_image` / the testbench: with one page, the page IS the document and
+      the two regimes coincide. Every rule unions `known` with the spans it was handed, so an
+      empty `KnownValues` is not a degraded mode but the same mode.
+
+      **What it is NOT.** `known` is deliberately withheld from the `alone` baseline in
+      `strip_from_vlm` — that counter measures what a page would have redacted by itself, and
+      pass 2's pool is by definition what the other pages contributed; feeding it in would make
+      the counter under-report the very thing it exists to measure.
+
+      **Verification.** New `test_pdf_mode` case: page 1 names the couple, page 2 carries only
+      `E & J MOORE`, layer 0 speaks on page 1 only. With the document-wide feed severed, page
+      2's spans are `[]` — the initials form goes out **unredacted**; with it, page 2 yields
+      `[('PERSON_JOINT', 'E & J MOORE')]` and the surname is not emitted separately because the
+      joint span already covers it. A second case pins that this coverage is NOT reported as
+      `borrowed`: pass 2 and `locate_borrowed` are different mechanisms and have to stay
+      countable apart. Single-page behaviour re-checked by hand and unchanged
+      (`JOINT_1 … JOINT_2 … PERSON_1`). A real 3-page statement end-to-end: 43 detections
+      before and after, identical — expected, because `--layer0 off` supplies no PERSON values
+      for `JointNames` to learn from, which is also why **the effect cannot be demonstrated on
+      a reference document without a layer-0 server**. The pytest is the demonstration.
+
+      One collision found and renamed on the way: `strip_from_vlm` already had a local `known`
+      (the layer-0 needle texts used to de-duplicate the two needle sets), now `layer0_texts`.
+
+      **Dual coverage.** Two pytest cases as above. No corpus probe: the harness generates one
+      text document per case with no page structure that `derived` can see, so a cross-page
+      derivation has nowhere to happen there — and the identity axis it would measure is the
+      one the scorer is blind to anyway (the standing TODO item). Fast suite: **729 passed**.
+      The tier-1 eval gate has NOT been run — llama-server, `$PII_VLM_URL` unset.

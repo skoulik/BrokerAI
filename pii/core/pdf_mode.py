@@ -200,6 +200,7 @@ def strip_pdf(
     near-PII: local only.
     """
     # heavy: the analysis stack
+    from pii.core.derived import KnownValues
     from pii.core.grouping import group_findings
     from pii.core.image_mode import read_page, strip_from_vlm
 
@@ -244,6 +245,33 @@ def strip_pdf(
                 needle for read in reads for needle in read.layer1
             )
         )
+        # ...and the third: what layer-1 PASS 2 gets to learn from
+        # (`pii.core.derived.KnownValues`). The other two views find printings
+        # of a value somebody detected; this one lets a rule derive a value
+        # nobody detected at all, so it must see the same document the other
+        # two do — a joint name whose two people are named on page 1 has to be
+        # derivable on page 4, and until 2026-08-19 pass 2 rebuilt its pool
+        # from one page's spans and could not.
+        #
+        # Assembled from the two views rather than from the raw reads, because
+        # both have already resolved something this needs: grouping carries the
+        # ELECTED class for each layer-0 form (the model's own vocabulary is
+        # not ours), and a layer-1 needle is taken from a strip plan, so the
+        # keep list has already run on it. Layer-0 constituents have not been
+        # through the keep list, hence `strips_value` — a kept merchant name
+        # must not seed a derivation and re-enter the plan under a new name.
+        known = KnownValues.of(
+            (entity_type, value)
+            for entity_type, value in (
+                *(
+                    (group.entity_type, variant.text)
+                    for group in grouping.groups
+                    for variant in group.variants
+                ),
+                *((needle.entity_type, needle.text) for needle in needles),
+            )
+            if pipeline.strips_value(entity_type, value)
+        )
 
         out_doc = pymupdf.open()
         # One document per requested layer — see DebugSpec for why they are not
@@ -269,7 +297,7 @@ def strip_pdf(
                 image = stored.convert("RGB")
             result = strip_from_vlm(
                 image, read.findings, pipeline, pmap,
-                ocr=read.ocr, grouping=grouping, needles=needles,
+                ocr=read.ocr, grouping=grouping, needles=needles, known=known,
                 incomplete=read.incomplete, repair=read.repair,
             )
             cached.unlink()

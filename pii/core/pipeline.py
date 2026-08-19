@@ -37,6 +37,7 @@ treat any log of them as a local-only artifact, like the pseudonym map.
 
 from dataclasses import dataclass
 
+from pii.core.derived import KnownValues
 from pii.core.derived import apply as derive
 from pii.core.detection import Detection
 from pii.core.engine import Analyzer, TextLayout
@@ -170,7 +171,7 @@ class PiiPipeline:
         return plan, _collect_invalid(results, text)
 
     def merge_detections(
-        self, detected: list, text: str, layout=None
+        self, detected: list, text: str, layout=None, known=None
     ) -> tuple[list, list[InvalidFinding]]:
         """Fold layer-0 detections and a layer-1 pass over the same text into
         one strip plan.
@@ -205,17 +206,29 @@ class PiiPipeline:
         semantic detector. The failure that protects against (layer 1 typing
         the AFSL number 237502 as a phone) costs an over-strip, not a leak.
 
-        LAYER 1 PASS 2 (`pii.core.derived`) runs last, and this is the only
-        place it can: it reads DETECTIONS rather than text, and this is the one
-        method where every layer's spans exist together. It is deliberately
-        blind to which layer supplied a name — layer 1 may grow a PERSON source
-        of its own later (Sergei, 2026-08-14), and such a source must feed
-        these rules without rewiring. Keep is applied to what pass 2 ADDS, and
-        only to that: everything it was handed has already been through it.
+        LAYER 1 PASS 2 (`pii.core.derived`) runs last, because it reads
+        DETECTIONS rather than text and this is the one method where every
+        layer's spans exist together. It is deliberately blind to which layer
+        supplied a name — layer 1 may grow a PERSON source of its own later
+        (Sergei, 2026-08-14), and such a source must feed these rules without
+        rewiring. Keep is applied to what pass 2 ADDS, and only to that:
+        everything it was handed has already been through it.
+
+        `known` is what pass 2 learns from: every value either layer detected
+        anywhere in the DOCUMENT (`pii.core.derived.KnownValues`), keep-list
+        filtered, assembled between the sweeps by the caller that has all the
+        pages. Passing none means "this text is the whole document", which is
+        true for `strip_text` and `strip_image` and was true of every caller
+        before 2026-08-19 — that is why omitting it reproduces the old
+        behaviour exactly rather than degrading. `strip_pdf` supplies it, and
+        without it a joint name can only be derived on a page that also names
+        both people (see `pii.core.derived`).
         """
         layer1, invalid = self.detect(text, layout)
         stripped = [p for r in detected for p in self.apply_keep(r, text)[0]]
-        spans, added = derive(stripped + list(layer1), text)
+        spans, added = derive(
+            stripped + list(layer1), text, known or KnownValues()
+        )
         kept_added = [p for r in added for p in self.apply_keep(r, text)[0]]
         return _merge_overlaps(spans + kept_added), invalid
 

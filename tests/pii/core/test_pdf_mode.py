@@ -367,6 +367,90 @@ def test_a_value_detected_on_one_page_is_redacted_on_all_of_them(
     assert len(pmap) == 1
 
 
+class _CoupleThenInitials:
+    """Page 1 names the couple; page 2 carries only the initials form.
+
+    The split is the whole point: nothing on page 2 says who E and J are, and
+    nothing on page 1 carries the initials form, so neither page can do this
+    alone. `locate_borrowed` cannot help either — its needles are values some
+    layer READ, and `E & J MOORE` was read by nobody.
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, image, lang="eng"):
+        self.calls += 1
+        frame = OcrFrame(width=image.width, height=image.height,
+                         page=self.calls)
+        if self.calls == 1:
+            words = [("Holders", 20), ("Emily", 90), ("Moore", 150),
+                     ("and", 210), ("John", 250), ("Moore", 300)]
+        else:
+            words = [("Rent", 20), ("E", 70), ("&", 95), ("J", 120),
+                     ("MOORE", 150)]
+        return build_page(
+            [[(w, Box(x, 20, 45, 20), 90.0) for w, x in words]], frame
+        )
+
+
+def test_pass_two_derives_from_the_whole_document_not_one_page(
+    tmp_path, pipeline, monkeypatch
+):
+    """Layer-1 pass 2 learns document-wide (2026-08-19).
+
+    Until then it rebuilt its pool from ONE page's spans, so `E & J MOORE` on
+    the transaction page derived nothing unless Emily and John happened to be
+    named on that same page — the per-occurrence defect
+    `image_mode.layer1_needles` was created for on 2026-08-18, left behind by
+    that change because the architecture note of the day said sweep 2 was "the
+    only place `derived.py` can run".
+    """
+    from pii.core.vlm import VlmFinding
+
+    monkeypatch.setattr(pdf_mode, "get_ocr_page",
+                        lambda backend: _CoupleThenInitials())
+    src = tmp_path / "doc.pdf"
+    _make_pdf(src, pages=2)
+    detector = _FirstPageOnlyDetector(
+        [VlmFinding(text="Emily Moore and John Moore", entity_type="PERSON")]
+    )
+    result = strip_pdf(src, pipeline, PseudonymMap(), tmp_path / "out.pdf",
+                       dpi=72, detector=detector)
+
+    first, second = result.pages
+    assert [
+        (s.entity_type, first.ocr.text[s.start:s.end]) for s in first.spans
+    ] == [("PERSON_JOINT", "Emily Moore and John Moore")]
+    # The page that knows nobody: the joint form is reachable only from the
+    # other page's people, and the surname is NOT emitted separately because
+    # the joint span already covers it and carries the better label.
+    assert [
+        (s.entity_type, second.ocr.text[s.start:s.end]) for s in second.spans
+    ] == [("PERSON_JOINT", "E & J MOORE")]
+
+
+def test_a_derived_span_is_not_owed_to_the_borrowed_pass(
+    tmp_path, pipeline, monkeypatch
+):
+    """Pass 2 and `locate_borrowed` are different mechanisms and must stay
+    countable apart: one finds another printing of a value somebody read, the
+    other derives a value nobody read. Page 2's joint form is the second, so
+    it must not be reported as borrowed."""
+    from pii.core.vlm import VlmFinding
+
+    monkeypatch.setattr(pdf_mode, "get_ocr_page",
+                        lambda backend: _CoupleThenInitials())
+    src = tmp_path / "doc.pdf"
+    _make_pdf(src, pages=2)
+    detector = _FirstPageOnlyDetector(
+        [VlmFinding(text="Emily Moore and John Moore", entity_type="PERSON")]
+    )
+    result = strip_pdf(src, pipeline, PseudonymMap(), tmp_path / "out.pdf",
+                       dpi=72, detector=detector)
+    assert result.pages[1].borrowed == []
+
+
 def test_an_unfinished_read_is_recorded_against_its_own_page(
     tmp_path, pipeline, monkeypatch
 ):

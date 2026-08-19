@@ -184,6 +184,14 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   `_place` ranks free candidates by kind, then edit distance, then overlap. Ranking by overlap
   magnitude first hands a clipped box to whichever candidate fits inside it — a truncation of
   the value beating the whole of it.
+- **Pass 2 LEARNS document-wide and APPLIES per page.** `derived.KnownValues` is every value
+  either layer detected anywhere, keep-list filtered and assembled between the sweeps; a rule
+  reads it alongside the page it was handed. Which values name people belongs to the values,
+  where a name is printed belongs to a page — do not fuse them again. Rebuilt per page,
+  `JointNames` derived `E & J MOORE` only where Emily and John were also named, so the
+  transaction page went out in the clear (2026-08-19). Passing no `KnownValues` means "this
+  page is the whole document" and must keep reproducing the single-page behaviour exactly —
+  that is what `strip_text` and `strip_image` rely on.
 - **A page is not the unit of truth.** Every page is READ before any page is REDACTED, so a
   value layer 0 names on page 1 and misses on page 4 strips on both. Do not restore a
   streaming per-page loop in `strip_pdf`: it is what made that leak invisible.

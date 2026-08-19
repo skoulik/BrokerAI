@@ -44,6 +44,7 @@ from typing import Sequence
 from PIL import Image
 from pii.core.detection import Detection
 
+from pii.core.derived import KnownValues
 from pii.core.grouping import Grouping, group_findings
 from pii.core.linearization import RecognizerInput, linearize
 from pii.core.locator import (
@@ -380,6 +381,7 @@ def strip_from_vlm(
     pad: int = DEFAULT_PAD,
     grouping: Grouping | None = None,
     needles: Sequence[Needle] = (),
+    known: KnownValues | None = None,
     incomplete: Incomplete = Incomplete(),
     repair: RepairReport = RepairReport(),
 ) -> ImageStripResult:
@@ -407,6 +409,12 @@ def strip_from_vlm(
     un-redact. Concretely, one number is emitted as both AU_AFSL and
     AU_CREDIT_LICENCE by two rules on purpose; as group members they would
     cluster and a vote would rewrite one of them for no recall gain.
+
+    `known` is the THIRD document-wide view, and the one layer-1 pass 2 reads
+    (`pii.core.derived.KnownValues`). The other two find printings of a value
+    somebody already detected; this one lets a rule derive a value nobody
+    detected at all — `E & J MOORE` from an Emily and a John named on another
+    page. With none given this page is the whole document, as with `grouping`.
 
     Geometry comes from one of two places, decided by whether `ocr` was
     supplied:
@@ -473,9 +481,13 @@ def strip_from_vlm(
     # wins a tie on identical text, which is why its needles go first — the
     # sort in `locate_borrowed` is stable.
     layer0_needles = grouping.needles()
-    known = {n.text for n in layer0_needles}
+    layer0_texts = {n.text for n in layer0_needles}
     placements = locate_borrowed(
-        (*layer0_needles, *(n for n in needles if n.text not in known)), ocr
+        (
+            *layer0_needles,
+            *(n for n in needles if n.text not in layer0_texts),
+        ),
+        ocr,
     )
     # Which needle claimed each span, so the two provenances can be reported
     # apart. Keyed by span because `locate_borrowed` claims each one once, and
@@ -503,6 +515,11 @@ def strip_from_vlm(
     # a kept merchant name matched from another page would inflate the count
     # without being painted. The extra merge is a regex sweep over a page string
     # against minutes of model time per page.
+    #
+    # `known` is deliberately NOT passed: this baseline is what the page knows
+    # by itself, and pass 2's document-wide pool is by definition what other
+    # pages contributed. Handing it over would fold that back in and the
+    # counter would under-report exactly what it exists to measure.
     layout = pipeline.layout_for(ocr.text, ocr)
     alone, _ = pipeline.merge_detections(detected, ocr.text, layout)
 
@@ -594,7 +611,9 @@ def strip_from_vlm(
             RuntimeWarning,
             stacklevel=2,
         )
-    spans, invalid = pipeline.merge_detections(detected + borrowed, ocr.text, layout)
+    spans, invalid = pipeline.merge_detections(
+        detected + borrowed, ocr.text, layout, known
+    )
     # What was detected and then exempted by the keep list. Computed here from
     # the same predicate the plan uses, rather than inferred from what is
     # missing out of it — a span can also vanish into a wider one by merging,
