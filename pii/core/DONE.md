@@ -3654,3 +3654,62 @@ the move; new completed tasks append to the matching section with their records.
       either way and would pass whether or not the label moved; plus the fork test, one trust
       introduced two ways yielding `ORG_1` twice with no `ORG_2`. Corpus: the corrected
       `ORGANIZATION_ATF` annotation, `stripped` x4 on seed 42. Fast suite: **733 passed**.
+
+- [x] **`<company> ATF <trust>` decomposed into the two organizations it names**
+      *(Sergei, 2026-08-19, step 2: "don't forget about the level 0 VLM — it could produce a
+      company in the `<...> ATF/as trustee(s) for <...>` form, so we can harvest both".)*
+
+      **This is what makes step 1 hold in production.** Step 1 took the connector out of
+      `AtfTailRule`'s span, which fixed the fork on the layer-1 path — and layer 0 put it
+      straight back. Measured before this change, with layer 0 naming the clause whole:
+
+          ORGANIZATION  'SK MANAGEMENT VICTORIA PTY LTD ATF SK BUSINESS TRUST'
+          ORGANIZATION  'SK BUSINESS TRUST'
+          -> Account name ORG_1 | Distribution to ORG_2 on 30 June
+
+      `_merge_overlaps` unions layer 1's trust span into layer 0's compound, so the clause keys
+      the map on the whole string and the bare mention forks into `ORG_2` again. Production runs
+      layer 0, so step 2 is not an enhancement — it is the other half of step 1.
+
+      **The compound gets its own class, and the reason is mechanical as well as semantic.**
+      Sergei's first call was to leave it ORGANIZATION and end up with three organizations; that
+      is not reachable, because the parties are SUBSTRINGS of the compound and three spans of
+      one class are unioned straight back into the clause. So `ORGANIZATION_TRUSTEE`
+      (`TRUSTEE_n`), parties as `ORGANIZATION` — the `PERSON_JOINT` arrangement, arrived at from
+      the other direction.
+
+      **`AtfParties` is `JointNames` in the other class**, deliberately: classify the compound,
+      decompose it into the pool, derive every known party on this page OUTSIDE every compound
+      span. That last clause is Sergei's ordering call ("the compound should be matched first")
+      and it is the rule `JointNames` already applies to a surname inside a joint span — covered
+      there, by the span carrying the more specific label.
+
+      **Layer 0 is the only source that carries both halves.** `AtfTailRule` matches from the
+      connector, so it sees the trust alone: a company name has no shape and no left edge, and
+      the line may carry other fields before it. Verified — **0 compounds across the 35-PDF
+      reference corpus from layer 1 alone**, which is the honest statement of this rule's
+      dependence rather than a gap. The two rules share one connector vocabulary.
+
+      **Verification**, layer-0 compound supplied as the finding it would be:
+
+          Account name TRUSTEE_1
+          Distribution to ORG_1 on 30 June
+          Managed by ORG_2 since 2019
+
+      and with the compound known from ANOTHER page and nothing detected on this one, both
+      parties still derive — the step-0 payoff, and the reason step 0 was done first.
+
+      Accepted cost, the same one `_derive_surnames` carries: a party that is also document
+      vocabulary strips every occurrence of the word. Over-strip, not a leak. A party with no
+      word character is never searched — it is matched as a literal between word boundaries, so
+      a punctuation-only fragment has nothing to anchor on, which is the hazard `locator` hit
+      with a punctuation-only OCR word.
+
+      **Dual coverage.** New `tests/pii/core/test_atf_parties.py`, 15 cases mirroring
+      `test_joint_names.py`: parsing and its rejections, the compound's class, both parties from
+      one compound, the ordering (no party span inside the compound), the cross-page derivation
+      via `KnownValues` *and* its absence with no document behind it, the punctuation guard, and
+      the placeholders. No corpus probe: the existing `ORGANIZATION_ATF` probe already annotates
+      the company and the trust separately, which is exactly what a correct split produces, and
+      the corpus cannot isolate the derivation from layer 0 detecting the bare mention itself —
+      the same coverage-not-class blindness on the standing TODO. Fast suite: **748 passed**.

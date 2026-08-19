@@ -57,11 +57,27 @@ from pii.core.detection import Detection
 JOINT_ENTITY = "PERSON_JOINT"
 PERSON_ENTITY = "PERSON"
 
+# `<company> ATF <trust>` names two organizations at once, so it is neither of
+# them — the PERSON_JOINT argument, in the other class. Its own type rather
+# than ORGANIZATION for a second, mechanical reason too: the parties are
+# SUBSTRINGS of the compound, so all three cannot be spans on the same line
+# (`_merge_overlaps` unions them straight back). The compound keeps the line it
+# is printed on and the parties are searched for everywhere else, which is
+# exactly how `JointNames` treats a joint span and its surnames.
+TRUSTEE_ENTITY = "ORGANIZATION_TRUSTEE"
+ORGANIZATION_ENTITY = "ORGANIZATION"
+
 # A joint span outranks a bare-surname span covering part of it, so the merged
 # label is the more specific description of that text. Score, not a `_rank`
 # tier: both are ordinary specific classes and ties there resolve arbitrarily.
 JOINT_SCORE = 1.0
 DERIVED_PERSON_SCORE = 0.9
+# The same pair, for the trustee compound and the parties derived from it, and
+# for the same reason: should a party ever be found overlapping a compound the
+# compound must label the merged span, because it is the more specific
+# description of that text.
+TRUSTEE_SCORE = 1.0
+DERIVED_ORG_SCORE = 0.9
 
 # 'and' needs word boundaries; '&' does not, and appears unspaced in the wild
 # ('E&J Moore'). Kept as one alternation so every form is split identically.
@@ -394,4 +410,137 @@ class JointNames:
         return found
 
 
-DEFAULT_RULES: tuple[DerivedRule, ...] = (JointNames(),)
+# The trustee clause's connector, in the spellings `AtfTailRule` knows. One
+# vocabulary, two rules: layer 1 matches the clause from the connector and gets
+# the TRUST half only (the company before it has no shape and no left edge),
+# while this rule decomposes a value layer 0 read whole and gets BOTH halves.
+# A spelling one accepts and the other does not is a gap waiting to be found.
+_ATF_CONNECTOR = regex.compile(r"\s+(?:atf|as\s+trustees?\s+for)\s+", regex.I)
+
+
+@dataclasses.dataclass(frozen=True)
+class AtfParse:
+    """The two organizations a trustee clause names."""
+
+    trustee: str
+    trust: str
+
+
+def parse_atf(value: str) -> AtfParse | None:
+    """Split `<company> ATF <trust>`, or None if the value is not one.
+
+    Like `parse_joint`, this answers *what form is this value*, never *is this
+    an organization* — a detector already decided that. So it is only ever
+    called on something already detected, and prose containing the word `atf`
+    is not reachable from here.
+
+    Both sides must be non-empty: a value that merely STARTS with the connector
+    is the trust alone with a stray label on it, which is `AtfTailRule`'s job
+    and not a compound. The first connector wins — a clause with two is not a
+    form anyone prints, and picking the first keeps the trustee whole.
+    """
+    match = _ATF_CONNECTOR.search(value)
+    if match is None:
+        return None
+    trustee, trust = value[: match.start()].strip(), value[match.end():].strip()
+    if not trustee or not trust:
+        return None
+    return AtfParse(trustee=trustee, trust=trust)
+
+
+class AtfParties:
+    """`<company> ATF <trust>` decomposed into the two organizations it names.
+
+    The sibling of `JointNames` in every structural respect, and deliberately
+    so — a value that names two entities at once is neither of them, and the
+    parties are worth knowing separately because each is an entity in its own
+    right that the document may mention alone.
+
+    **Layer 0 is the source that carries both halves.** `AtfTailRule` matches
+    the clause from its connector, so it can only ever see the trust: a company
+    name has no shape and no left edge, and the line may carry other fields
+    before it. A model reading the page reports the construction whole, and
+    that is the one place the trustee company is recoverable.
+
+    Three steps, in the order Sergei called (2026-08-19) — the compound is
+    matched FIRST, and the parties are then searched for outside it:
+
+    1. CLASSIFY - an organization whose value is itself a trustee clause is
+       re-typed to ORGANIZATION_TRUSTEE.
+    2. DECOMPOSE - that value's two parties join the pool of known
+       organizations. Document-wide, so a clause on page 1 lets a bare mention
+       of either party strip on page 4.
+    3. DERIVE - every known party is searched for on this page, OUTSIDE every
+       compound span. Inside one it is already covered, by the span carrying
+       the more specific label.
+
+    A party must carry a word character. It is searched as a literal with word
+    boundaries, so a punctuation-only fragment would have no boundaries to
+    anchor on and is the one input that could match unpredictably — the same
+    hazard as the punctuation-only OCR word in `locator`.
+    """
+
+    name = "AtfParties"
+
+    def apply(
+        self, spans: Sequence[Detection], text: str, known: KnownValues
+    ) -> tuple[list[Detection], list[Detection]]:
+        parties: set[str] = set()
+        for value in (
+            known.of_type(ORGANIZATION_ENTITY) | known.of_type(TRUSTEE_ENTITY)
+        ):
+            parsed = parse_atf(value)
+            if parsed is not None:
+                parties.update((parsed.trustee, parsed.trust))
+        out: list[Detection] = []
+        for span in spans:
+            if span.entity_type != ORGANIZATION_ENTITY:
+                out.append(span)
+                continue
+            value = span.full_value or text[span.start : span.end]
+            parsed = parse_atf(value)
+            if parsed is None:
+                out.append(span)
+                continue
+            parties.update((parsed.trustee, parsed.trust))
+            out.append(
+                dataclasses.replace(
+                    span, entity_type=TRUSTEE_ENTITY, score=TRUSTEE_SCORE
+                )
+            )
+        taken = [(s.start, s.end) for s in out]
+        return out, self._derive_parties(parties, text, taken)
+
+    def _derive_parties(
+        self,
+        parties: set[str],
+        text: str,
+        taken: Sequence[tuple[int, int]],
+    ) -> list[Detection]:
+        found: list[Detection] = []
+        seen: set[tuple[int, int]] = set()
+        for party in parties:
+            if not regex.search(r"\w", party):
+                continue
+            pattern = r"\s+".join(
+                regex.escape(w) for w in party.split()
+            )
+            for m in regex.finditer(rf"\b{pattern}\b", text, regex.I):
+                if any(m.start() < e and s < m.end() for s, e in taken):
+                    continue
+                if (m.start(), m.end()) in seen:
+                    continue
+                seen.add((m.start(), m.end()))
+                found.append(
+                    Detection(
+                        entity_type=ORGANIZATION_ENTITY,
+                        start=m.start(),
+                        end=m.end(),
+                        score=DERIVED_ORG_SCORE,
+                        recognizer=self.name,
+                    )
+                )
+        return found
+
+
+DEFAULT_RULES: tuple[DerivedRule, ...] = (JointNames(), AtfParties())

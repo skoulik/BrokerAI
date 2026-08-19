@@ -62,6 +62,11 @@ DEFAULT_STRIP_ENTITIES = {
     # person, which is what emitting PERSON would assert.
     "PERSON_JOINT",
     "ORGANIZATION",
+    # A span naming two organizations at once — `<company> ATF <trust>`
+    # (pii.core.derived). Same argument as PERSON_JOINT, and additionally the
+    # only way all three can coexist: the parties are substrings of the
+    # compound, so as one class `_merge_overlaps` would union them back.
+    "ORGANIZATION_TRUSTEE",
     "EMAIL_ADDRESS",
     "PHONE_NUMBER",
     "AU_TFN",

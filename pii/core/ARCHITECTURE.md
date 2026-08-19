@@ -629,6 +629,35 @@ the gate **closed with the layer-2 retirement**: layer 0 scores 100% on seeds 42
 GLiNER2 scored 89/95/95. Promoting the probe into `pii_eval` `build.CRITICAL` is the remaining
 step, and is a TODO item.
 
+### A trustee clause names two organizations, so it is neither of them (2026-08-19)
+
+`<company> ATF <trust>` gets the same treatment as a joint name, by the same argument and in the
+same module (`derived.AtfParties`, layer 1 pass 2). The compound is re-typed **`ORGANIZATION_TRUSTEE`**
+(`TRUSTEE_n`) and its two parties are derived as ordinary organizations.
+
+**Layer 0 is the only source that carries both halves.** `AtfTailRule` matches the clause from
+its connector and therefore sees the trust alone — a company name has no shape and no left edge,
+and the line may carry other fields before it — so the trustee company is recoverable only by
+decomposing a value a model read whole. The two rules share one connector vocabulary; a spelling
+one accepts and the other does not is a gap waiting to be found.
+
+**Its own class is forced, not merely tidy.** The parties are SUBSTRINGS of the compound, so as
+one class `_merge_overlaps` unions all three back into the clause and nothing is gained.
+Measured before the split: layer 0's compound span swallowed layer 1's trust span, and a bare
+mention of the same trust elsewhere forked into a second `ORG_n` — the failure the connector
+leaving the span had just removed, returning by another route. This is what makes that fix hold
+once layer 0 is on.
+
+**The compound is matched FIRST** (Sergei's ordering call), and the parties are then searched for
+OUTSIDE every compound span — the rule `JointNames` already applies to a surname inside a joint
+span: it is covered there, by the span carrying the more specific label. Accepted cost, the same
+one the surname derivation carries: a party that is also document vocabulary strips every
+occurrence of the word. Over-strip, not a leak.
+
+Consequence, as with joint names: pass 1 has no ORGANIZATION source that spans a compound, so
+under `--layer0 off` nothing is decomposed — measured, 0 compounds across the 35-PDF reference
+corpus from layer 1 alone.
+
 ### What is deliberately kept — a configurable keep list (2026-08-11)
 
 **A detected value is stripped unless the keep list matches it, and a match exempts only what it

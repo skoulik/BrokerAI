@@ -184,6 +184,12 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   `_place` ranks free candidates by kind, then edit distance, then overlap. Ranking by overlap
   magnitude first hands a clipped box to whichever candidate fits inside it — a truncation of
   the value beating the whole of it.
+- **A compound and its parts cannot share one entity class.** `<company> ATF <trust>` is
+  `ORGANIZATION_TRUSTEE`, its parties are `ORGANIZATION`, and the compound is matched FIRST with
+  parties searched only OUTSIDE it. The parties are substrings, so one class lets
+  `_merge_overlaps` union all three back into the clause — and then layer 0's compound swallows
+  layer 1's trust span and the bare trust forks into a second `ORG_n` (2026-08-19). Same shape
+  as `PERSON_JOINT`; the mechanical reason is additional to the semantic one.
 - **Pass 2 LEARNS document-wide and APPLIES per page.** `derived.KnownValues` is every value
   either layer detected anywhere, keep-list filtered and assembled between the sweeps; a rule
   reads it alongside the page it was handed. Which values name people belongs to the values,

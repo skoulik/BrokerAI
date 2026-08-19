@@ -43,6 +43,10 @@ PLACEHOLDER_PREFIXES = {
     "ADDRESS": "ADDRESS",
     "DATE_OF_BIRTH": "DOB",
     "ORGANIZATION": "ORG",
+    # `<company> ATF <trust>` — the compound, not either party (pii.core.
+    # derived). Its own prefix so the output says which of the three spans on
+    # such a line is the whole clause.
+    "ORGANIZATION_TRUSTEE": "TRUSTEE",
     # A layer-0 (VLM) identifier that no deterministic recognizer classified.
     "IDENTIFIER_GENERIC": "ID",
 }

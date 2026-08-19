@@ -75,9 +75,10 @@ def test_no_model_driven_semantic_detection(pipeline):
     layer 1 pass 2), which needs no lexical guess about who is a person. Any
     PERSON source in this registry means an NER model crept back in.
 
-    Pass 2 is deliberately outside this check — it claims PERSON and
-    PERSON_JOINT by design, and it reads DETECTIONS rather than text, so it
-    cannot be the thing this test guards against."""
+    Pass 2 is deliberately outside this check — it claims PERSON, PERSON_JOINT
+    and (since 2026-08-19) ORGANIZATION_TRUSTEE by design, and it reads
+    DETECTIONS rather than text, so it cannot be the thing this test guards
+    against."""
     for rule in pipeline.analyzer.rules:
         claimed = set(rule.entities)
         assert not {"ADDRESS", "DATE_OF_BIRTH", "PERSON"} & claimed, rule.name
