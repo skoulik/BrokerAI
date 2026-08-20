@@ -2,7 +2,12 @@ import argparse
 import sys
 
 from pii.core.ocr import OCR_PAGE_BACKENDS
-from pii.core.vlm import DEFAULT_GEOMETRY, GEOMETRIES
+from pii.core.vlm import (
+    DEFAULT_EFFORT,
+    DEFAULT_GEOMETRY,
+    GEOMETRIES,
+    REASONING_EFFORTS,
+)
 
 # Canonical home of every generated corpus (gitignored): one folder per
 # modality (text/, image/), one subfolder per seed.
@@ -87,6 +92,27 @@ def main() -> int:
     gtr.add_argument("-c", "--corpus", required=True,
                      help=f"real corpus folder (e.g. {CORPUS_ROOT}/real/1)")
 
+    gr = sub.add_parser(
+        "ground",
+        help="score WHERE the redaction landed (model boxes and painted "
+             "boxes) against the corpus truth boxes")
+    gr.add_argument("-c", "--corpus", required=True,
+                    help="corpus folder carrying truth.json with boxes "
+                         "(the real corpora; the synthetic tiers have none)")
+    gr.add_argument("--threshold", type=float, default=0.4)
+    gr.add_argument("--ocr-backend", choices=list(OCR_PAGE_BACKENDS),
+                    default="paddle")
+    gr.add_argument("--geometry", choices=list(GEOMETRIES),
+                    default=DEFAULT_GEOMETRY,
+                    help="the geometry under test; this scorer exists to "
+                         "compare them")
+    gr.add_argument("--reasoning-effort", choices=list(REASONING_EFFORTS),
+                    default=DEFAULT_EFFORT)
+    gr.add_argument("--limit", type=int, default=0,
+                    help="stop after N pages (0 = all); for "
+                         "checking a configuration before "
+                         "committing hours to it")
+
     sc = sub.add_parser("score", help="run the pii pipeline and score it")
     sc.add_argument("-c", "--corpus", default=None,
                     help=f"corpus folder (default: {CORPUS_ROOT}/<modality>/s<seed>)")
@@ -111,6 +137,12 @@ def main() -> int:
                          "paddle, the product default). The re-read of "
                          "stripped output is pinned to the default tier, so "
                          "the measuring instrument stays constant")
+    sc.add_argument("--reasoning-effort", choices=list(REASONING_EFFORTS),
+                    default=DEFAULT_EFFORT,
+                    help="how hard the layer-0 model thinks before "
+                         "answering. A strip-side axis, not an instrument "
+                         "setting: it changes what is under test. "
+                         "off reproduces pre-2026-08-19 behaviour")
     sc.add_argument("--geometry", choices=list(GEOMETRIES),
                     default=DEFAULT_GEOMETRY,
                     help="how detected values are placed on the page for "
@@ -162,6 +194,15 @@ def main() -> int:
             keep_images=args.keep_images,
             ocr_backend=args.ocr_backend)
         return 0
+    if args.command == "ground":
+        from pii_eval.score_grounding import score_grounding
+
+        return score_grounding(args.corpus,
+                               threshold=args.threshold,
+                               ocr_backend=args.ocr_backend,
+                               geometry=args.geometry,
+                               reasoning_effort=args.reasoning_effort,
+                               limit=args.limit)
     if args.modality == "image":
         from pii_eval.score_image import score_image
 
@@ -169,7 +210,8 @@ def main() -> int:
                            threshold=args.threshold,
                            invalid_identifiers=args.invalid_identifiers,
                            ocr_backend=args.ocr_backend,
-                           geometry=args.geometry)
+                           geometry=args.geometry,
+                           reasoning_effort=args.reasoning_effort)
     if args.modality == "pdf":
         from pii_eval.score_pdf import score_pdf
 
@@ -181,7 +223,8 @@ def main() -> int:
                          threshold=args.threshold,
                          invalid_identifiers=args.invalid_identifiers,
                          ocr_backend=args.ocr_backend,
-                         geometry=args.geometry)
+                         geometry=args.geometry,
+                         reasoning_effort=args.reasoning_effort)
     from pii_eval.score import score
 
     return score(args.corpus or _default_corpus(args.seed),

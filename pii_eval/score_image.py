@@ -35,7 +35,7 @@ from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
 from pii.core.image_mode import strip_image
 from pii.core.linearization import linearize
 from pii.core.ocr import get_ocr_page
-from pii.core.vlm import DEFAULT_GEOMETRY, Incomplete
+from pii.core.vlm import DEFAULT_EFFORT, DEFAULT_GEOMETRY, Incomplete
 from pii_eval.build import CORPUS_KEEP_FILE
 from pii_eval.score import _norm
 
@@ -201,22 +201,31 @@ def reread_engine():
     return lambda image: linearize(engine(image))
 
 
-def build_detector(geometry: str = DEFAULT_GEOMETRY):
+def build_detector(geometry: str = DEFAULT_GEOMETRY,
+                   reasoning_effort: str = DEFAULT_EFFORT):
     """The layer-0 detector for the STRIP side. Imported lazily so the
-    model-server dependency lands only when a scoring run starts."""
+    model-server dependency lands only when a scoring run starts.
+
+    `reasoning_effort` is an axis of the strip configuration, not of the
+    instrument: it changes what the model under test does, so two runs that
+    differ in it are two configurations being compared, exactly like
+    `geometry`."""
     from pii.core.vlm import VlmDetector
 
-    # Only the raw-box instrument uses the one-pass boxes prompt; everything
-    # else takes geometry from the second pass, which costs no recall.
-    return VlmDetector(want_boxes=geometry == "vlm")
+    # The one-pass boxes prompt serves both geometries that ask for boxes up
+    # front: `vlm` paints them, `combined` uses them as a search constraint.
+    # `hybrid` and `ocr` take geometry from the second pass instead.
+    return VlmDetector(want_boxes=geometry in ("vlm", "combined"),
+                       reasoning_effort=reasoning_effort)
 
 
 def score_image(corpus: str, threshold: float = 0.4,
                 invalid_identifiers: str = "likely",
                 ocr_backend: str = "paddle",
-                geometry: str = DEFAULT_GEOMETRY) -> int:
+                geometry: str = DEFAULT_GEOMETRY,
+                reasoning_effort: str = DEFAULT_EFFORT) -> int:
     ocr = reread_engine()
-    vlm = build_detector(geometry)
+    vlm = build_detector(geometry, reasoning_effort)
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     source = (corpus_path / manifest["source"]).resolve()

@@ -30,7 +30,7 @@ from pathlib import Path
 
 from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
 from pii.core.pdf_mode import pdf_to_images, strip_pdf
-from pii.core.vlm import DEFAULT_GEOMETRY
+from pii.core.vlm import DEFAULT_EFFORT, DEFAULT_GEOMETRY
 from pii_eval.build import CORPUS_KEEP_FILE, CRITICAL
 from pii_eval.score_image import (
     _noise,
@@ -45,7 +45,8 @@ from pii_eval.score_image import (
 def score_pdf(corpus: str, threshold: float = 0.4,
               invalid_identifiers: str = "likely",
               ocr_backend: str = "paddle",
-              geometry: str = DEFAULT_GEOMETRY) -> int:
+              geometry: str = DEFAULT_GEOMETRY,
+              reasoning_effort: str = DEFAULT_EFFORT) -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     documents = list(_documents(corpus_path, manifest))
@@ -54,7 +55,7 @@ def score_pdf(corpus: str, threshold: float = 0.4,
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ocr = reread_engine()
-    vlm = build_detector(geometry)
+    vlm = build_detector(geometry, reasoning_effort)
     # The corpus's own keep list, not the shipped one: the keep axis must
     # measure the tool against what this generator emits (see
     # pii_eval/entity_keep.txt).
