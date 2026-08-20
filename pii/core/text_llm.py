@@ -29,11 +29,15 @@ the keys of `vlm.TYPE_MAP`.
 from __future__ import annotations
 
 from pii.core.vlm import (
+    DEFAULT_EFFORT,
+    DEFAULT_REASONING_BUDGET,
     DEFAULT_URL,
     DetectorResult,
     GRAMMAR_VALUES,
     Incomplete,
+    REASONING_EFFORTS,
     Transport,
+    VlmDetector,
     http_transport,
     read_response,
     VlmFinding,
@@ -169,11 +173,28 @@ class TextDetector:
         transport: Transport | None = None,
         timeout: int = DEFAULT_TIMEOUT,
         grammar: bool = True,
+        reasoning_effort: str = DEFAULT_EFFORT,
+        reasoning_budget: int = DEFAULT_REASONING_BUDGET,
     ) -> None:
+        if reasoning_effort not in REASONING_EFFORTS:
+            raise ValueError(f"unknown reasoning effort: {reasoning_effort!r}")
         self.url = url
         self.transport = transport or http_transport
         self.timeout = timeout
         self.grammar = grammar
+        self.reasoning_effort = reasoning_effort
+        self.reasoning_budget = reasoning_budget
+
+    @property
+    def thinking(self) -> bool:
+        return self.reasoning_effort != "off"
+
+    @property
+    def max_tokens(self) -> int:
+        """Answer allowance plus thinking allowance - see
+        `VlmDetector.max_tokens` for why the budget must be able to bite
+        before `max_tokens` does."""
+        return MAX_TOKENS + (self.reasoning_budget if self.thinking else 0)
 
     def detect(self, text: str) -> DetectorResult:
         """Findings over the whole text, deduplicated by (value, type).
@@ -204,9 +225,6 @@ class TextDetector:
 
     def _ask(self, prompt: str, grammar: str | None = None) -> dict:
         payload = {
-            # Hybrid-thinking models honour this via the chat template; it
-            # needs llama-server --jinja to take effect.
-            "chat_template_kwargs": {"enable_thinking": False},
             "messages": [{"role": "user", "content": prompt}],
             # Greedy and pinned, for the same reason as the vision path:
             # single-slot serving (-np 1) makes greedy decode reproducible, and
@@ -215,9 +233,17 @@ class TextDetector:
             "top_k": 1,
             "top_p": 1.0,
             "seed": 42,
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": self.max_tokens,
             "stream": False,
         }
+        # Thinking, the budget, the cut-off message and the lazy grammar are
+        # BORROWED from the vision path rather than restated. The two
+        # detectors send the same request shape to the same server, and a
+        # second copy of that reasoning would be a second thing to keep in
+        # step - the same argument that already makes them share
+        # GRAMMAR_VALUES and read_response.
+        payload.update(VlmDetector._reasoning_fields(self))
         if grammar:
             payload["grammar"] = grammar
+            payload.update(VlmDetector._lazy_fields(self))
         return self.transport(self.url, payload, self.timeout)

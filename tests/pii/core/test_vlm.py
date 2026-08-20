@@ -937,3 +937,225 @@ def test_the_detectors_name_their_own_modality():
     assert VlmDetector.layer0 == "vision"
     assert TextDetector.layer0 == "text"
     assert NullDetector.layer0 == "off"
+
+
+# --- thinking: the reasoning payload, and the reply shapes it produces -------
+# Layer 0 became a reasoning model 2026-08-19. These cover the two halves that
+# can fail silently: the request (a dropped field means the model does not
+# think, and the reply still parses) and the reply (an unstripped trace makes
+# a page with findings look CLEAN).
+
+
+def _payload(**kwargs) -> dict:
+    """The payload one detect() call puts on the wire."""
+    sent = []
+
+    def transport(url, payload, timeout):
+        sent.append(payload)
+        return {"choices": [{"message": {"content": "[]"},
+                             "finish_reason": "stop"}]}
+
+    class Img:
+        def save(self, buf, fmt):
+            buf.write(b"png")
+
+    VlmDetector(transport=transport, **kwargs).detect(Img())
+    return sent[0]
+
+
+def test_thinking_is_on_by_default_with_a_budget_and_a_cut_off():
+    from pii.core.vlm import REASONING_CUTOFF
+
+    payload = _payload()
+    assert payload["chat_template_kwargs"] == {"reasoning_effort": "medium"}
+    assert payload["reasoning_budget_tokens"] == 4096
+    assert payload["reasoning_budget_message"] == REASONING_CUTOFF
+
+
+def test_the_grammar_is_lazy_so_it_never_constrains_the_thinking():
+    from pii.core.vlm import GRAMMAR_TRIGGER
+
+    payload = _payload()
+    assert payload["grammar_lazy"] is True
+    # An int on the wire: llama.cpp reads `.at("type").get<int>()`, so a string
+    # is an HTTP 400 rather than a fallback.
+    assert payload["grammar_triggers"] == [{"type": 2, "value": GRAMMAR_TRIGGER}]
+
+
+def test_the_trigger_captures_the_bracket_and_not_the_think_tag():
+    # llama.cpp replays into the grammar from the first non-empty capture
+    # group, so the group must contain "[" alone: a trigger that fed "</think>"
+    # to a grammar whose root starts with "[" would reject every continuation.
+    import re
+
+    from pii.core.vlm import GRAMMAR_TRIGGER
+
+    match = re.search(GRAMMAR_TRIGGER, "thinking about [things]</think>\n\n[{}]")
+    assert match.group(1) == "["
+
+
+def test_no_lazy_grammar_when_thinking_is_off():
+    # "off" must reproduce the pre-2026-08-19 request exactly, or it is not a
+    # baseline. The template pre-closes the think block, so the grammar
+    # applying from token 0 is correct there.
+    payload = _payload(reasoning_effort="off")
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "grammar_lazy" not in payload
+    assert "reasoning_budget_tokens" not in payload
+
+
+def test_max_tokens_leaves_the_answer_room_on_top_of_the_budget():
+    # The reasoning budget must be able to bite BEFORE max_tokens does:
+    # exhausting the budget closes the trace and still answers, while
+    # exhausting max_tokens truncates the array mid-entry.
+    assert _payload()["max_tokens"] == 4096 + 4096
+    assert _payload(reasoning_budget=1024)["max_tokens"] == 4096 + 1024
+    assert _payload(reasoning_effort="off")["max_tokens"] == 4096
+
+
+def test_an_unknown_reasoning_effort_is_rejected():
+    with pytest.raises(ValueError, match="unknown reasoning effort"):
+        VlmDetector(reasoning_effort="ludicrous")
+
+
+def test_forced_open_thinking_is_stripped_from_a_body():
+    # The failure this exists for: a template that opens <think> ITSELF means
+    # the reply carries only the CLOSING tag, so the old matched-pair regex
+    # stripped nothing, the JSON scanner latched onto a "[" inside the
+    # reasoning, and parse_findings returned [] -- a CLEAN PAGE.
+    raw = ('Reading the page. I see [account] numbers.</think>\n\n'
+           '[{"text": "SERGEI KULIK", "type": "PII_NAME"}]')
+    assert [f.text for f in parse_findings(raw)] == ["SERGEI KULIK"]
+
+
+def test_a_matched_think_pair_is_still_stripped():
+    raw = ('<think>reasoning with [brackets]</think>\n'
+           '[{"text": "SERGEI KULIK", "type": "PII_NAME"}]')
+    assert [f.text for f in parse_findings(raw)] == ["SERGEI KULIK"]
+
+
+def test_a_reply_with_no_thinking_at_all_is_untouched():
+    raw = '[{"text": "SERGEI KULIK", "type": "PII_NAME"}]'
+    assert [f.text for f in parse_findings(raw)] == ["SERGEI KULIK"]
+
+
+def test_combined_geometry_asks_one_pass_for_boxes_and_skips_localize(pipeline):
+    # The whole point of `combined`: one model call, and its boxes constrain
+    # the search exactly as hybrid's second pass does -- NOT painted, which is
+    # what separates it from `vlm`.
+    from pii.core.image_mode import strip_rendered_page
+    from pii.core.ocr import Box
+    from pii.core.ocr_page import OcrFrame, build_page
+
+    calls = []
+
+    class FakeDetector:
+        def detect(self, image):
+            calls.append("detect")
+            return DetectorResult(
+                [VlmFinding("SERGEI KULIK", "PERSON", box=(0, 0, 300, 100))]
+            )
+
+        def localize(self, image, findings):  # pragma: no cover - must not run
+            calls.append("localize")
+            raise AssertionError("combined geometry must not run a second pass")
+
+    def fake_ocr(image):
+        row = [
+            ("SERGEI", Box(0, 0, 60, 12), 99.0),
+            ("KULIK", Box(70, 0, 50, 12), 99.0),
+        ]
+        return build_page([row], OcrFrame(width=1000, height=120, page=1))
+
+    result = strip_rendered_page(
+        Image.new("RGB", (1000, 120), "white"),
+        pipeline,
+        PseudonymMap(),
+        ocr_engine=fake_ocr,
+        detector=FakeDetector(),
+        geometry="combined",
+    )
+    assert calls == ["detect"]
+    # OCR ran (unlike `vlm`) and the value was located in its text.
+    assert result.ocr is not None
+    assert [
+        result.ocr.text[s.start : s.end] for s in result.spans
+    ] == ["SERGEI KULIK"]
+
+
+# --- transport retry: a dropped connection must not destroy a long run ------
+
+
+def test_a_dropped_connection_is_retried_and_recovers(monkeypatch, capsys):
+    # The 2026-08-19 failure: the server had already generated the reply and
+    # the pipe reset on the way back. One blip used to kill a 56-minute run.
+    import urllib.request
+
+    from pii.core import vlm
+
+    monkeypatch.setattr(vlm.time, "sleep", lambda _s: None)
+    calls = []
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b'{"choices": [{"message": {"content": "[]"}}]}'
+
+    def flaky(req, timeout=None):
+        calls.append(req)
+        if len(calls) == 1:
+            raise ConnectionResetError(10054, "forcibly closed")
+        return Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    assert vlm.http_transport("http://host:8080", {"a": 1}, 60)["choices"]
+    assert len(calls) == 2
+    assert "retrying" in capsys.readouterr().err
+
+
+def test_an_http_status_is_never_retried(monkeypatch):
+    # A status code is an ANSWER: the server read the request and rejected it.
+    # Retrying would hide a bad request behind a delay. HTTPError subclasses
+    # URLError, so this also guards the except-clause ORDER.
+    import io
+    import urllib.error
+    import urllib.request
+
+    from pii.core import vlm
+
+    monkeypatch.setattr(vlm.time, "sleep", lambda _s: None)
+    calls = []
+
+    def refuse(req, timeout=None):
+        calls.append(req)
+        raise urllib.error.HTTPError(
+            "http://host:8080", 400, "Bad Request", {}, io.BytesIO(b"nope")
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    with pytest.raises(vlm.VlmUnavailable, match="HTTP 400"):
+        vlm.http_transport("http://host:8080", {"a": 1}, 60)
+    assert len(calls) == 1
+
+
+def test_a_server_that_is_down_gives_up_and_says_so(monkeypatch):
+    import urllib.request
+
+    from pii.core import vlm
+
+    monkeypatch.setattr(vlm.time, "sleep", lambda _s: None)
+    calls = []
+
+    def dead(req, timeout=None):
+        calls.append(req)
+        raise ConnectionRefusedError("nobody home")
+
+    monkeypatch.setattr(urllib.request, "urlopen", dead)
+    with pytest.raises(vlm.VlmUnavailable, match="after 3 attempts"):
+        vlm.http_transport("http://host:8080", {"a": 1}, 60)
+    assert len(calls) == vlm.TRANSPORT_ATTEMPTS

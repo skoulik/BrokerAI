@@ -27,10 +27,12 @@ from pii.core.ocr import OCR_PAGE_BACKENDS
 from pii.core.text_layer import RepairReport
 # stdlib-only module, so importing it here costs nothing on the default path
 from pii.core.vlm import (
+    DEFAULT_EFFORT,
     DEFAULT_GEOMETRY,
     DEFAULT_URL,
     GEOMETRIES,
     Incomplete,
+    REASONING_EFFORTS,
     VlmError,
 )
 
@@ -122,11 +124,13 @@ def _build_detector(args):
 
     return VlmDetector(
         url=url,
-        # The one-pass boxes prompt is only used where its boxes are painted
-        # directly. Everywhere else geometry comes from the second pass
-        # (VlmDetector.localize), which costs no recall.
-        want_boxes=geometry == "vlm",
+        # The one-pass boxes prompt serves the two geometries that ask for
+        # boxes up front: `vlm`, which paints them, and `combined`, which uses
+        # them as a search constraint exactly as `hybrid` uses pass 2's. Under
+        # `hybrid` and `ocr` geometry comes from the second pass instead.
+        want_boxes=geometry in ("vlm", "combined"),
         grammar=grammar,
+        reasoning_effort=getattr(args, "reasoning_effort", DEFAULT_EFFORT),
     )
 
 
@@ -603,11 +607,24 @@ def main(argv=None) -> int:
              "boxes constrain the search for it in the OCR text — painting "
              "still uses exact OCR word boxes, falling back to the model's own "
              "padded box only where there is no OCR text at all, as for a logo "
-             "or a barcode), ocr (no second pass; search the whole page string "
+             "or a barcode), combined (ONE pass asks for values and boxes "
+             "together and those boxes constrain the search exactly as "
+             "hybrid's do — halves the model's work on a thinking model, under "
+             "evaluation), ocr (no second pass; search the whole page string "
              "for each value — the pre-box baseline), or vlm (paint the "
              "model's own boxes, OCR never runs; faster but measured UNSAFE — "
              "16%% of boxes clip by >20px, stochastically, so it is a "
              "comparison instrument, not a production option)",
+    )
+    p_strip.add_argument(
+        "--reasoning-effort", choices=list(REASONING_EFFORTS),
+        default=DEFAULT_EFFORT,
+        help="how hard the layer-0 model thinks before answering "
+             "(--image/--pdf only). medium (default) injects no instruction "
+             "and is the model's own behaviour; low and xhigh each add one. "
+             "off disables thinking entirely and is a COMPARISON INSTRUMENT, "
+             "not a production value — it is what the tool did before "
+             "2026-08-19 and is kept so that comparison stays runnable",
     )
     p_strip.add_argument(
         "--layer0", choices=["auto", "off"], default="auto",

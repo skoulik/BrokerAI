@@ -10,7 +10,7 @@ signal a VLM structurally cannot produce, and it is measurably unreliable at
 is recorded in ARCHITECTURE.md; the measurements behind it are in
 [reports/2026-08-08-vlm-oneshot-qwen36.md](reports/2026-08-08-vlm-oneshot-qwen36.md).
 
-Three geometry regimes exist, and all three are deliberately kept:
+Four geometry regimes exist, and all four are deliberately kept:
 
 - ``geometry="hybrid"`` — production. Two passes: `detect` names the values,
   `localize` hands them back and asks only where they are. The boxes are then
@@ -18,6 +18,29 @@ Three geometry regimes exist, and all three are deliberately kept:
   wherever the value can be matched and falls back to the model's box only for
   the residue that has no OCR text at all. Rationale for the split lives on
   `_LOCATE_PROMPT`; rationale for boxes-as-constraint lives in `locator.py`.
+- ``geometry="combined"`` — ONE pass asking for values and boxes together, whose
+  boxes are then used exactly as hybrid's are: a search constraint, never paint.
+  Note what this is NOT: `vlm` below also asks one pass for boxes, but *paints*
+  them, which is the part measured unsafe. Introduced 2026-08-19 (Sergei) when
+  layer 0 became a reasoning model, because the split makes the model think
+  twice per page and the second trace is spent placing strings it was handed —
+  1515 thinking tokens against detect's 455. It deliberately re-opens the
+  2026-08-08 decision that created the split (350 -> 324 distinct values over 31
+  pages when both were asked at once), on the grounds that that measurement was
+  taken with thinking OFF and a reasoning model invalidates its premise.
+
+  **Measured and REJECTED for production (Sergei, 2026-08-20): a comparison
+  instrument, like `vlm` below.** It is genuinely cheaper — 43% fewer decoded
+  tokens than the two-pass shape on one page, and it thinks once instead of
+  twice — but its boxes are unreliable in a way that reaches the output. On a
+  disclosure page carrying 21 occurrences of one short token, 12 of the 21
+  boxes enclosed no instance of it, landing on paragraph-initial words instead.
+  A wrong box makes `locator` claim the wrong text, and the keep list is then
+  consulted on the CLAIMED text: an `ANZ` detection that claimed the adjacent
+  word `any` was pseudonymized, because `anz` is on the keep list and `any` is
+  not. The 2026-08-08 report had already measured one-pass boxes as looser
+  (1.41x ink against the two-pass 1.24x); this is that finding arriving again
+  from the other side. Details: reports/2026-08-20-qwen38-corpus-eval.md.
 - ``geometry="ocr"``    — one pass, values only. The same locator runs, but
   with no boxes to constrain it, it degrades to page-wide exact-or-squash
   matching: the pre-box behaviour, kept as the comparison baseline, with the
@@ -43,6 +66,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -68,11 +93,58 @@ TYPE_MAP = {
 DEFAULT_URL = os.environ.get("PII_VLM_URL") or "http://localhost:8080"
 DEFAULT_PAD = 8  # px, at the analysis DPI
 
+# How many times `http_transport` asks before giving up, and the base delay
+# between attempts (multiplied by the attempt number). Small on purpose: this
+# recovers a dropped connection, it is not a queue for a server that is down —
+# three attempts over ~6 s distinguishes a blip from an absence without making
+# "wrong --vlm-url" take a minute to report.
+TRANSPORT_ATTEMPTS = 3
+TRANSPORT_BACKOFF = 2.0  # seconds
+
+# Reasoning. Layer 0 is a thinking model as of 2026-08-19, and thinking is ON:
+# the levels come from the chat template, which validates them and raises on
+# anything else. `medium` is NOT a midpoint - the template sets an instruction
+# for `xhigh` and `low` only, so `medium` injects nothing and is the model's
+# unmodified behaviour. "off" is a COMPARISON INSTRUMENT, never a production
+# value, for the same reason `geometry="vlm"` is one: it is kept so the
+# measurement that chose the default stays runnable.
+REASONING_EFFORTS = ("low", "medium", "xhigh", "off")
+DEFAULT_EFFORT = "medium"
+
+# A cap on the thinking block, not a shaping knob. At 4096 nothing in the
+# 2026-08-19 sweep was cut (the longest trace observed was ~2077 tokens), which
+# is the point: it exists to bound a runaway repetition loop, which greedy
+# decode on a reasoning model makes a live risk, and greedy is not negotiable
+# because the gate needs determinism.
+DEFAULT_REASONING_BUDGET = 4096
+
+# The answer's own allowance. This was the whole of `max_tokens` before thinking
+# existed, and what sized it - a dense page of findings - has not changed.
+ANSWER_TOKENS = 4096
+
+# Injected immediately before the forced end-of-thinking tag when the budget
+# runs out, so a cut-off trace lands on the answer rather than stopping
+# mid-sentence. It biases toward completeness because this tool's asymmetry
+# does: over-strip is recoverable, under-strip is a breach.
+REASONING_CUTOFF = "\n\nEnough thinking. I will now output every identifier found.\n"
+
+# Engage the grammar at the array and NOT before it. llama.cpp replays into the
+# grammar everything from the first non-empty CAPTURE GROUP onward, falling back
+# to the whole match when the pattern has none - so a bare "</think>" trigger
+# would replay `</think>` into a grammar whose root starts with `[` and reject
+# every continuation. Capturing the bracket is what makes the handoff exact.
+GRAMMAR_TRIGGER = r"</think>[\s\S]*?(\[)"
+
+# Trigger types are ints on the wire - llama.cpp's server reads
+# `in.at("type").get<int>()`, so a string is an HTTP 400, not a fallback. 2 is
+# PATTERN.
+_TRIGGER_PATTERN = 2
+
 # The three geometry regimes described above. "hybrid" is production; the
 # other two are kept so the comparison that produced that verdict stays
 # runnable. Declared here rather than in image_mode because the CLI resolves
 # the flag before it is willing to import the analysis stack.
-GEOMETRIES = ("hybrid", "ocr", "vlm")
+GEOMETRIES = ("hybrid", "combined", "ocr", "vlm")
 DEFAULT_GEOMETRY = "hybrid"
 
 # The tuned probe prompt, plus the value-not-label sentence added 2026-08-12.
@@ -97,6 +169,22 @@ DEFAULT_GEOMETRY = "hybrid"
 #    aim its large precision side-effect by rewording - per-value keep
 #    decisions belong in entity_keep.txt where they are auditable.
 #    Measurements in DONE.md.
+#
+# Two sentences were REMOVED 2026-08-19, when layer 0 became a reasoning model.
+# Both dated from the non-thinking regime and both turned out to control
+# something other than what they said:
+#  - "Do not explain your reasoning." SUPPRESSED THINKING. With it present the
+#    model emitted ZERO thinking tokens on the combined pass at xhigh; removing
+#    it alone restored 1379. It was silently defeating the thing it was being
+#    asked to do.
+#  - "Stop immediately after the closing ]." is redundant under a grammar - the
+#    root reaches an accepting state after `]`, so only EOG stays legal and the
+#    model cannot continue. Its ONLY real effect was suppressing a LEADING code
+#    fence, which it never mentions. The replacement says that directly.
+#    Removing it without a replacement brings the fence back.
+# Together the replacement scored 15 findings where the old prompt scored 14 and
+# deleting the prohibition alone scored 13 (one page, counts only).
+# Measurements: reports/2026-08-19-qwen38-bringup.md.
 PROMPT = """Find all occurrences of Personally Identifiable Information (PII) identifiers in \
 this page. Look for them anywhere: main text, titles, headers, footers, tables.
 
@@ -118,8 +206,7 @@ an organization or an account, such as:
 Use an appropriate TYPE for each PII that you find, if unsure, fallback to PII_IDENTIFIER.
 Do not output monetary amounts, transaction dates, interest rates, balances, percentages - they \
 are NOT identifiers.
-Do not explain your reasoning.
-Stop immediately after the closing ]."""
+Output only the JSON array, with no code fence and no other text."""
 
 _OUTPUT_VALUES = """
 Output in this JSON format:
@@ -164,7 +251,7 @@ Output in this JSON format:
 bbox_2d is the tight box around that text: (x1,y1) top-left, (x2,y2) bottom-right, in \
 normalized relative coordinates scaled to 1000. Make the box enclose the whole string \
 including its first and last characters.
-Stop immediately after the closing ]"""
+Output only the JSON array, with no code fence and no other text."""
 
 # GBNF grammars — the output SHAPE, enforced at the sampler instead of parsed
 # out of whatever comes back. One per prompt, and the prompts are unchanged:
@@ -257,9 +344,13 @@ class Incomplete:
       plausibly redacted. Measured at ~1 in 70 real pages
       ([reports/2026-08-12-mac-inference-speed.md](reports/2026-08-12-mac-inference-speed.md)).
     - `malformed` — the generation ENDED normally but carried no usable JSON
-      array. With a grammar in force this is unreachable, which is what makes
-      it worth counting separately: it is the canary that the server ignored
-      the grammar field.
+      array. Under a NON-lazy grammar this is unreachable, which is what made
+      it worth counting separately: it was the canary that the server ignored
+      the grammar field. A lazy grammar weakens that (2026-08-19): everything
+      before the opening `[` is unconstrained, so a reply that never reaches an
+      array is now reachable without the server having ignored anything. It
+      remains the right counter — an answer that is not an array is not an
+      empty page — but it no longer proves what it used to.
     """
 
     truncated: int = 0
@@ -309,29 +400,61 @@ def http_transport(url: str, payload: dict, timeout: int) -> dict:
     Connection failures are translated into `VlmUnavailable` with the URL and a
     hint. The model server is usually on another machine, so "wrong --vlm-url"
     is the single most likely failure and a raw URLError traceback is a poor way
-    to say it."""
+    to say it.
+
+    A connection-level failure is RETRIED; an HTTP status is not. The split is
+    the whole point: a status code means the server read the request and
+    answered it, so retrying would hide a bad request behind a delay, while a
+    reset pipe means the answer never arrived and asking again is the only way
+    to learn anything. Retrying is safe here specifically because the request is
+    idempotent — greedy, `seed` pinned — so a second ask returns the same
+    answer and a retry can only recover a result, never change one.
+
+    Why it exists (2026-08-19): a 56-minute corpus run died on a single TCP
+    reset while the server sat healthy and had already generated the reply.
+    Without a retry, one blip destroys an arbitrarily long job that has already
+    paid for every page before it — and a long production document has exactly
+    the same exposure, at higher stakes."""
     data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        f"{url}/v1/chat/completions",
-        data=data,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read()[:400].decode(errors="replace")
-        raise VlmUnavailable(
-            f"model server at {url} returned HTTP {exc.code}: {detail}"
-        ) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        reason = getattr(exc, "reason", exc)
-        raise VlmUnavailable(
-            f"cannot reach the model server at {url} ({reason}). Start "
-            f"llama-server (with a VISION model for --image/--pdf), or pass "
-            f"--vlm-url if it runs on another host "
-            f"(e.g. --vlm-url http://192.168.1.55:8080)."
-        ) from exc
+    for attempt in range(1, TRANSPORT_ATTEMPTS + 1):
+        req = urllib.request.Request(
+            f"{url}/v1/chat/completions",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            # Note this precedes the URLError clause deliberately: HTTPError is
+            # a subclass of it, and catching it second would make every 4xx/5xx
+            # retryable.
+            detail = exc.read()[:400].decode(errors="replace")
+            raise VlmUnavailable(
+                f"model server at {url} returned HTTP {exc.code}: {detail}"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            if attempt == TRANSPORT_ATTEMPTS:
+                raise VlmUnavailable(
+                    f"cannot reach the model server at {url} ({reason}) after "
+                    f"{TRANSPORT_ATTEMPTS} attempts. Start llama-server (with "
+                    f"a VISION model for --image/--pdf), or pass --vlm-url if "
+                    f"it runs on another host "
+                    f"(e.g. --vlm-url http://192.168.1.55:8080)."
+                ) from exc
+            # Printed rather than warned. `warnings` shows one instance per
+            # code location, so a link that resets on every tenth page would
+            # announce itself once and then go quiet — the same trap that made
+            # `Incomplete` a counter instead of a warning. A retry is an
+            # operational fact and each one is worth seeing.
+            print(
+                f"pii: model server at {url} dropped the connection "
+                f"({reason}); retrying {attempt}/{TRANSPORT_ATTEMPTS - 1}",
+                file=sys.stderr,
+            )
+            time.sleep(TRANSPORT_BACKOFF * attempt)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def fold_digits(text: str) -> str:
@@ -349,10 +472,32 @@ def fold_digits(text: str) -> str:
 
 
 def strip_thinking(raw: str) -> str:
-    """Drop <think> blocks — hybrid-thinking models emit them, and a reasoning
-    trace over a page of numbers contains '[', which would capture the JSON
-    scanner below."""
-    return re.sub(r"<think>.*?</think>", "", raw, flags=re.S).strip()
+    """Drop the model's reasoning trace, whether it is closed or forced open.
+
+    A reasoning trace over a page of numbers contains '[', so failing to strip
+    one does not merely leave noise: the JSON scanner below latches onto the
+    trace's brackets and `parse_findings` returns the wrong list — or, measured
+    2026-08-19, an EMPTY one, which is indistinguishable from a clean page.
+
+    Two shapes, and the second is the one that bites:
+
+    - a model that emits its own opening tag produces a matched `<think>` pair;
+    - a model whose chat template opens the block FOR it emits only the CLOSING
+      tag (Qwen3.8's generation prompt ends with an open `<think>`), so there is
+      no pair to match and everything ahead of `</think>` is reasoning.
+
+    Production does not normally see either, because llama.cpp's default
+    `reasoning_format: deepseek` splits the trace into `message.reasoning_content`
+    and leaves `content` clean. This function is what stands behind that for
+    `parse_findings`, whose contract is to take a body from a caller that did
+    not fetch it — where neither shape can be ruled out.
+    """
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.S)
+    # Forced open: an unmatched close means everything ahead of it is reasoning.
+    # The FIRST close is the real one, which is also how llama.cpp's own parser
+    # splits reasoning from content.
+    _, closed, tail = raw.partition("</think>")
+    return (tail if closed else raw).strip()
 
 
 def read_response(response: dict) -> DetectorResult:
@@ -528,13 +673,36 @@ class VlmDetector:
         want_boxes: bool = False,
         encode_image: Callable[[object], str] | None = None,
         grammar: bool = True,
+        reasoning_effort: str = DEFAULT_EFFORT,
+        reasoning_budget: int = DEFAULT_REASONING_BUDGET,
     ) -> None:
+        if reasoning_effort not in REASONING_EFFORTS:
+            raise ValueError(f"unknown reasoning effort: {reasoning_effort!r}")
         self.url = url
         self.transport = transport or http_transport
         self.timeout = timeout
         self.want_boxes = want_boxes
         self._encode = encode_image or _encode_png
         self.grammar = grammar
+        self.reasoning_effort = reasoning_effort
+        self.reasoning_budget = reasoning_budget
+
+    @property
+    def thinking(self) -> bool:
+        return self.reasoning_effort != "off"
+
+    @property
+    def max_tokens(self) -> int:
+        """Answer allowance PLUS thinking allowance — they share one budget.
+
+        Sized this way because of which limit bites first. Reaching
+        `max_tokens` truncates the array mid-entry: a redaction failure that
+        `Incomplete.truncated` can report but not undo, and on a page whose
+        names and addresses are layer 0's alone to find. Reaching the reasoning
+        budget instead closes the trace cleanly and still yields a whole answer.
+        So the reasoning budget must be able to bite FIRST, which it can only do
+        if `max_tokens` leaves the answer its own room on top."""
+        return ANSWER_TOKENS + (self.reasoning_budget if self.thinking else 0)
 
     @property
     def prompt(self) -> str:
@@ -585,9 +753,6 @@ class VlmDetector:
 
     def _ask(self, image, prompt: str, grammar: str | None = None) -> dict:
         payload = {
-            # Hybrid-thinking models honour this via the chat template; it needs
-            # llama-server --jinja to take effect.
-            "chat_template_kwargs": {"enable_thinking": False},
             "messages": [
                 {
                     "role": "user",
@@ -609,15 +774,62 @@ class VlmDetector:
             "top_k": 1,
             "top_p": 1.0,
             "seed": 42,
-            "max_tokens": 4096,
+            "max_tokens": self.max_tokens,
             "stream": False,
         }
+        payload.update(self._reasoning_fields())
         if grammar:
             # Per-request rather than a server flag, so the shape we enforce is
             # versioned with the code that parses it — the same reasoning that
             # keeps the sampling parameters above out of a launch script.
             payload["grammar"] = grammar
+            payload.update(self._lazy_fields())
         return self.transport(self.url, payload, self.timeout)
+
+    def _reasoning_fields(self) -> dict:
+        """Thinking on (effort + budget + cut-off), or the pre-2026-08-19 off.
+
+        All per-request, for the reason `grammar` is: a server flag would apply
+        to every caller of that server and could not be versioned with the code
+        that reads the reply. Needs `llama-server --jinja` for
+        `chat_template_kwargs` to reach the template at all."""
+        if not self.thinking:
+            # The template then writes a PRE-CLOSED think block into the prompt,
+            # so the budget sampler sees start-and-end among the prefill tokens
+            # and the grammar applies from the first generated token. That is
+            # exactly the old behaviour, which is what makes "off" a usable
+            # baseline rather than a third thing.
+            return {"chat_template_kwargs": {"enable_thinking": False}}
+        return {
+            "chat_template_kwargs": {"reasoning_effort": self.reasoning_effort},
+            "reasoning_budget_tokens": self.reasoning_budget,
+            "reasoning_budget_message": REASONING_CUTOFF,
+        }
+
+    def _lazy_fields(self) -> dict:
+        """Make the grammar engage only after the thinking block.
+
+        llama.cpp does the hard part: with a lazy grammar AND a reasoning-budget
+        sampler, `grammar_should_apply()` is false for the whole thinking block,
+        so the GBNF cannot constrain the trace by construction rather than by a
+        trigger that happens to avoid it. The trigger then engages it at the
+        array.
+
+        **Requires a llama-server carrying the grammar_lazy passthrough fix.**
+        Upstream's OAI layer overwrites `grammar_lazy` and `grammar_triggers`
+        from the chat template unconditionally, and its copy-remaining loop only
+        fills absent keys — so on a stock server these two are silently dropped,
+        the grammar applies from token 0, and the model does not think at all.
+        The failure is quiet: replies still parse, they are just unreasoned. See
+        reports/2026-08-19-qwen38-bringup.md."""
+        if not self.thinking:
+            return {}
+        return {
+            "grammar_lazy": True,
+            "grammar_triggers": [
+                {"type": _TRIGGER_PATTERN, "value": GRAMMAR_TRIGGER}
+            ],
+        }
 
 
 class NullDetector:
