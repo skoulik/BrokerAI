@@ -1,0 +1,288 @@
+From d4d40133a7a1e155041b3d2cf39dcc7d49c9bb0d Mon Sep 17 00:00:00 2001
+From: Claude <skoulik-claude@agentmail.to>
+Date: Thu, 20 Aug 2026 20:48:39 +0930
+Subject: [PATCH 1/4] metal: swizzle mul_mm threadgroups when src1 exceeds
+ cache
+
+The mul_mm grid is launched x-fastest with x indexing src1 (batch) tiles and y
+indexing src0 (row) tiles, so a single row tile streams the entire src1 matrix
+before the next row tile begins. The reuse distance for a src0 tile therefore
+scales with ne00, and once src1 no longer fits in cache every src0 tile is
+refetched on every step.
+
+Measured on an M1 Max (48 MB SLC) with the FLOP count held constant (ne00*ne01
+fixed, only the ratio moving), mul_mm is flat at ~79% of peak while src1 stays
+under ~34 MB, then falls to 68% at 67 MB, 46% at 143 MB and 26% at 285 MB.
+
+Walking the grid in groups of 8 row tiles bounds the working set to 8 src0 tiles
+plus one src1 tile. Below a 32 MB src1 threshold the original mapping is kept, so
+small matrices take an unchanged path.
+
+Qwen3.8-27B Q8_0, pp8980, M1 Max, -fa 1 -ctk f16 -ctv f16:
+
+  n_ubatch    before      after
+       512    140.71     148.39   +5.5%
+      1024    126.66     146.67  +15.8%
+      2048    117.92     144.68  +22.7%
+
+The isolated ffn_down shape [17408x5120] at ubatch 2048 goes from 4.79 to 8.29
+TFLOPS (1.73x), matching ffn_up on the same FLOP count. test-backend-ops -o
+MUL_MAT passes 1154/1154 on MTL0.
+
+Model: claude-opus-5
+---
+ ggml/src/ggml-metal/ggml-metal.metal | 38 ++++++++++++++++++++++++++--
+ 1 file changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index 243c997fc..2c5052831 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -10403,8 +10403,42 @@ kernel void kernel_mul_mm(
+     constexpr int NL1 = NK/8;
+ 
+     const int im = tgpig.z;
+-    const int r0 = tgpig.y*NR0;
+-    const int r1 = tgpig.x*NR1;
++
++    // Threadgroup swizzle.
++    //
++    // The launch order is x-fastest, and x indexes the src1 (batch) tiles while y
++    // indexes the src0 (row) tiles. One row tile therefore streams the WHOLE src1
++    // matrix before the next row tile starts, so the reuse distance for a src0 tile
++    // scales with ne00. Once src1 stops fitting in cache, every src0 tile is
++    // refetched on every step and throughput collapses: measured on an M1 Max
++    // (48 MB SLC) with the FLOP count held constant, mul_mm is flat at ~79% of peak
++    // while src1 <= 34 MB and falls to 46% at 143 MB and 26% at 285 MB.
++    //
++    // Walking the grid in groups of SWZ row tiles instead bounds the working set to
++    // SWZ src0 tiles plus one src1 tile, cutting src1 DRAM traffic by ~SWZ. Only
++    // worth doing once src1 is large; below the threshold we keep the original
++    // mapping so small matrices are unaffected.
++    int sy = tgpig.y;
++    int sx = tgpig.x;
++
++    if ((size_t) args.ne1 * args.nb11 > (32u << 20)) {
++        constexpr int SWZ = 8;
++
++        const int nbx = (args.ne1 + NR1 - 1)/NR1; // src1 (batch) tiles
++        const int nby = (args.ne0 + NR0 - 1)/NR0; // src0 (row)   tiles
++
++        const int lin = (int) tgpig.y*nbx + (int) tgpig.x;
++        const int tpg = SWZ*nbx;
++        const int y0  = (lin/tpg)*SWZ;
++        const int lid = lin%tpg;
++        const int gh  = (nby - y0) < SWZ ? (nby - y0) : SWZ;
++
++        sy = y0 + lid%gh;
++        sx = lid/gh;
++    }
++
++    const int r0 = sy*NR0;
++    const int r1 = sx*NR1;
+ 
+     // if this block is of 64x32 shape or smaller
+     const short nr0 = (args.ne0 - r0 < NR0) ? (args.ne0 - r0) : NR0;
+-- 
+2.39.5 (Apple Git-154)
+
+
+From edb77d6cf963c8e54f82889d5d5c79fcee7b4382 Mon Sep 17 00:00:00 2001
+From: Claude <skoulik-claude@agentmail.to>
+Date: Thu, 20 Aug 2026 21:00:56 +0930
+Subject: [PATCH 2/4] metal: scale mul_mm swizzle group with src0 tile bytes
+
+A fixed group of 8 row tiles is right for q8_0 and wrong for f16, whose src0
+tile is ~2x the bytes. Measured on M1 Max at K=17408, N=5120, ubatch 2048:
+
+  SWZ        2      4      8     16   (TFLOPS)
+  q8_0    6.66   8.16   8.29   8.22
+  f16     6.47   7.37   7.28   5.22
+
+Both dtypes peak at ~9 MB of src0 held per group, so derive the group size from
+NR0*nb01 instead of hardcoding a tile count. f16 at K=17408 goes 7.28 -> 7.34,
+and the 29% cliff a fixed 16 would cause there cannot arise.
+
+test-backend-ops -o MUL_MAT passes 1154/1154 on MTL0.
+
+Model: claude-opus-5
+---
+ ggml/src/ggml-metal/ggml-metal.metal | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index 2c5052831..dfb5b76f6 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -10422,7 +10422,14 @@ kernel void kernel_mul_mm(
+     int sx = tgpig.x;
+ 
+     if ((size_t) args.ne1 * args.nb11 > (32u << 20)) {
+-        constexpr int SWZ = 8;
++        // The group size follows the BYTES of a src0 tile rather than a fixed tile
++        // count, because the quantity being bounded is the SWZ*NR0 rows of src0 held
++        // across the group and an f16 tile is ~2x the bytes of a q8_0 one. Measured
++        // on M1 Max at K=17408: q8_0 peaks at 8 (8.29 TFLOPS) and f16 at 4 (7.37),
++        // and using 16 for f16 there costs 29%. Both optima sit at ~9 MB of src0,
++        // which is what this expression targets.
++        const uint tile_bytes = NR0*(uint) args.nb01;
++        const int  SWZ = (int) clamp((10u << 20)/max(tile_bytes, 1u), 1u, 16u);
+ 
+         const int nbx = (args.ne1 + NR1 - 1)/NR1; // src1 (batch) tiles
+         const int nby = (args.ne0 + NR0 - 1)/NR0; // src0 (row)   tiles
+-- 
+2.39.5 (Apple Git-154)
+
+
+From e339ed3fd5c8b004a33e46b52ae1c5425ed59199 Mon Sep 17 00:00:00 2001
+From: Claude <skoulik-claude@agentmail.to>
+Date: Thu, 20 Aug 2026 21:05:15 +0930
+Subject: [PATCH 3/4] metal: apply the same mul_mm swizzle to mul_mm_id
+
+kernel_mul_mm_id has the identical grid structure and therefore the identical
+cache pathology. neh1 is uniform for a given expert (tgpig.z) so gating on it
+keeps the remap uniform over the (x, y) plane it reorders, and nbx stays the
+launched x extent from ne21 so the mapping is still a bijection over the grid.
+
+Not measured as a win: the MoE models on hand have a small expert FFN, so
+per-expert src1 stays far below the threshold and the gate never fires. It is
+reachable for MoEs with few experts and a large expert FFN at a large ubatch.
+Included so the two kernels do not drift apart.
+
+test-backend-ops on MTL0: MUL_MAT 1154/1154, MUL_MAT_ID 799/799.
+
+Model: claude-opus-5
+---
+ ggml/src/ggml-metal/ggml-metal.metal | 35 ++++++++++++++++++++++++++--
+ 1 file changed, 33 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index dfb5b76f6..04cc4cc8f 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -10729,14 +10729,45 @@ kernel void kernel_mul_mm_id(
+     constexpr int NL1 = NK/8;
+ 
+     const int im = tgpig.z; // expert
+-    const int r0 = tgpig.y*NR0;
+-    const int r1 = tgpig.x*NR1;
+ 
+     device const uint32_t * tpe_u32 = (device const uint32_t *) (htpe);
+     device const int32_t  * ids_i32 = (device const int32_t  *) (hids);
+ 
+     const int32_t neh1 = tpe_u32[im];
+ 
++    // Same threadgroup swizzle as kernel_mul_mm, for the same reason - see the
++    // comment there. neh1 is uniform for a given expert (tgpig.z), so gating on it
++    // keeps the remap uniform across the (x, y) plane it reorders, and nbx stays
++    // the LAUNCHED x extent (from ne21) so the mapping remains a bijection over the
++    // grid; tiles landing beyond this expert's token count still take the early-out
++    // below, just from different threadgroups than before.
++    //
++    // NOTE: unexercised by the MoE models on hand - an expert FFN has a small ne00,
++    // so per-expert src1 stays far under the threshold. It is reachable for MoEs
++    // with few experts and a large expert FFN at a large ubatch.
++    int sy = tgpig.y;
++    int sx = tgpig.x;
++
++    if ((size_t) neh1 * args.nb11 > (32u << 20)) {
++        const uint tile_bytes = NR0*(uint) args.nb01;
++        const int  SWZ = (int) clamp((10u << 20)/max(tile_bytes, 1u), 1u, 16u);
++
++        const int nbx = (args.ne21 + NR1 - 1)/NR1;
++        const int nby = (args.ne0  + NR0 - 1)/NR0;
++
++        const int lin = (int) tgpig.y*nbx + (int) tgpig.x;
++        const int tpg = SWZ*nbx;
++        const int y0  = (lin/tpg)*SWZ;
++        const int lid = lin%tpg;
++        const int gh  = (nby - y0) < SWZ ? (nby - y0) : SWZ;
++
++        sy = y0 + lid%gh;
++        sx = lid/gh;
++    }
++
++    const int r0 = sy*NR0;
++    const int r1 = sx*NR1;
++
+     if (r1 >= neh1) {
+         return;
+     }
+-- 
+2.39.5 (Apple Git-154)
+
+
+From 28b6cb56da7a6dfc3618eed491552a91b1ba3b95 Mon Sep 17 00:00:00 2001
+From: Claude <skoulik-claude@agentmail.to>
+Date: Thu, 20 Aug 2026 21:41:24 +0930
+Subject: [PATCH 4/4] metal: make the mul_mm swizzle group robust to the
+ cache-size guess
+
+The group size is derived from a byte budget calibrated on one chip's cache, so
+it needs to degrade gracefully when that guess is wrong. Two changes make it do
+so, both measured on M1 Max at K=17408, N=5120, ubatch 2048.
+
+Round the group down to a power of two. A group height that does not divide the
+row tile count leaves a ragged last group and costs more than the tile count
+saves: f16 at SWZ 9 gives 5.50 TFLOPS against 7.28 at SWZ 8.
+
+Lower the ceiling from 16 to 8. SWZ 16 did not win a single case measured, and it
+is the only setting observed to fall BELOW the unswizzled baseline (K=34816 f16,
+1.92 against 2.13).
+
+Together these widen the usable budget from roughly one value to a 4x range:
+
+  budget       10 MB    40 MB
+  q8_0 K=17408  8.28     8.29
+  f16  K=17408  7.34     7.29
+
+before which 20 MB already cost f16 5.50. The 10 MB constant is still an M1 Max
+number, but it now only has to be right within a factor of a few.
+
+test-backend-ops on MTL0: MUL_MAT 1154/1154, MUL_MAT_ID 799/799,
+FLASH_ATTN_EXT 4792/4792. pp8980 unchanged at 148.39 (ub 512) / 144.60 (ub 2048).
+
+Model: claude-opus-5
+---
+ ggml/src/ggml-metal/ggml-metal.metal | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index 04cc4cc8f..9ae11b3fa 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -10429,7 +10429,14 @@ kernel void kernel_mul_mm(
+         // and using 16 for f16 there costs 29%. Both optima sit at ~9 MB of src0,
+         // which is what this expression targets.
+         const uint tile_bytes = NR0*(uint) args.nb01;
+-        const int  SWZ = (int) clamp((10u << 20)/max(tile_bytes, 1u), 1u, 16u);
++        const uint want = clamp((10u << 20)/max(tile_bytes, 1u), 1u, 8u);
++
++        // Round DOWN to a power of two. A group height that does not divide the row
++        // tile count leaves a ragged last group and measurably hurts: on M1 Max at
++        // K=17408 f16, SWZ 8 gives 7.28 TFLOPS but SWZ 9 gives 5.50. Snapping to
++        // powers of two also makes the budget above only need to be right within a
++        // factor of two, which matters because it is calibrated to one chip's cache.
++        const int SWZ = want >= 8 ? 8 : want >= 4 ? 4 : want >= 2 ? 2 : 1;
+ 
+         const int nbx = (args.ne1 + NR1 - 1)/NR1; // src1 (batch) tiles
+         const int nby = (args.ne0 + NR0 - 1)/NR0; // src0 (row)   tiles
+@@ -10750,7 +10757,14 @@ kernel void kernel_mul_mm_id(
+ 
+     if ((size_t) neh1 * args.nb11 > (32u << 20)) {
+         const uint tile_bytes = NR0*(uint) args.nb01;
+-        const int  SWZ = (int) clamp((10u << 20)/max(tile_bytes, 1u), 1u, 16u);
++        const uint want = clamp((10u << 20)/max(tile_bytes, 1u), 1u, 8u);
++
++        // Round DOWN to a power of two. A group height that does not divide the row
++        // tile count leaves a ragged last group and measurably hurts: on M1 Max at
++        // K=17408 f16, SWZ 8 gives 7.28 TFLOPS but SWZ 9 gives 5.50. Snapping to
++        // powers of two also makes the budget above only need to be right within a
++        // factor of two, which matters because it is calibrated to one chip's cache.
++        const int SWZ = want >= 8 ? 8 : want >= 4 ? 4 : want >= 2 ? 2 : 1;
+ 
+         const int nbx = (args.ne21 + NR1 - 1)/NR1;
+         const int nby = (args.ne0  + NR0 - 1)/NR0;
+-- 
+2.39.5 (Apple Git-154)
+

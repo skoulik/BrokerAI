@@ -860,6 +860,105 @@ text tier's record is in [DONE.md](DONE.md).)
       Note the gate now needs a llama-server, which changes its character: it is no longer a
       cheap model-free check, and `-np 1` is required for the reproducibility it depends on.
 
+## Serving — local llama.cpp patches
+
+Local commits live on the **`brokerai-serving`** branch of `~/src/llama.cpp` on the Mac, which
+is what `build/` (production) is built from. Full engineering record and every number quoted
+below: [reports/2026-08-20-vision-tower-head-dim-72.md](reports/2026-08-20-vision-tower-head-dim-72.md).
+Shipped 2026-08-20: four `metal:` commits (mul_mm threadgroup swizzle + its generalizations),
+worth pp8980 117.92 → 144.60 t/s, plus `-ub 512` in `serve.sh`. Added 2026-08-22: `1bcb1ed48`
+`test-backend-ops: cover the mul_mm threadgroup swizzle` — the four above shipped with **no
+correctness coverage of the reordered path at all** (every gate-tripping eval case had one row
+tile, so the remap was the identity); three cases close it, and a mutation proves they cover
+what the old 1154 did not. Details in the report's "Fixed, and confirmed" section.
+
+- [ ] **Reclaim the head_dim-72 flash-attention padding — ~10.8 s/page.** *(Deferred by Sergei
+      2026-08-20: "let's postpone the odd padding, but write it down".)* Qwen3-VL's vision
+      tower has head_dim 72; Metal's FA tile kernel accumulates `O = P*V` over
+      `PV = PAD2(DV, 64) = 128` columns, so 56 of every 128 are multiplied and discarded. It is
+      **22% of the vision tower**, measured: at N=34,320/16 heads the kernel delivers 3.80
+      *useful* TFLOPS at hs=72 against 5.54 at hs=128, while *issued* throughput is flat
+      (5.13–5.54) across every head dim — i.e. cost tracks padded columns, not real ones.
+      Attempted and reverted 2026-08-20; it is **not** a constants change:
+      - `PAD2(DV, 32)` alone does not compile — the kernel is instantiated for every NSG
+        (1/2/4/8) via a function-constant switch and `static_assert(PV8 % NSG == 0)` must hold
+        at NSG=8. That assert is *why* the 64 is there.
+      - `PV = PAD2(DV, 16*NSG)` does compile (NSG is a template parameter), and with a host-side
+        `nsg = 2` for DV∈{72,80,96} would give PV=96. But **the NSG=2 path is broken**:
+        FLASH_ATTN_EXT fails at hs=72 and the kernel returns in 0.4 ms for a 1.4 s workload, so
+        it is structural, not numerical. Some assumption is still tied to NSG=4; not found.
+      - Preferred route instead: keep NSG=4 and teach the two `O = P*V` loops to handle an
+        **odd** `NO` (3 rather than 4) — they currently consume accumulator tiles in pairs
+        (`for ii < NO/2`, `lo[2*ii+0]`, `lo[2*ii+1]`). Worth ~6.2 s/page at PV=96.
+      - Full prize (10.8 s) needs a bounds-checked remainder tile, `NO = ceil(DV8/NSG)`, so
+        DV=72 is exact.
+      Also affects head dims 80/96/112, and **CUDA is not an escape** — `fattn.cu:461` excludes
+      head dim 72 from the tensor-core MMA path outright.
+
+- [ ] **Validate the swizzle constants on newer Apple silicon when one is available.** The
+      *design* is settled — **a generic constant plus clipping, not a per-device table**
+      (Sergei, 2026-08-20: a table has no automatic source and no maintainer, so it "would not
+      be a feasible solution"; the host-side plumbing built toward one was reverted). What is
+      open is only confirming the constants behave on an M2/M3/M4/M5. Established 2026-08-20:
+      - **Why it should be safe on a bigger cache, structurally:** the budget sets the working
+        set the *group* creates (`SWZ = 10MB / tile_bytes`), which is a property of the shape,
+        not the machine. A group holding ≤10 MB of src0 that was comfortable in a 48 MB cache
+        is comfortable in a 96 MB one — the working set does not grow with the hardware, so a
+        larger cache cannot turn a safe choice unsafe.
+      - **And the swizzle only reorders threadgroups; it never changes the work done.** There
+        is no mechanism for a large regression, only for worse locality than the default order
+        — and the default order is the pathological one for these shapes.
+      - **The exposure is the 32 MB gate, not the budget.** That constant does ask a
+        machine-dependent question ("is src1 too big for cache"). On a bigger cache a shape just
+        over 32 MB may no longer be pathological and would be swizzled needlessly. Measured cost
+        of swizzling a shape that does not need it: **~1.2%** (ffn_up, 8.43 → 8.33). Bounded, no
+        cliff. Note the asymmetry favours firing: ~1% when needless, ~70% when needed — if
+        anything the gate should be *lowered*, not raised.
+      - **The benefit saturates**, so clipping at 8 likely costs nothing on a bigger cache: SWZ
+        8 vs 16 is 8.29 vs 8.22 here (16 already not better), and budgets of 10 MB and 40 MB
+        measure identically. A src0 tile only has to survive one src1 sweep; grouping past that
+        buys nothing.
+      - **macOS exposes no GPU/SLC size.** `sysctl` gives only CPU cluster L2
+        (`hw.perflevel0.l2cachesize` = 12 MB here), and that reads 12 MB on *every* M1 variant
+        whether the SLC is 8, 24 or 48 MB — useless as a proxy. Metal has no cache query either.
+      - **Apple's SLC spans ~8 MB (base) to ~96 MB (Ultra).** It is also *reported* not to be
+        monotonic across generations (the M3 Pro is said to have reduced it against the M2 Pro;
+        its bandwidth cut, 200 → 150 GB/s, is well documented, the cache figure is not, and
+        neither is verifiable here). Treat the non-monotonicity as unconfirmed — it does not
+        change the design, which is safe in the cache-*larger* direction regardless.
+      - Mitigated, not solved: rounding the group down to a power of two and capping it at 8
+        widened the usable budget from roughly one value to a **4× range** (10 MB and 40 MB both
+        give 8.28/8.29 q8_0 and 7.34/7.29 f16). A 4× tolerance against a 12× hardware spread
+        still leaves the extremes uncovered.
+      - Failure direction is the safe one *as far as it was measured*: over-budgeting decays
+        toward the unswizzled baseline, under-budgeting (3 MB) loses the win outright (f16 4.51
+        against a 4.56 baseline). The one case observed *below* baseline was SWZ=16, which the
+        cap to 8 removed. **Untestable here — every number is from one chip.**
+      - To validate on a new machine: `llama-bench -p 8980` against a build with and without
+        the four `metal:` commits. `~/bench/mm_sweep.cpp` and `mm_dt.cpp` reproduce the kernel
+        behaviour with no model and under 1 GB.
+
+- [ ] **2D grid blocking for `mul_mm` — the real fix, and it subsumes the item above.** The
+      current swizzle groups only the row-tile walk, so each group still streams the full width
+      of src1; that is why K=34816 is improved but not solved (2.70 → 3.77 TFLOPS, 36% of peak)
+      and why the absolute byte budget is load-bearing at all. Blocking both grid dimensions
+      bounds *both* operands, which makes the working set a chosen quantity rather than a
+      consequence of the shape, and should make the cache-size guess far less critical.
+
+- [ ] **`mul_mm_id` swizzle is committed but unexercised.** Our MoE (Qwen3.6-35B-A3B: 256
+      experts, 8 used, n_embd 2048 → `n_ff_exp` ≈ 1024) puts per-expert src1 at ~0.26 MB, three
+      orders under the threshold, so the gate can never fire. Correct (MUL_MAT_ID 799/799) but
+      unmeasured. If a Mixtral-class MoE (few experts, large expert FFN) ever enters the
+      picture, measure it there.
+
+- [ ] **Decide what to do with the patches upstream.** Four commits, self-contained, with a
+      model-free reproducer (`~/bench/mm_sweep.cpp`, `mm_dt.cpp`, `fa_headdim_bench.cpp`).
+      Sergei has not decided whether to file; the two nearest existing issues
+      ([#14527](https://github.com/ggml-org/llama.cpp/issues/14527),
+      [#15426](https://github.com/ggml-org/llama.cpp/issues/15426)) both died stale for want of
+      exactly such a reproducer. Blocked on the generality items above being at least honest
+      about their limits.
+
 ## Nice-to-have
 
 - [ ] "Match original font" for painted placeholders (Sergei, 2026-07-14) —
