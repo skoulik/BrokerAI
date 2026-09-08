@@ -309,8 +309,8 @@ mapping is kept, so small matrices take an unchanged path.
 **Correctness:** `test-backend-ops -o MUL_MAT -b MTL0` → **1154/1154 passed**, zero failures.
 That was originally written up here as proof that the remap is a bijection over the tile grid.
 **It is not, and it never was** (corrected 2026-08-22): none of those 1154 cases exercised the
-remap. Of the eval cases, exactly two trip the 32 MB src1 gate — `q4_0 m=1 n=2048 k=8192`
-(64 MB) and `q8_0 m=6 n=4096 k=5120` (80 MB) — and both have m ≤ 6 against NR0 = 64, so
+remap. Of the eval cases, exactly two trip the 32 MiB src1 gate — `q4_0 m=1 n=2048 k=8192`
+(64 MiB) and `q8_0 m=6 n=4096 k=5120` (80 MiB) — and both have m ≤ 6 against NR0 = 64, so
 `nby = 1`, `gh = 1`, and the mapping degenerates to the identity. The shapes that would have
 covered it (`4096 × bs × 14336`) live in `make_test_cases_perf()`, which does not check
 correctness at all. The run proved the *unswizzled* path was still intact and that the gated
@@ -320,11 +320,20 @@ Three cases were added to `make_test_cases_eval()` to close it — large src1 **
 tiles, with the tile counts deliberately not multiples of the group height so the ragged last
 group is covered too:
 
-| case | src1 | row tiles | group height |
+`test_mul_mat(type_a, type_b, m, n, k, ...)` builds `a` as `(k, m)` and `b` as `(k, n)`, so src1
+is `n` rows of `k` f32 columns — `n*k*4` bytes — and the destination is `(m, n)`, which makes
+the row tile count `ceil(m/NR0)` at NR0 = 64. Both quantities below are derived from the shape
+parameters; neither is passed directly:
+
+| case | src1 = n·k·4 | row tiles = ⌈m/64⌉ | group height |
 |---|---|---|---|
-| `MUL_MAT q8_0 m=640 n=1056 k=8192` | 34.6 MB | 10 | 8 → 8 + ragged 2 |
-| `MUL_MAT f16 m=320 n=512 k=17408` | 35.7 MB | 5 | 4 → 4 + ragged 1 |
-| `MUL_MAT_ID q8_0 2/2 m=128 n=1056 k=8192` | 34.6 MB per expert | 2 | 2 |
+| `MUL_MAT q8_0 m=640 n=1056 k=8192` | 33.0 MiB | 10 | 8 → 8 + ragged 2 |
+| `MUL_MAT f16 m=320 n=512 k=17408` | 34.0 MiB | 5 | 4 → 4 + ragged 1 |
+| `MUL_MAT_ID q8_0 2/2 m=128 n=1056 k=8192` | 33.0 MiB per expert | 2 | 2 |
+
+The margin over the 32 MiB gate is thin by construction — 3% and 6% — because src1 has to be
+large while the FLOP bill `2·m·n·k` stays payable in a CI suite. Anyone retuning the gate must
+re-check these three, or they will silently stop covering the path they exist to cover.
 
 **1156/1156 MUL_MAT and 800/800 MUL_MAT_ID pass**, on MTL0, BLAS and CPU. That the three
 actually reach the grouped path is established by mutation, not by assumption: breaking the
@@ -336,6 +345,23 @@ was blind to it. Cost: ~21 GFLOP added, the whole `-o MUL_MAT` run is 27 s wall 
 This is also the requirement `CONTRIBUTING.md` states outright — *"if you modified a `ggml`
 operator or added a new one, add the corresponding test cases to `test-backend-ops`"* — so the
 gap was a compliance gap as well as an evidence one.
+
+**Perplexity** (the other thing `CONTRIBUTING.md` asks for and that shipping skipped), measured
+2026-08-22 on wikitext-2 `wiki.test.raw`, Qwen3.8-27B Q8_0, `-ngl 99 -fa on -c 512
+--chunks 100`:
+
+| build | PPL |
+|---|---|
+| stock kernel | 6.7478 ± 0.10325 |
+| **patched** | **6.7478 ± 0.10325** |
+
+**All 100 per-chunk values are bit-identical**, not merely the final estimate. That is the
+expected result — the remap changes which threadgroup computes a tile, never the arithmetic
+inside one — but it is now measured rather than argued. The comparison is also live rather than
+vacuous: at `n_ctx 512` llama-perplexity packs 4 sequences per batch at `-ub 512`, which puts
+`ffn_down`'s src1 at 34.0 MiB, over the 32 MiB gate, so the swizzled path is what produced the
+patched column. The stock binary was built by reverting only `ggml-metal.metal` to
+`d4d40133a~1` in the `build-swz/` scratch tree; production `build/` was not touched.
 
 **Isolated:** `ffn_down [17408→5120]` at ubatch 2048 goes **4.79 → 8.29 TFLOPS (1.73×)**, now
 matching `ffn_up`'s 8.33 on the same FLOP count. The whole K sweep above flattens to 78%.
