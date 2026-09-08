@@ -211,7 +211,7 @@ Output only the JSON array, with no code fence and no other text."""
 _OUTPUT_VALUES = """
 Output in this JSON format:
 [{"type": "<TYPE>", "text": "<exact text as printed>"}]
-If the page contains none, output []."""
+If the page contains none, output []"""
 
 _OUTPUT_BOXES = """
 Output in this JSON format:
@@ -219,7 +219,7 @@ Output in this JSON format:
 bbox_2d is the tight box around that text: (x1,y1) top-left, (x2,y2) bottom-right, in \
 normalized relative coordinates scaled to 1000. Make the box enclose the whole string \
 including its first and last characters.
-If the page contains none, output []."""
+If the page contains none, output []"""
 
 # Pass 2 of the two-pass regime. Detection and grounding are separated because
 # asking for both at once measurably costs recall — 350 -> 324 distinct values
