@@ -35,7 +35,7 @@ from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
 from pii.core.image_mode import strip_image
 from pii.core.linearization import linearize
 from pii.core.ocr import get_ocr_page
-from pii.core.vlm import DEFAULT_EFFORT, DEFAULT_GEOMETRY, Incomplete
+from pii.core.vlm import DEFAULT_BOX_ORDER, DEFAULT_EFFORT, DEFAULT_GEOMETRY, Incomplete
 from pii_eval.build import CORPUS_KEEP_FILE
 from pii_eval.score import _norm
 
@@ -202,7 +202,8 @@ def reread_engine():
 
 
 def build_detector(geometry: str = DEFAULT_GEOMETRY,
-                   reasoning_effort: str = DEFAULT_EFFORT):
+                   reasoning_effort: str = DEFAULT_EFFORT,
+                   box_order: str = DEFAULT_BOX_ORDER):
     """The layer-0 detector for the STRIP side. Imported lazily so the
     model-server dependency lands only when a scoring run starts.
 
@@ -216,16 +217,18 @@ def build_detector(geometry: str = DEFAULT_GEOMETRY,
     # front: `vlm` paints them, `combined` uses them as a search constraint.
     # `hybrid` and `ocr` take geometry from the second pass instead.
     return VlmDetector(want_boxes=geometry in ("vlm", "combined"),
-                       reasoning_effort=reasoning_effort)
+                       reasoning_effort=reasoning_effort,
+                       box_order=box_order)
 
 
 def score_image(corpus: str, threshold: float = 0.4,
                 invalid_identifiers: str = "likely",
                 ocr_backend: str = "paddle",
                 geometry: str = DEFAULT_GEOMETRY,
-                reasoning_effort: str = DEFAULT_EFFORT) -> int:
+                reasoning_effort: str = DEFAULT_EFFORT,
+                box_order: str = DEFAULT_BOX_ORDER) -> int:
     ocr = reread_engine()
-    vlm = build_detector(geometry, reasoning_effort)
+    vlm = build_detector(geometry, reasoning_effort, box_order)
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     source = (corpus_path / manifest["source"]).resolve()

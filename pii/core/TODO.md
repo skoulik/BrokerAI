@@ -839,6 +839,41 @@ text tier's record is in [DONE.md](DONE.md).)
       production is, write it in the dependency table with its quant, and say so in the eval
       reports' headers. Cheap, and it stops the next comparison being between unknowns.
 
+- [ ] **Gemma 4: support thinking, then run the corpus with it on** *(Sergei, 2026-09-13,
+      scheduled on condition that the thinking-off corpus quality was promising. It was: 91.2%
+      against Qwen3.8's 94.1%, every extra leak in the shared truncated-entity class, at about
+      a tenth of the wall time. See
+      [reports/2026-09-13-gemma4-26b-bringup.md](reports/2026-09-13-gemma4-26b-bringup.md).)*
+      Today `reasoning_effort != "off"` sends Qwen's protocol. That is a `reasoning_effort`
+      template kwarg, which Gemma's template ignores, plus a lazy grammar triggered on
+      `</think>`, which Gemma never emits. So the grammar would never engage. Gemma switches
+      thinking on with `enable_thinking` (or `<|think|>` in the system prompt) and closes its
+      trace with its own channel tokens. Needs:
+      - the per-model protocol: kwarg, trigger regex, and how the reasoning-budget sampler finds
+        the trace boundaries;
+      - `strip_thinking` for Gemma's format;
+      - the dual coverage.
+
+      Then `score` and `ground` over `real/1` at the effort that makes the Qwen3.8 comparison
+      fair. That run is the one that separates model from configuration.
+
+- [ ] **Gemma 4: a re-sent request can answer differently** *(Sergei, 2026-09-13, scheduled on
+      the same condition)*. The identical detect request gave 15 findings (349 tokens) or 13
+      (298 tokens), depending on server cache state. It gave 15 when the prompt was evaluated
+      whole or as a cached image plus 329 text tokens, and 13 when the whole prompt was cached
+      and only the last token re-evaluated. It reproduces with MTP off. The hypothesis is that
+      logits differ numerically between a 1-token and a multi-token batch on Metal, on a
+      near-tie page; that is inferred, not isolated.
+      - **Start with** `cache_prompt: false` twice, which should be identical, then bisect batch
+        size, e.g. `-ub` or `n_cache_reuse`.
+      - **Consequence to fix either way:** `vlm.http_transport`'s docstring says a retry
+        "returns the same answer". That is false when a retry follows a reply that reached the
+        server but not the client, because the re-send hits the full-prompt cache.
+      - **Gate impact:** a fresh server plus the normal pass sequence was deterministic in all
+        five cold runs measured. **But it has already moved a corpus result:** two `real/1`
+        runs leaked `1/SK MANAGEMENT VICTORIA PTY LTD` on d10 in one run and not the other,
+        although re-stripping d10 gives identical findings under both configurations.
+
 - [ ] **De-flake the tier-1 gate / revisit `build.CRITICAL`** (2026-08-08; **re-measure before
       acting, 2026-08-12**). Under GLiNER2 the gate passed at seeds 42 and 1 and failed at 2, 3
       and 7 on unmodified code — always a residual PERSON miss — so a single-seed gate was

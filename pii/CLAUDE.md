@@ -151,6 +151,15 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   word. `locator.py` paints OCR word boxes; the model's own box is painted only for the
   residue that matches no OCR text at all (a logo, a barcode), padded and counted separately.
   `--geometry vlm` exists as a comparison instrument only.
+- **Ask each model for boxes in its NATIVE order, and read them back in the order asked.**
+  Told x first, Gemma answered x first on only 3 of 31 pages, and a mix on one. One page
+  flipped between runs, so no read-back rule can be right. A wrong order raises nothing; it only moves
+  every box (2026-09-13).
+  - `in_box_order` swaps coordinate NAMES only, and `_findings_from` is the one place a box
+    becomes `(x1, y1, x2, y2)`.
+  - Under `auto`, an unplaceable model is REFUSED before a boxed request (`BoxOrderUnknown`).
+    Never default an unknown model to `xyxy`, and never "fix" a reply by guessing its order
+    from the box shapes.
 - **Fuzzy matching is permitted exactly where a box constrains the candidate set.** Inside a
   box, edit distance can only pick something in the right place; page-wide it would paint the
   WRONG region, so `--geometry ocr` stays at exact-or-squash. The confusion table in

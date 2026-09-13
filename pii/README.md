@@ -182,6 +182,17 @@ reliable enough to say which occurrence of a value you are looking at, which
 is all `hybrid` asks of them. `vlm` is a comparison instrument, not a
 production option.
 
+`--box-order` sets the coordinate order the model is asked to write its boxes
+in. Models have a native order: Gemma puts y first, Qwen x first. A model asked
+for the other order does not reliably comply, and a box read the wrong way round
+is not an error, only a rectangle in the wrong place.
+
+- `auto` (**default**) asks each model in its native order, going by the name of
+  the model the server reports. It prints which order it chose
+  (`pii: layer-0 model … -> box order yxyx (auto)`). If it does not recognise
+  the model, the run stops with an error before any boxes are asked for.
+- `xyxy` or `yxyx` sets the order yourself, for a model `auto` does not know.
+
 Two lines in the run output report the weaker outcomes, and they are printed
 whether or not you passed `--report`: values painted from the model's own box
 (approximate geometry, no checksum validation) and values that could not be

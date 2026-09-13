@@ -3,6 +3,8 @@ import sys
 
 from pii.core.ocr import OCR_PAGE_BACKENDS
 from pii.core.vlm import (
+    BOX_ORDERS,
+    DEFAULT_BOX_ORDER,
     DEFAULT_EFFORT,
     DEFAULT_GEOMETRY,
     GEOMETRIES,
@@ -108,6 +110,13 @@ def main() -> int:
                          "compare them")
     gr.add_argument("--reasoning-effort", choices=list(REASONING_EFFORTS),
                     default=DEFAULT_EFFORT)
+    gr.add_argument("--box-order", choices=list(BOX_ORDERS),
+                    default=DEFAULT_BOX_ORDER,
+                    help="the coordinate order the layer-0 model is asked "
+                         "to write its boxes in: auto (default) asks each "
+                         "model in its native order, from the served model's "
+                         "name (gemma: y first, qwen: x first), and refuses "
+                         "any other model; xyxy/yxyx override it")
     gr.add_argument("--limit", type=int, default=0,
                     help="stop after N pages (0 = all); for "
                          "checking a configuration before "
@@ -150,6 +159,13 @@ def main() -> int:
                          "default). The A/B that matters is hybrid vs ocr: "
                          "same detector, same locator, boxes as the only "
                          "variable")
+    sc.add_argument("--box-order", choices=list(BOX_ORDERS),
+                    default=DEFAULT_BOX_ORDER,
+                    help="the coordinate order the layer-0 model is asked "
+                         "to write its boxes in: auto (default) asks each "
+                         "model in its native order, from the served model's "
+                         "name (gemma: y first, qwen: x first), and refuses "
+                         "any other model; xyxy/yxyx override it")
 
     args = parser.parse_args()
     if args.command == "generate":
@@ -202,7 +218,8 @@ def main() -> int:
                                ocr_backend=args.ocr_backend,
                                geometry=args.geometry,
                                reasoning_effort=args.reasoning_effort,
-                               limit=args.limit)
+                               limit=args.limit,
+                               box_order=args.box_order)
     if args.modality == "image":
         from pii_eval.score_image import score_image
 
@@ -211,7 +228,8 @@ def main() -> int:
                            invalid_identifiers=args.invalid_identifiers,
                            ocr_backend=args.ocr_backend,
                            geometry=args.geometry,
-                           reasoning_effort=args.reasoning_effort)
+                           reasoning_effort=args.reasoning_effort,
+                           box_order=args.box_order)
     if args.modality == "pdf":
         from pii_eval.score_pdf import score_pdf
 
@@ -224,7 +242,8 @@ def main() -> int:
                          invalid_identifiers=args.invalid_identifiers,
                          ocr_backend=args.ocr_backend,
                          geometry=args.geometry,
-                         reasoning_effort=args.reasoning_effort)
+                         reasoning_effort=args.reasoning_effort,
+                         box_order=args.box_order)
     from pii_eval.score import score
 
     return score(args.corpus or _default_corpus(args.seed),

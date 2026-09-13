@@ -147,6 +147,19 @@ _TRIGGER_PATTERN = 2
 GEOMETRIES = ("hybrid", "combined", "ocr", "vlm")
 DEFAULT_GEOMETRY = "hybrid"
 
+# The order the four `bbox_2d` integers are ASKED for, and so read back in. A model
+# asked against its native order does not reliably comply: Gemma 4, told x first,
+# answered y first on 27 of 31 real pages, x first on three and a mix on one - one
+# page flipping between runs (2026-09-13). A wrong order raises nothing, so each
+# model is asked in its OWN order: "auto" takes the family from the served model's
+# name before the first boxed request, and refuses a model it cannot place rather
+# than guess. The explicit orders are the override.
+BOX_ORDERS = ("auto", "xyxy", "yxyx")
+DEFAULT_BOX_ORDER = "auto"
+# Keyed on the FAMILY, so every Gemma is assumed y-first. That is Google's stated
+# convention across the family, but only Gemma 4 26B-A4B has been measured here.
+_FAMILY_BOX_ORDER = (("gemma", "yxyx"), ("qwen", "xyxy"))
+
 # The tuned probe prompt, plus the value-not-label sentence added 2026-08-12.
 # Four properties are load-bearing and should not be edited casually - each was
 # established by measurement:
@@ -253,6 +266,27 @@ normalized relative coordinates scaled to 1000. Make the box enclose the whole s
 including its first and last characters.
 Output only the JSON array, with no code fence and no other text."""
 
+# The two box prompts above spell boxes x first: the measured wording, and what an
+# x-first model is sent byte for byte. A y-first model gets the same prompts with
+# only the coordinate NAMES swapped — the smallest edit that stops it being asked
+# against its own convention. Every phrase must stay in both prompts, or the
+# y-first prompt would silently go on asking for x first (pinned by a test).
+_XY_PHRASES = (
+    ("[x1, y1, x2, y2]", "[y1, x1, y2, x2]"),
+    ("(x1,y1) top-left, (x2,y2) bottom-right", "(y1,x1) top-left, (y2,x2) bottom-right"),
+)
+
+
+def in_box_order(prompt: str, order: str) -> str:
+    """`prompt` asking for boxes in `order` — a concrete order, never "auto"."""
+    if order == "xyxy":
+        return prompt
+    if order != "yxyx":
+        raise ValueError(f"box order must be resolved before prompting: {order!r}")
+    for x_first, y_first in _XY_PHRASES:
+        prompt = prompt.replace(x_first, y_first)
+    return prompt
+
 # GBNF grammars — the output SHAPE, enforced at the sampler instead of parsed
 # out of whatever comes back. One per prompt, and the prompts are unchanged:
 # they still describe the shape in words, which costs nothing and keeps the
@@ -320,8 +354,9 @@ GRAMMAR_LOCATE = "\n".join((_G_ROOT, _G_ITEM_BOXES, _G_BBOX, _G_STRING))
 
 @dataclass(frozen=True)
 class VlmFinding:
-    """One detection. `box` is the model's own normalized-to-1000 rectangle and
-    is present only when the model was asked for geometry."""
+    """One detection. `box` is the model's own normalized-to-1000 rectangle,
+    ALWAYS (x1, y1, x2, y2) whatever order the model wrote it in, and is present
+    only when the model was asked for geometry."""
 
     text: str
     entity_type: str
@@ -457,6 +492,31 @@ def http_transport(url: str, payload: dict, timeout: int) -> dict:
     raise AssertionError("unreachable")  # pragma: no cover
 
 
+def served_model_name(url: str, timeout: int) -> str | None:
+    """The model llama-server reports serving (`GET /v1/models`), or None.
+
+    Asked once per detector, and only when a boxed prompt must be chosen before
+    any reply has named the model — under `hybrid`, pass 1's reply already has,
+    so this is `combined`/`vlm`, or a `localize` called on its own. A failure is
+    `VlmUnavailable` with the same hint as a failed request, since it is the
+    same wrong --vlm-url."""
+    try:
+        with urllib.request.urlopen(f"{url}/v1/models", timeout=timeout) as resp:
+            body = json.loads(resp.read().decode())
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        reason = getattr(exc, "reason", exc)
+        raise VlmUnavailable(
+            f"cannot ask the model server at {url} what it is serving ({reason}). "
+            f"Start llama-server, or pass --vlm-url if it runs on another host "
+            f"(e.g. --vlm-url http://192.168.1.55:8080)."
+        ) from exc
+    for key, field in (("data", "id"), ("models", "name")):
+        entries = body.get(key) if isinstance(body, dict) else None
+        if entries and isinstance(entries[0], dict) and entries[0].get(field):
+            return str(entries[0][field])
+    return None
+
+
 def fold_digits(text: str) -> str:
     """Fold non-ASCII decimal digits to ASCII.
 
@@ -500,7 +560,26 @@ def strip_thinking(raw: str) -> str:
     return (tail if closed else raw).strip()
 
 
-def read_response(response: dict) -> DetectorResult:
+def box_order_for_model(name: str | None) -> str | None:
+    """The box order a served model's name implies (see `BOX_ORDERS`).
+
+    Matched on the file name alone, case-insensitively — llama-server reports
+    the model PATH by default, and a directory called `qwen-vs-gemma` must not
+    decide it. None when no known family matches, and also when more than one
+    does: a name that says both is not evidence for either."""
+    if not name:
+        return None
+    base = _model_file(name).lower()
+    orders = {order for family, order in _FAMILY_BOX_ORDER if family in base}
+    return orders.pop() if len(orders) == 1 else None
+
+
+def _model_file(name: str) -> str:
+    """The file-name part of the model name llama-server reports (a path)."""
+    return name.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def read_response(response: dict, box_order: str = "xyxy") -> DetectorResult:
     """One server reply -> findings plus the failure counters.
 
     Shared by both layer-0 detectors, so the three-way split (clean page / cut
@@ -513,6 +592,9 @@ def read_response(response: dict) -> DetectorResult:
     out, is indistinguishable from a clean page. An array that DID close is
     complete regardless of why generation stopped: everything meaningful
     arrived, and whatever was cut was trailing.
+
+    `box_order` must be a concrete order; resolving "auto" needs the detector,
+    which is what knows whether the override was given.
     """
     try:
         choice = response["choices"][0]
@@ -520,7 +602,7 @@ def read_response(response: dict) -> DetectorResult:
     except (KeyError, IndexError, TypeError) as exc:
         raise VlmError(f"unexpected response shape: {response!r}") from exc
     payload, complete = _extract_array(strip_thinking(fold_digits(raw)))
-    findings = _findings_from(payload)
+    findings = _findings_from(payload, box_order)
     if complete:
         return DetectorResult(findings)
     # The completed elements are kept either way (see _extract_array); which
@@ -531,7 +613,7 @@ def read_response(response: dict) -> DetectorResult:
     return DetectorResult(findings, Incomplete(malformed=1))
 
 
-def parse_findings(raw: str) -> list[VlmFinding]:
+def parse_findings(raw: str, box_order: str = "xyxy") -> list[VlmFinding]:
     """Parse a response BODY into findings, ignoring completeness.
 
     The body-level seam: it shares every defence with `read_response` (fence,
@@ -539,13 +621,22 @@ def parse_findings(raw: str) -> list[VlmFinding]:
     `finish_reason` from, so it cannot tell an empty page from an answer that
     never finished. Detectors therefore go through `read_response`; this stays
     as the entry point for anything holding only the text — the testbench, and
-    a caller parsing a body it did not fetch itself."""
+    a caller parsing a body it did not fetch itself. With no envelope there is
+    no model name either, so the box order is the caller's to state."""
     payload, _ = _extract_array(strip_thinking(fold_digits(raw)))
-    return _findings_from(payload)
+    return _findings_from(payload, box_order)
 
 
-def _findings_from(payload) -> list[VlmFinding]:
-    """Turn parsed JSON items into findings, skipping what makes no sense."""
+def _findings_from(payload, box_order: str = "xyxy") -> list[VlmFinding]:
+    """Turn parsed JSON items into findings, skipping what makes no sense.
+
+    Boxes leave here as (x1, y1, x2, y2) whatever `box_order` they arrived in,
+    so nothing downstream — the locator, the overlays, the grounding scorer —
+    ever learns that models disagree."""
+    if box_order not in ("xyxy", "yxyx"):
+        # "auto" reaching here would silently parse as xyxy — the one outcome
+        # the setting exists to prevent.
+        raise ValueError(f"box order must be resolved before parsing: {box_order!r}")
     if payload is None:
         return []
     out = []
@@ -560,10 +651,11 @@ def _findings_from(payload) -> list[VlmFinding]:
         box = None
         if isinstance(raw_box, (list, tuple)) and len(raw_box) == 4:
             try:
-                x1, y1, x2, y2 = (int(v) for v in raw_box)
+                a, b, c, d = (int(v) for v in raw_box)
             except (TypeError, ValueError):
                 box = None
             else:
+                x1, y1, x2, y2 = (b, a, d, c) if box_order == "yxyx" else (a, b, c, d)
                 box = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
         out.append(VlmFinding(text=text, entity_type=entity, box=box))
     return out
@@ -656,6 +748,15 @@ class VlmDetector:
     `grammar` constrains the output shape at the sampler. It is on by default
     and exists as a switch because constrained decoding alters the sampled
     distribution, so it is an A/B axis rather than a serialization detail.
+
+    `box_order` is the order boxes are ASKED for in, and so read back in (see
+    `BOX_ORDERS`). Under "auto" it is the served model's native order, chosen
+    before the first boxed request: from the model an earlier reply named, or
+    else by asking the server once (`served_model`, injectable). A model no
+    family matches is refused there, before a boxed request is spent on it —
+    boxless requests run against any model, which is what lets `--geometry
+    ocr` and pass 1 work regardless. Every later reply is checked against the
+    model the prompt was chosen for.
     """
 
     # Which layer-0 modality this detector IS, for the run to describe itself
@@ -675,9 +776,13 @@ class VlmDetector:
         grammar: bool = True,
         reasoning_effort: str = DEFAULT_EFFORT,
         reasoning_budget: int = DEFAULT_REASONING_BUDGET,
+        box_order: str = DEFAULT_BOX_ORDER,
+        served_model: Callable[[str, int], str | None] | None = None,
     ) -> None:
         if reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(f"unknown reasoning effort: {reasoning_effort!r}")
+        if box_order not in BOX_ORDERS:
+            raise ValueError(f"unknown box order: {box_order!r}")
         self.url = url
         self.transport = transport or http_transport
         self.timeout = timeout
@@ -686,6 +791,14 @@ class VlmDetector:
         self.grammar = grammar
         self.reasoning_effort = reasoning_effort
         self.reasoning_budget = reasoning_budget
+        self.box_order = box_order
+        self._served_model = served_model or served_model_name
+        # Under "auto": the (model name, box order) the server was last seen
+        # serving, learned from any reply or asked for before the first boxed
+        # request. `_unplaceable` keeps a name no family matched, so the refusal
+        # can name it without asking the server again.
+        self._model: tuple[str, str] | None = None
+        self._unplaceable: str | None = None
 
     @property
     def thinking(self) -> bool:
@@ -706,7 +819,11 @@ class VlmDetector:
 
     @property
     def prompt(self) -> str:
-        return PROMPT + (_OUTPUT_BOXES if self.want_boxes else _OUTPUT_VALUES)
+        """The pass-1 prompt. With boxes, this resolves the box order, which
+        under "auto" may ask the server what it is serving."""
+        if not self.want_boxes:
+            return PROMPT + _OUTPUT_VALUES
+        return PROMPT + in_box_order(_OUTPUT_BOXES, self._request_order())
 
     @property
     def _detect_grammar(self) -> str | None:
@@ -715,7 +832,76 @@ class VlmDetector:
         return GRAMMAR_VALUES_BOXES if self.want_boxes else GRAMMAR_VALUES
 
     def detect(self, image) -> DetectorResult:
-        return read_response(self._ask(image, self.prompt, self._detect_grammar))
+        order = self._request_order() if self.want_boxes else None
+        prompt = PROMPT + (
+            in_box_order(_OUTPUT_BOXES, order) if order else _OUTPUT_VALUES
+        )
+        return self._read(self._ask(image, prompt, self._detect_grammar), order)
+
+    def _request_order(self) -> str:
+        """The order to ASK for boxes in, resolved before the request is sent.
+
+        Under "auto" it comes from the model the server is serving: learned
+        from an earlier reply when there was one — under `hybrid` pass 1's —
+        and otherwise asked for once. An unplaceable model is refused HERE,
+        before a boxed request is spent on it, because no prompt can be chosen
+        for it."""
+        if self.box_order != "auto":
+            return self.box_order
+        if self._model is None:
+            name = self._unplaceable or self._served_model(self.url, self.timeout)
+            order = box_order_for_model(name)
+            if order is None:
+                raise BoxOrderUnknown(
+                    f"cannot tell the box order of layer-0 model {name!r}, so "
+                    f"there is no telling which order to ask it for: a box "
+                    f"read the wrong way round is silently wrong. Pass "
+                    f"--box-order xyxy (x first, as Qwen) or yxyx (y first, "
+                    f"as Gemma)"
+                )
+            self._learn(name, order)
+        return self._model[1]
+
+    def _read(self, response: dict, asked: str | None = None) -> DetectorResult:
+        """`read_response` in the order the boxes were `asked` for.
+
+        Under "auto" every reply also says which model answered, which keeps
+        the learned model current and catches the one way the asked order can
+        be wrong: a server that changed model between choosing the prompt and
+        answering it."""
+        if self.box_order == "auto" and isinstance(response, dict):
+            name = response.get("model")
+            if name:
+                order = box_order_for_model(name)
+                if asked is not None and order != asked:
+                    self._model = None
+                    raise BoxOrderUnknown(
+                        f"asked layer-0 for {asked} boxes, but the reply came "
+                        f"from {name!r}"
+                        + (f", which answers {order}" if order else "")
+                        + ": did the server change model mid-run? Re-run, or "
+                        "pass --box-order"
+                    )
+                if order is None:
+                    self._unplaceable = name
+                else:
+                    self._learn(name, order)
+        # A boxless prompt's reply carries no box anything will use, so which
+        # order it is parsed in is moot.
+        return read_response(response, asked or "xyxy")
+
+    def _learn(self, name: str, order: str) -> None:
+        # Printed, not warned, and again whenever the model changes: which order
+        # a run asked for its boxes in is an operational fact worth seeing, and
+        # `warnings` would show it once per code location.
+        if self._model == (name, order):
+            return
+        self._model = (name, order)
+        self._unplaceable = None
+        print(
+            f"pii: layer-0 model {_model_file(name)} -> box order {order} (auto)",
+            file=sys.stderr,
+        )
 
     def localize(self, image, findings: list[VlmFinding]) -> DetectorResult:
         """Pass 2: hand the already-detected values back and ask only where
@@ -740,12 +926,16 @@ class VlmDetector:
         listing = "\n".join(
             f"- {value}" for value in dict.fromkeys(f.text for f in findings)
         )
-        hints = read_response(
+        order = self._request_order()
+        hints = self._read(
             self._ask(
                 image,
-                _LOCATE_PROMPT.format(values=listing),
+                # Re-spelled BEFORE the values go in, so a value that happens
+                # to contain a coordinate phrase is never rewritten.
+                in_box_order(_LOCATE_PROMPT, order).format(values=listing),
                 GRAMMAR_LOCATE if self.grammar else None,
-            )
+            ),
+            order,
         )
         return replace(
             hints, findings=attach_boxes(findings, hints.findings)
@@ -904,6 +1094,15 @@ class VlmError(RuntimeError):
 
 class VlmUnavailable(VlmError):
     """The model server could not be reached at all."""
+
+
+class BoxOrderUnknown(VlmError):
+    """No box order can be chosen for the served model under "auto" — its name
+    matches no known family, or the model answering is not the one the prompt
+    was chosen for.
+
+    A VlmError so every front-end already reports it as a message rather than
+    a traceback: like a missing server, it is the operator's to fix."""
 
 
 def squash_map(text: str) -> tuple[str, list[int]]:

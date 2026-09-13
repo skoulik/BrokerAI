@@ -3815,3 +3815,66 @@ the move; new completed tasks append to the matching section with their records.
       **A trap worth remembering:** the first run was reported to the harness as "exit code 0"
       while pytest had actually FAILED. `timeout ... | tail` masks the exit status. Do not read
       a background task's exit code as the test result; read the summary line.
+
+- [x] **Boxes are asked for in each model's native coordinate order (`--box-order`), and
+      Gemma 4's first corpus runs** *(Sergei, 2026-09-13. "The plan is sound. Go ahead." He
+      chose auto-detect with an override, and refusal on an unknown model. After his sweep:
+      "Can you fix the prompt, please, so that it asks in the model's native order?")*
+
+      **Why.** Gemma 4 26B-A4B answered y first to prompts that spell out x first. Against
+      Qwen3.8's boxes for the same values the median IoU was 0.00 read as printed and 0.85
+      swapped. A box read the wrong way round raises nothing.
+
+      **First version, reverted the same day.** It kept the x-first prompt and swapped every
+      Gemma reply, choosing the order per reply from the reply's `model` field. Sergei's
+      sweep of the reference folder then showed 1.pdf's boxes out of place. Gemma had
+      complied with the x-first prompt on 3 of 31 pages (1.pdf pages 1, 3 and 4), mixed the
+      two on one, and answered y first on the rest. One of those pages had been y first in
+      an earlier run. So no read-back rule can be right.
+
+      **What shipped.**
+      - `in_box_order` re-spells the two box prompts, swapping coordinate NAMES only. The
+        x-first wording is sent unchanged.
+      - Under `auto` the order must be known before a boxed request. It is learned from an
+        earlier reply's `model` field (under `hybrid`, pass 1's reply, at no extra request),
+        or else asked for once with `served_model_name` (`GET /v1/models`, injectable).
+      - An unplaceable model raises `BoxOrderUnknown` before a boxed request is spent. A reply
+        from a model other than the one its prompt was chosen for is also refused.
+      - `_findings_from` reads each reply in the order asked and emits `(x1, y1, x2, y2)`.
+      - `--box-order auto|xyxy|yxyx` exists on `pii strip` (image and PDF only) and on
+        `pii_eval score` and `ground`.
+      - The design is in ARCHITECTURE "Layer 0"; the invariant is in `pii/CLAUDE.md`.
+
+      **Checked against the live server.** Asked y first, Gemma answered y first on all 17
+      pages checked, including 1.pdf's flipped pages, each run twice.
+
+      **Dual coverage.**
+      - 26 pytest items in `test_vlm.py` and 5 in `test_cli.py`; suite 787 → 818.
+      - `test_vlm.py` covers: the prompt re-spelling and its phrase guard, reading back in
+        the asked order, auto for each family, the override, learning from pass 1 without a
+        request, asking the server once, refusal before a boxed request, the model-changed
+        refusal, `served_model_name`, and name matching.
+      - **No synthetic corpus probe**, deliberately: this is a model's output convention, not
+        a document shape. Its corpus-level coverage is `pii_eval ground`.
+
+      **Corpus `real/1`, hybrid, thinking off.** Qwen3.8 is the xhigh combined run.
+
+      | | read-back (run 1) | native (run 2) | Qwen3.8 |
+      |---|---|---|---|
+      | recall | 91.2% | 90.2% | 94.1% |
+      | gate | FAIL | FAIL | PASS |
+      | model boxes contain | 58% | **69%** | 71% |
+      | painted, fully covered | 181/209 | 180/209 | 185/209 |
+      | survival run | 15 min | 11.5 min | 2h20m |
+      | grounding run | 9 min | 9.5 min | 2h18m |
+
+      **Every leak is the prefix class 2026-08-20 diagnosed**: a clipped or abbreviated
+      rendering of the customer's own names, including the critical PERSON_JOINT on d10.
+      - Run 2's one extra leak is the prefix `1/SK MANAGEMENT VICTORIA PTY LTD` of the
+        detected header form.
+      - Re-stripping d10 as shipped and emulating run 1 gave identical findings, and both
+        leak it. Run 1 covering it was layer-0 run-to-run variance, not the prompt change.
+
+      Details: [reports/2026-09-13-gemma4-26b-bringup.md](reports/2026-09-13-gemma4-26b-bringup.md).
+      Judged promising, so Sergei's two conditional follow-ups are in TODO.md: thinking for
+      Gemma, and the re-sent-request divergence.

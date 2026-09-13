@@ -1275,6 +1275,36 @@ Geometry then resolves in three tiers, in descending confidence:
    Counted separately on the result as `box_geometry`: stochastic geometry, and with no OCR
    text layer 1 never sees the value, so it carries no checksum and no `*_INVALID` shadow.
 
+**Each model is asked for boxes in its own coordinate order (2026-09-13).** Qwen writes
+`bbox_2d` x first, as the prompt asks. Gemma 4's own convention is y first, and asked for x
+first it does **not reliably comply**. Over a real corpus it answered y first on 27 of 31
+pages, x first on three and a mix on one, and the same page switched between runs. A box read
+the wrong way round raises nothing: it becomes a plausible rectangle somewhere else, so every
+box-constrained search looks in the wrong place, and no rule for reading it back could be
+right every time.
+
+**So the prompt is spelled in the model's native order.**
+- `in_box_order` swaps only the coordinate names in the two box prompts. The x-first wording
+  stays exactly what was measured.
+- Asked y first, Gemma answered y first on all 17 pages checked, including the three that had
+  flipped, each run twice.
+- `vlm._findings_from` reads each reply in the order it was asked for and turns every box into
+  `(x1, y1, x2, y2)`, so nothing downstream knows models differ.
+
+**How `--box-order auto` (the default) chooses.** The order must be known **before** a boxed
+request is sent, since the prompt depends on it.
+- It comes from the served model's name (`gemma` → y first, `qwen` → x first).
+- That name is learned from an earlier reply where there is one: under `hybrid`, pass 1's reply
+  names the model, so this costs no extra request. Otherwise `GET /v1/models` is asked once.
+- Name matching uses the file name only, never the directory. A name matching both families is
+  evidence for neither.
+- An unplaceable model raises `BoxOrderUnknown` before a boxed request is spent on it; boxless
+  requests run against any model. `--box-order xyxy|yxyx` is the override.
+- Every later reply is checked against the model its prompt was chosen for, which catches a
+  server restarted on another model mid-run.
+
+Evidence: [reports/2026-09-13-gemma4-26b-bringup.md](reports/2026-09-13-gemma4-26b-bringup.md).
+
 **A value is one span or several — the page string does not always hold it whole
 (2026-08-13).** `ocr_page._rows` bands a page **visually**, which is what puts a label beside
 its value and is load-bearing for context promotion. The price is that two cards side by side

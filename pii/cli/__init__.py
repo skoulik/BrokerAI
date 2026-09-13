@@ -27,6 +27,8 @@ from pii.core.ocr import OCR_PAGE_BACKENDS
 from pii.core.text_layer import RepairReport
 # stdlib-only module, so importing it here costs nothing on the default path
 from pii.core.vlm import (
+    BOX_ORDERS,
+    DEFAULT_BOX_ORDER,
     DEFAULT_EFFORT,
     DEFAULT_GEOMETRY,
     DEFAULT_URL,
@@ -89,6 +91,15 @@ def _build_detector(args):
     geometry = getattr(args, "geometry", DEFAULT_GEOMETRY)
     url = getattr(args, "vlm_url", None) or DEFAULT_URL
     grammar = getattr(args, "grammar", True)
+    box_order = getattr(args, "box_order", DEFAULT_BOX_ORDER)
+
+    if not media and box_order != DEFAULT_BOX_ORDER:
+        # Same reasoning as --geometry below: the text path asks for no boxes,
+        # so an order to read them in would be accepted and mean nothing.
+        raise SystemExit(
+            "--box-order applies to --image/--pdf only: text input asks the "
+            "model for no boxes"
+        )
 
     if not media and geometry != DEFAULT_GEOMETRY:
         # Text and CSV have no page, so there is nothing for --geometry to
@@ -131,6 +142,7 @@ def _build_detector(args):
         want_boxes=geometry in ("vlm", "combined"),
         grammar=grammar,
         reasoning_effort=getattr(args, "reasoning_effort", DEFAULT_EFFORT),
+        box_order=box_order,
     )
 
 
@@ -625,6 +637,16 @@ def main(argv=None) -> int:
              "off disables thinking entirely and is a COMPARISON INSTRUMENT, "
              "not a production value — it is what the tool did before "
              "2026-08-19 and is kept so that comparison stays runnable",
+    )
+    p_strip.add_argument(
+        "--box-order", choices=list(BOX_ORDERS), default=DEFAULT_BOX_ORDER,
+        help="the coordinate order the layer-0 model is asked to write its "
+             "boxes in (--image/--pdf only). Models have a native order and do "
+             "not reliably follow another, and a box read in the wrong order is "
+             "silently wrong. auto (default) asks each model in its own order, "
+             "from the name of the model the server reports - gemma: y first, "
+             "qwen: x first - and stops with an error on a model it cannot "
+             "place. xyxy or yxyx overrides that",
     )
     p_strip.add_argument(
         "--layer0", choices=["auto", "off"], default="auto",

@@ -47,7 +47,7 @@ from PIL import Image
 from pii.core import PiiPipeline, PseudonymMap
 from pii.core.image_mode import strip_image
 from pii.core.locator import denormalize
-from pii.core.vlm import DEFAULT_EFFORT, DEFAULT_GEOMETRY, Incomplete
+from pii.core.vlm import DEFAULT_BOX_ORDER, DEFAULT_EFFORT, DEFAULT_GEOMETRY, Incomplete
 from pii_eval.build import CORPUS_KEEP_FILE
 from pii_eval.score_image import _squash, build_detector, find_value
 
@@ -202,13 +202,14 @@ def score_grounding(corpus: str, threshold: float = 0.4,
                     ocr_backend: str = "paddle",
                     geometry: str = DEFAULT_GEOMETRY,
                     reasoning_effort: str = DEFAULT_EFFORT,
-                    limit: int = 0) -> int:
+                    limit: int = 0,
+                    box_order: str = DEFAULT_BOX_ORDER) -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     truth = json.loads((corpus_path / "truth.json").read_text("utf-8"))
     by_id = {d["id"]: d for d in truth["docs"]}
 
-    detector = build_detector(geometry, reasoning_effort)
+    detector = build_detector(geometry, reasoning_effort, box_order)
     pipeline = PiiPipeline(threshold=threshold, entity_keep=CORPUS_KEEP_FILE)
 
     model_rows, paint_rows, spurious, overpaint = [], [], [], []

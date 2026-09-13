@@ -16,6 +16,7 @@ from PIL import Image
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box
 from pii.core.vlm import (
+    BoxOrderUnknown,
     GRAMMAR_LOCATE,
     GRAMMAR_VALUES,
     GRAMMAR_VALUES_BOXES,
@@ -26,27 +27,37 @@ from pii.core.vlm import (
     VlmError,
     VlmFinding,
     attach_boxes,
+    box_order_for_model,
     fold_digits,
     parse_findings,
     read_response,
 )
 
 
-def _reply(content: str, finish_reason: str = "stop") -> dict:
-    return {
+# What llama-server reports as `model`: the path it loaded, by default. A reply
+# always carries one, and box order is read from it (see BOX_ORDERS).
+QWEN = "/Users/claude/models/qwen3.8-27b/Qwen3.8-27B-Q8_0.gguf"
+GEMMA = "/Users/claude/models/gemma-4-26b-a4b/gemma-4-26B-A4B-it-Q8_0.gguf"
+
+
+def _reply(content: str, finish_reason: str = "stop", model: str | None = QWEN) -> dict:
+    reply = {
         "choices": [
             {"message": {"content": content}, "finish_reason": finish_reason}
         ]
     }
+    if model is not None:
+        reply["model"] = model
+    return reply
 
 
-def _transport(content: str):
+def _transport(content: str, model: str | None = QWEN):
     seen = {}
 
     def send(url, payload, timeout):
         seen["url"] = url
         seen["payload"] = payload
-        return _reply(content)
+        return _reply(content, model=model)
 
     send.seen = seen
     return send
@@ -245,13 +256,13 @@ def test_each_prompt_shape_gets_the_matching_grammar():
     assert values.seen["payload"]["grammar"] == GRAMMAR_VALUES
 
     boxes = _transport("[]")
-    VlmDetector(transport=boxes, want_boxes=True).detect(
+    VlmDetector(transport=boxes, want_boxes=True, box_order="xyxy").detect(
         Image.new("RGB", (4, 4), "white")
     )
     assert boxes.seen["payload"]["grammar"] == GRAMMAR_VALUES_BOXES
 
     locate = _transport('[{"text": "A", "bbox_2d": [1, 2, 3, 4]}]')
-    VlmDetector(transport=locate).localize(
+    VlmDetector(transport=locate, box_order="xyxy").localize(
         Image.new("RGB", (4, 4), "white"),
         [VlmFinding(text="A", entity_type="PERSON")],
     )
@@ -328,7 +339,7 @@ def test_boxes_are_only_requested_when_they_will_be_used():
     # Asking for coordinates measurably costs recall, so the OCR-geometry
     # path must not pay for boxes it will throw away.
     assert "bbox_2d" not in VlmDetector(want_boxes=False).prompt
-    assert "bbox_2d" in VlmDetector(want_boxes=True).prompt
+    assert "bbox_2d" in VlmDetector(want_boxes=True, box_order="xyxy").prompt
 
 
 def test_unreachable_server_gives_an_actionable_message():
@@ -364,7 +375,7 @@ def test_bad_response_shape_raises():
 
 def test_localize_asks_only_where_and_lists_the_values():
     send = _transport('[{"text": "A. Person", "bbox_2d": [10, 20, 30, 40]}]')
-    det = VlmDetector(transport=send)
+    det = VlmDetector(transport=send, box_order="xyxy")
     findings = [VlmFinding(text="A. Person", entity_type="PERSON")]
 
     (out,) = det.localize(
@@ -388,6 +399,217 @@ def test_localize_makes_no_call_for_an_empty_page():
         raise AssertionError("no second pass without findings")
 
     assert VlmDetector(transport=explode).localize(None, []).findings == []
+
+
+# ------------------------------------------------------------ box order
+#
+# Each model is ASKED for boxes in its own order and read back in that order.
+# Asked against its native order a model does not reliably comply: Gemma 4, told
+# x first, answered y first on 27 of 31 real pages, x first on three and a mix on
+# one (2026-09-13). A box read the wrong way round is still a plausible rectangle, so
+# nothing fails — which is why the order is chosen per model and never assumed.
+
+_WHITE = Image.new("RGB", (8, 8), "white")
+_LOCATED = '[{"text": "A. Person", "bbox_2d": [20, 10, 40, 30]}]'
+_PERSON = [VlmFinding(text="A. Person", entity_type="PERSON")]
+
+
+def _explode(*a, **kw):  # pragma: no cover - must not run
+    raise AssertionError("the server must not be asked what it serves")
+
+
+def _located_by(model: str, **kwargs):
+    send = _transport(_LOCATED, model)
+    kwargs.setdefault("served_model", lambda url, timeout: model)
+    det = VlmDetector(transport=send, **kwargs)
+    (out,) = det.localize(_WHITE, _PERSON).findings
+    prompt = send.seen["payload"]["messages"][0]["content"][1]["text"]
+    return out, prompt
+
+
+def test_the_x_first_prompts_are_sent_unchanged():
+    # The measured wording is what an x-first model is sent, byte for byte.
+    from pii.core import vlm
+
+    for prompt in (vlm._OUTPUT_BOXES, vlm._LOCATE_PROMPT):
+        assert vlm.in_box_order(prompt, "xyxy") is prompt
+
+
+def test_the_y_first_prompts_swap_every_coordinate_name_and_nothing_else():
+    from pii.core import vlm
+
+    for prompt in (vlm._OUTPUT_BOXES, vlm._LOCATE_PROMPT):
+        y_first = vlm.in_box_order(prompt, "yxyx")
+        # Every phrase is present to swap — else y-first silently asks x first.
+        for x_phrase, y_phrase in vlm._XY_PHRASES:
+            assert x_phrase in prompt and y_phrase in y_first
+        assert "x1, y1" not in y_first and "(x1,y1)" not in y_first
+        back = y_first
+        for x_phrase, y_phrase in vlm._XY_PHRASES:
+            back = back.replace(y_phrase, x_phrase)
+        assert back == prompt
+
+
+def test_an_unresolved_order_never_reaches_a_prompt():
+    from pii.core import vlm
+
+    with pytest.raises(ValueError):
+        vlm.in_box_order(vlm._LOCATE_PROMPT, "auto")
+
+
+def test_a_y_first_box_leaves_the_parser_x_first():
+    (found,) = parse_findings(
+        '[{"text": "a", "type": "PII_NAME", "bbox_2d": [20, 10, 40, 30]}]',
+        box_order="yxyx",
+    )
+    assert found.box == (10, 20, 30, 40)
+
+
+def test_a_y_first_box_is_normalized_after_the_swap():
+    # Swap first, then order the corners — not the other way round.
+    (found,) = parse_findings(
+        '[{"text": "a", "type": "PII_NAME", "bbox_2d": [40, 30, 20, 10]}]',
+        box_order="yxyx",
+    )
+    assert found.box == (10, 20, 30, 40)
+
+
+def test_auto_asks_gemma_y_first_and_reads_it_y_first():
+    out, prompt = _located_by(GEMMA)
+    assert "[y1, x1, y2, x2]" in prompt and "[x1, y1, x2, y2]" not in prompt
+    assert out.box == (10, 20, 30, 40)
+
+
+def test_auto_asks_qwen_x_first_and_reads_it_x_first():
+    out, prompt = _located_by(QWEN)
+    assert "[x1, y1, x2, y2]" in prompt
+    assert out.box == (20, 10, 40, 30)
+
+
+def test_an_explicit_order_is_what_is_asked_and_read_whatever_the_model():
+    out, prompt = _located_by(GEMMA, box_order="xyxy", served_model=_explode)
+    assert "[x1, y1, x2, y2]" in prompt
+    assert out.box == (20, 10, 40, 30)
+
+
+def test_hybrid_learns_the_model_from_pass_one_without_asking_the_server():
+    # Pass 1 carries no boxes, but its reply names the model: pass 2's prompt is
+    # chosen from that, at no extra request.
+    detect = _transport('[{"text": "A. Person", "type": "PII_NAME"}]', GEMMA)
+    det = VlmDetector(transport=detect, served_model=_explode)
+    findings = det.detect(_WHITE).findings
+    det.transport = locate = _transport(_LOCATED, GEMMA)
+    (out,) = det.localize(_WHITE, findings).findings
+    assert "[y1, x1, y2, x2]" in locate.seen["payload"]["messages"][0]["content"][1]["text"]
+    assert out.box == (10, 20, 30, 40)
+
+
+def test_a_boxed_first_request_asks_the_server_once():
+    asked = []
+
+    def served(url, timeout):
+        asked.append(url)
+        return GEMMA
+
+    send = _transport(_LOCATED, GEMMA)
+    det = VlmDetector(url="http://mac:8080", transport=send, served_model=served)
+    det.localize(_WHITE, _PERSON)
+    det.localize(_WHITE, _PERSON)
+    assert asked == ["http://mac:8080"]
+
+
+def test_an_unplaceable_model_is_refused_before_a_boxed_request_is_sent():
+    det = VlmDetector(
+        transport=_explode, served_model=lambda url, timeout: "/models/mystery-7b.gguf"
+    )
+    with pytest.raises(BoxOrderUnknown) as caught:
+        det.localize(_WHITE, _PERSON)
+    assert "mystery-7b" in str(caught.value)
+    assert "--box-order" in str(caught.value)
+    # A VlmError, so every front-end reports it as a message, not a traceback.
+    assert isinstance(caught.value, VlmError)
+
+
+def test_an_unplaceable_model_named_by_pass_one_is_refused_without_asking_again():
+    detect = _transport('[{"text": "A", "type": "PII_NAME"}]', "/models/mystery.gguf")
+    det = VlmDetector(transport=detect, served_model=_explode)
+    # A boxless pass runs against any model: there is nothing to misread.
+    (found,) = det.detect(_WHITE).findings
+    assert found.text == "A"
+    with pytest.raises(BoxOrderUnknown) as caught:
+        det.localize(_WHITE, [found])
+    assert "mystery.gguf" in str(caught.value)
+
+
+def test_a_reply_from_a_different_model_than_the_prompt_was_chosen_for_is_refused():
+    # The server changed model between choosing the prompt and answering it.
+    send = _transport(_LOCATED, QWEN)
+    det = VlmDetector(transport=send, served_model=lambda url, timeout: GEMMA)
+    with pytest.raises(BoxOrderUnknown) as caught:
+        det.localize(_WHITE, _PERSON)
+    assert "yxyx" in str(caught.value) and "Qwen3.8" in str(caught.value)
+
+
+def test_the_chosen_order_is_announced_once_per_model(capsys):
+    send = _transport(_LOCATED, GEMMA)
+    det = VlmDetector(transport=send, served_model=lambda url, timeout: GEMMA)
+    det.localize(_WHITE, _PERSON)
+    det.localize(_WHITE, _PERSON)
+    err = capsys.readouterr().err
+    assert err.count("box order yxyx (auto)") == 1
+    # The file name, not the server's full path.
+    assert "gemma-4-26B-A4B-it-Q8_0.gguf" in err and "/Users/" not in err
+
+
+def test_served_model_name_reads_the_openai_listing():
+    from pii.core.vlm import served_model_name
+
+    body = json.dumps({"data": [{"id": GEMMA}], "models": [{"name": "other"}]})
+    response = mock.MagicMock()
+    response.__enter__.return_value.read.return_value = body.encode()
+    with mock.patch("urllib.request.urlopen", return_value=response) as urlopen:
+        assert served_model_name("http://mac:8080", 5) == GEMMA
+    assert urlopen.call_args[0][0] == "http://mac:8080/v1/models"
+
+
+def test_served_model_name_failure_is_actionable():
+    import urllib.error
+
+    from pii.core.vlm import VlmUnavailable, served_model_name
+
+    with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
+        with pytest.raises(VlmUnavailable) as caught:
+            served_model_name("http://127.0.0.1:9", 5)
+    assert "http://127.0.0.1:9" in str(caught.value) and "--vlm-url" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "name, order",
+    [
+        (GEMMA, "yxyx"),
+        (QWEN, "xyxy"),
+        ("Qwen3-VL-8B-Instruct-Q8_0.gguf", "xyxy"),
+        (r"C:\models\GEMMA-4-31B-it-Q4_0.gguf", "yxyx"),
+        # The directory must not decide it.
+        ("/models/qwen-vs-gemma/mystery.gguf", None),
+        # A name claiming both families is evidence for neither.
+        ("qwen-distilled-gemma.gguf", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_box_order_for_model(name, order):
+    assert box_order_for_model(name) == order
+
+
+def test_an_unresolved_order_never_reaches_the_parser():
+    with pytest.raises(ValueError):
+        parse_findings("[]", box_order="auto")
+
+
+def test_an_unknown_box_order_is_refused_up_front():
+    with pytest.raises(ValueError):
+        VlmDetector(box_order="yx")
 
 
 def test_attach_boxes_pairs_repeats_in_order():

@@ -65,6 +65,33 @@ def test_modes_mutually_exclusive(flags):
         main(["strip", "doc.bin", "-o", "out.bin", *flags])
 
 
+# ------------------------------------------------- box order
+
+def test_box_order_rejects_text_input():
+    """The text path asks the model for no boxes, so an order to read them in
+    would be accepted and mean nothing. Refused before the server is touched."""
+    with pytest.raises(SystemExit):
+        main(["strip", "doc.txt", "--map", "m.json", "--box-order", "yxyx"])
+
+
+@pytest.mark.parametrize("order", ["auto", "xyxy", "yxyx"])
+def test_box_order_reaches_the_vision_detector(order):
+    from argparse import Namespace
+
+    from pii.cli import _build_detector
+
+    detector = _build_detector(Namespace(pdf=True, box_order=order))
+    assert detector.box_order == order
+
+
+def test_box_order_defaults_to_auto():
+    from argparse import Namespace
+
+    from pii.cli import _build_detector
+
+    assert _build_detector(Namespace(image=True)).box_order == "auto"
+
+
 # ------------------------------------------------- layer 0 turned off
 
 def test_layer0_off_rejects_geometry_vlm():
