@@ -30,6 +30,8 @@ from pii.core.vlm import (
     BOX_ORDERS,
     DEFAULT_BOX_ORDER,
     DEFAULT_EFFORT,
+    DEFAULT_GROUNDING_EFFORT,
+    GROUNDING_REASONING_EFFORTS,
     DEFAULT_GEOMETRY,
     DEFAULT_URL,
     GEOMETRIES,
@@ -92,6 +94,7 @@ def _build_detector(args):
     url = getattr(args, "vlm_url", None) or DEFAULT_URL
     grammar = getattr(args, "grammar", True)
     box_order = getattr(args, "box_order", DEFAULT_BOX_ORDER)
+    grounding = getattr(args, "grounding_reasoning_effort", DEFAULT_GROUNDING_EFFORT)
 
     if not media and box_order != DEFAULT_BOX_ORDER:
         # Same reasoning as --geometry below: the text path asks for no boxes,
@@ -99,6 +102,14 @@ def _build_detector(args):
         raise SystemExit(
             "--box-order applies to --image/--pdf only: text input asks the "
             "model for no boxes"
+        )
+
+    if grounding != DEFAULT_GROUNDING_EFFORT and (not media or geometry != "hybrid"):
+        # Same reasoning again: only hybrid makes a grounding pass, so the flag
+        # would be accepted and change nothing anywhere else.
+        raise SystemExit(
+            "--grounding-reasoning-effort applies to --image/--pdf with "
+            "--geometry hybrid only: no other mode makes a grounding pass"
         )
 
     if not media and geometry != DEFAULT_GEOMETRY:
@@ -142,6 +153,7 @@ def _build_detector(args):
         want_boxes=geometry in ("vlm", "combined"),
         grammar=grammar,
         reasoning_effort=getattr(args, "reasoning_effort", DEFAULT_EFFORT),
+        grounding_reasoning_effort=grounding,
         box_order=box_order,
     )
 
@@ -631,12 +643,23 @@ def main(argv=None) -> int:
     p_strip.add_argument(
         "--reasoning-effort", choices=list(REASONING_EFFORTS),
         default=DEFAULT_EFFORT,
-        help="how hard the layer-0 model thinks before answering "
-             "(--image/--pdf only). medium (default) injects no instruction "
-             "and is the model's own behaviour; low and xhigh each add one. "
+        help="how hard the layer-0 model thinks before DETECTING the values "
+             "(--image/--pdf only; in --geometry hybrid, the first of the two "
+             "passes). medium (default) turns thinking on as the model does by "
+             "itself; on Qwen low and xhigh each add an instruction, while "
+             "Gemma has no levels, so only medium and off are accepted for it. "
              "off disables thinking entirely and is a COMPARISON INSTRUMENT, "
              "not a production value — it is what the tool did before "
              "2026-08-19 and is kept so that comparison stays runnable",
+    )
+    p_strip.add_argument(
+        "--grounding-reasoning-effort", choices=list(GROUNDING_REASONING_EFFORTS),
+        default=DEFAULT_GROUNDING_EFFORT,
+        help="how hard the layer-0 model thinks in the GROUNDING pass - the "
+             "second pass of --geometry hybrid, which is handed the detected "
+             "values and asked only where they are. off (default): thinking "
+             "there was measured to cost as much as detecting and to draw the "
+             "same boxes. same copies --reasoning-effort; or name a level",
     )
     p_strip.add_argument(
         "--box-order", choices=list(BOX_ORDERS), default=DEFAULT_BOX_ORDER,

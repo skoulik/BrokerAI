@@ -101,15 +101,34 @@ DEFAULT_PAD = 8  # px, at the analysis DPI
 TRANSPORT_ATTEMPTS = 3
 TRANSPORT_BACKOFF = 2.0  # seconds
 
-# Reasoning. Layer 0 is a thinking model as of 2026-08-19, and thinking is ON:
-# the levels come from the chat template, which validates them and raises on
-# anything else. `medium` is NOT a midpoint - the template sets an instruction
-# for `xhigh` and `low` only, so `medium` injects nothing and is the model's
-# unmodified behaviour. "off" is a COMPARISON INSTRUMENT, never a production
-# value, for the same reason `geometry="vlm"` is one: it is kept so the
-# measurement that chose the default stays runnable.
+# Reasoning. Layer 0 is a thinking model as of 2026-08-19, and thinking is ON.
+# How a level reaches the model is the model FAMILY's (see `ModelFamily`): Qwen's
+# template reads the level and raises on anything else - and there `medium` is NOT
+# a midpoint, since the template sets an instruction for `xhigh` and `low` only,
+# so `medium` injects nothing and is the model's unmodified behaviour - while
+# Gemma's has no levels at all, only thinking on (`medium`) or off. "off" is a
+# COMPARISON INSTRUMENT on the detection pass, for the same reason
+# `geometry="vlm"` is one: it keeps the measurement that chose the default runnable.
 REASONING_EFFORTS = ("low", "medium", "xhigh", "off")
 DEFAULT_EFFORT = "medium"
+
+# The GROUNDING pass (`localize`, pass 2 of `hybrid`) has its own effort, OFF by
+# default for every model (Sergei, 2026-09-13). It is handed the values and asked
+# only where they are, and both bring-ups measured its thinking as spent on that:
+# Qwen3.8 thought 1515 tokens placing 14 given values against 455 finding them,
+# Gemma 4 spends 3-4k tokens for the same boxes it draws without thinking.
+# "same" copies the detection effort.
+#
+# The cost of OFF is the image cache, and it is not uniform. Pass 2 reuses pass
+# 1's image only when everything ahead of the image is byte-identical: Qwen's
+# `medium` and `off` inject nothing there, so they share it, while `low`/`xhigh`
+# prepend a system line and pay a full image prefill again (~120 s on a Qwen3.8
+# page). Gemma's thinking switch adds a system turn, so pass 2 re-reads its image
+# (~9 s). Pass-2 image reuse after a long pass-1 trace was also seen to FAIL with
+# a byte-identical prefix (2026-09-13, cause not established), so on Gemma the
+# prefill is not reliably saved by keeping thinking on either.
+GROUNDING_REASONING_EFFORTS = REASONING_EFFORTS + ("same",)
+DEFAULT_GROUNDING_EFFORT = "off"
 
 # A cap on the thinking block, not a shaping knob. At 4096 nothing in the
 # 2026-08-19 sweep was cut (the longest trace observed was ~2077 tokens), which
@@ -127,13 +146,6 @@ ANSWER_TOKENS = 4096
 # mid-sentence. It biases toward completeness because this tool's asymmetry
 # does: over-strip is recoverable, under-strip is a breach.
 REASONING_CUTOFF = "\n\nEnough thinking. I will now output every identifier found.\n"
-
-# Engage the grammar at the array and NOT before it. llama.cpp replays into the
-# grammar everything from the first non-empty CAPTURE GROUP onward, falling back
-# to the whole match when the pattern has none - so a bare "</think>" trigger
-# would replay `</think>` into a grammar whose root starts with `[` and reject
-# every continuation. Capturing the bracket is what makes the handoff exact.
-GRAMMAR_TRIGGER = r"</think>[\s\S]*?(\[)"
 
 # Trigger types are ints on the wire - llama.cpp's server reads
 # `in.at("type").get<int>()`, so a string is an HTTP 400, not a fallback. 2 is
@@ -156,9 +168,51 @@ DEFAULT_GEOMETRY = "hybrid"
 # than guess. The explicit orders are the override.
 BOX_ORDERS = ("auto", "xyxy", "yxyx")
 DEFAULT_BOX_ORDER = "auto"
-# Keyed on the FAMILY, so every Gemma is assumed y-first. That is Google's stated
-# convention across the family, but only Gemma 4 26B-A4B has been measured here.
-_FAMILY_BOX_ORDER = (("gemma", "yxyx"), ("qwen", "xyxy"))
+
+
+@dataclass(frozen=True)
+class ModelFamily:
+    """Everything about talking to layer 0 that differs between model families:
+    the box order to ask in, and how thinking is switched on and read back.
+
+    Keyed on the FAMILY name in the served model's file name
+    (`family_for_model`), so every Gemma is assumed to speak like Gemma 4
+    26B-A4B, the only one measured, and every Qwen like Qwen3.6/3.8."""
+
+    name: str
+    box_order: str
+    # The effort levels the chat template reads. Empty means thinking is a plain
+    # switch, turned on by `medium` (the default) and nothing else.
+    efforts: tuple[str, ...]
+    # Engages the lazy grammar at the answer's "[" once the trace has CLOSED.
+    # llama.cpp replays into the grammar everything from the first non-empty
+    # capture group, falling back to the whole match when there is none - so a
+    # bare end-of-trace trigger would replay the end tag into a grammar whose
+    # root starts with `[` and reject every continuation. Capturing the bracket
+    # is what makes the handoff exact.
+    trigger: str
+
+    def supports(self, effort: str) -> bool:
+        return effort == "off" or effort in (self.efforts or ("medium",))
+
+    def thinking_kwargs(self, effort: str) -> dict:
+        """The `chat_template_kwargs` for `effort`. "off" is the same for every
+        family - both templates then write a pre-closed trace - which is what
+        lets a thinking-off request go out before the family is known."""
+        if effort == "off":
+            return {"enable_thinking": False}
+        if self.efforts:
+            return {"reasoning_effort": effort}
+        return {"enable_thinking": True}
+
+
+# Qwen closes its trace with `</think>`; its template opens the trace itself.
+QWEN = ModelFamily("qwen", "xyxy", ("low", "medium", "xhigh"), r"</think>[\s\S]*?(\[)")
+# Gemma writes `<|channel>thought ... <channel|>`, from a `<|think|>` system turn
+# that `enable_thinking` adds; llama.cpp's gemma4 parser registers those tags, so
+# the reasoning budget and the `reasoning_content` split work unchanged (2026-09-13).
+GEMMA = ModelFamily("gemma", "yxyx", (), r"<channel\|>[\s\S]*?(\[)")
+FAMILIES = (QWEN, GEMMA)
 
 # The tuned probe prompt, plus the value-not-label sentence added 2026-08-12.
 # Four properties are load-bearing and should not be edited casually - each was
@@ -495,11 +549,11 @@ def http_transport(url: str, payload: dict, timeout: int) -> dict:
 def served_model_name(url: str, timeout: int) -> str | None:
     """The model llama-server reports serving (`GET /v1/models`), or None.
 
-    Asked once per detector, and only when a boxed prompt must be chosen before
-    any reply has named the model — under `hybrid`, pass 1's reply already has,
-    so this is `combined`/`vlm`, or a `localize` called on its own. A failure is
-    `VlmUnavailable` with the same hint as a failed request, since it is the
-    same wrong --vlm-url."""
+    Asked once per detector, and only when a request that depends on the model
+    family (thinking on, or boxes under "auto") must be built before any reply
+    has named the model — with thinking on, that is the very first request. A
+    failure is `VlmUnavailable` with the same hint as a failed request, since
+    it is the same wrong --vlm-url."""
     try:
         with urllib.request.urlopen(f"{url}/v1/models", timeout=timeout) as resp:
             body = json.loads(resp.read().decode())
@@ -552,16 +606,25 @@ def strip_thinking(raw: str) -> str:
     `parse_findings`, whose contract is to take a body from a caller that did
     not fetch it — where neither shape can be ruled out.
     """
-    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.S)
-    # Forced open: an unmatched close means everything ahead of it is reasoning.
-    # The FIRST close is the real one, which is also how llama.cpp's own parser
-    # splits reasoning from content.
-    _, closed, tail = raw.partition("</think>")
-    return (tail if closed else raw).strip()
+    for opening, closing in _TRACE_TAGS:
+        raw = re.sub(re.escape(opening) + r".*?" + re.escape(closing), "", raw, flags=re.S)
+        # Forced open: an unmatched close means everything ahead of it is
+        # reasoning. The FIRST close is the real one, which is also how
+        # llama.cpp's own parser splits reasoning from content.
+        _, closed, tail = raw.partition(closing)
+        if closed:
+            raw = tail
+    return raw.strip()
 
 
-def box_order_for_model(name: str | None) -> str | None:
-    """The box order a served model's name implies (see `BOX_ORDERS`).
+# Every family's trace delimiters (see `strip_thinking`): Qwen's, and Gemma's
+# thought channel. Stripped whichever model a body came from, since a body-only
+# caller cannot say.
+_TRACE_TAGS = (("<think>", "</think>"), ("<|channel>thought", "<channel|>"))
+
+
+def family_for_model(name: str | None) -> ModelFamily | None:
+    """The `ModelFamily` a served model's name implies.
 
     Matched on the file name alone, case-insensitively — llama-server reports
     the model PATH by default, and a directory called `qwen-vs-gemma` must not
@@ -570,8 +633,8 @@ def box_order_for_model(name: str | None) -> str | None:
     if not name:
         return None
     base = _model_file(name).lower()
-    orders = {order for family, order in _FAMILY_BOX_ORDER if family in base}
-    return orders.pop() if len(orders) == 1 else None
+    matches = [family for family in FAMILIES if family.name in base]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _model_file(name: str) -> str:
@@ -736,7 +799,159 @@ def _salvage(body: str, start: int, cut: int | None) -> list | None:
     )
 
 
-class VlmDetector:
+class _ServedModel:
+    """What both layer-0 detectors need to know about the model behind the URL.
+
+    Two things about a request depend on the model FAMILY (`ModelFamily`): the
+    order boxes are asked for in, and how thinking is switched on and where its
+    trace ends. Both must be known BEFORE the request goes out, so the family
+    is resolved on first need — learned from an earlier reply's `model` field
+    when there was one, else asked for once (`served_model`, injectable) — and
+    an unplaceable model is refused there, before a request is spent on it.
+    Requests that depend on neither (thinking off, no boxes) run against any
+    model. Every reply is checked against the family its request was built for.
+
+    A mixin rather than borrowed methods, because the state is shared too: the
+    text detector sends the same thinking protocol to the same server."""
+
+    url: str
+    timeout: int
+    reasoning_budget: int
+    box_order: str = "auto"
+    # The answer's own allowance; see `_max_tokens`.
+    _answer_tokens: int = ANSWER_TOKENS
+
+    def _init_served_model(self, served_model: Callable[[str, int], str | None] | None) -> None:
+        self._served_model = served_model or served_model_name
+        # The (served model name, its family) last seen. `_unplaceable` keeps a
+        # name no family matched, so a refusal can name it without asking the
+        # server again.
+        self._model: tuple[str, ModelFamily] | None = None
+        self._unplaceable: str | None = None
+
+    def _family(self, needed_for: str) -> ModelFamily:
+        if self._model is None:
+            name = self._unplaceable or self._served_model(self.url, self.timeout)
+            family = family_for_model(name)
+            if family is None:
+                raise ModelFamilyUnknown(
+                    f"cannot tell which model family layer-0 model {name!r} is, "
+                    f"and this run needs it {needed_for}. Known families: "
+                    + ", ".join(f.name for f in FAMILIES)
+                )
+            self._learn(name, family)
+        return self._model[1]
+
+    def _learn(self, name: str, family: ModelFamily) -> None:
+        # Printed, not warned, and again whenever the model changes: which family
+        # a run spoke to is an operational fact worth seeing, and `warnings`
+        # would show it once per code location.
+        if self._model == (name, family):
+            return
+        self._model = (name, family)
+        self._unplaceable = None
+        print(
+            f"pii: layer-0 model {_model_file(name)} -> {family.name} family",
+            file=sys.stderr,
+        )
+
+    def _check_reply(self, response, built_for: ModelFamily | None) -> None:
+        """Learn from the model a reply names, and refuse one that is not the
+        family its request was built for — a server that changed model between
+        building the request and answering it."""
+        name = response.get("model") if isinstance(response, dict) else None
+        if not name:
+            return
+        family = family_for_model(name)
+        if built_for is not None and family is not built_for:
+            self._model = None
+            raise ModelFamilyUnknown(
+                f"the request was built for the {built_for.name} family, but the "
+                f"reply came from {name!r}"
+                + (f" ({family.name})" if family else "")
+                + ": did the server change model mid-run? Re-run"
+            )
+        if family is None:
+            self._unplaceable = name
+        else:
+            self._learn(name, family)
+
+    def _thinking_family(self, effort: str) -> ModelFamily | None:
+        """The family a request at `effort` is built for, or None if thinking is
+        off and so the request is the same for every family."""
+        if effort == "off":
+            return None
+        family = self._family("to switch its thinking on (or pass --reasoning-effort off)")
+        if not family.supports(effort):
+            name = _model_file(self._model[0])
+            raise ReasoningEffortUnsupported(
+                f"layer-0 model {name} is {family.name}, whose chat template has "
+                f"no reasoning effort levels: thinking is on (medium) or off. "
+                f"{effort!r} would be ignored silently, so it is refused"
+            )
+        return family
+
+    def _max_tokens(self, effort: str) -> int:
+        """Answer allowance PLUS thinking allowance — they share one budget.
+
+        Sized this way because of which limit bites first. Reaching
+        `max_tokens` truncates the array mid-entry: a redaction failure that
+        `Incomplete.truncated` can report but not undo, and on a page whose
+        names and addresses are layer 0's alone to find. Reaching the reasoning
+        budget instead closes the trace cleanly and still yields a whole answer.
+        So the reasoning budget must be able to bite FIRST, which it can only do
+        if `max_tokens` leaves the answer its own room on top."""
+        return self._answer_tokens + (0 if effort == "off" else self.reasoning_budget)
+
+    def _reasoning_fields(self, effort: str) -> dict:
+        """Thinking on (the family's switch + budget + cut-off), or off.
+
+        All per-request, for the reason `grammar` is: a server flag would apply
+        to every caller of that server and could not be versioned with the code
+        that reads the reply. Needs `llama-server --jinja` for
+        `chat_template_kwargs` to reach the template at all."""
+        family = self._thinking_family(effort)
+        if family is None:
+            # Every template then writes a PRE-CLOSED trace into the prompt, so
+            # the budget sampler sees start-and-end among the prefill tokens and
+            # the grammar applies from the first generated token. That is
+            # exactly the pre-thinking behaviour, which is what makes "off" a
+            # usable baseline rather than a third thing.
+            return {"chat_template_kwargs": QWEN.thinking_kwargs("off")}
+        return {
+            "chat_template_kwargs": family.thinking_kwargs(effort),
+            "reasoning_budget_tokens": self.reasoning_budget,
+            "reasoning_budget_message": REASONING_CUTOFF,
+        }
+
+    def _lazy_fields(self, effort: str) -> dict:
+        """Make the grammar engage only after the thinking trace, at the
+        family's own end-of-trace marker (`ModelFamily.trigger`).
+
+        llama.cpp does the hard part: with a lazy grammar AND a reasoning-budget
+        sampler, `grammar_should_apply()` is false for the whole thinking block,
+        so the GBNF cannot constrain the trace by construction rather than by a
+        trigger that happens to avoid it. The trigger then engages it at the
+        array. A trigger for the WRONG family never fires, and the answer goes
+        out unconstrained — which is why the family is resolved, never assumed.
+
+        **Requires a llama-server carrying the grammar_lazy passthrough fix.**
+        Upstream's OAI layer overwrites `grammar_lazy` and `grammar_triggers`
+        from the chat template unconditionally, and its copy-remaining loop only
+        fills absent keys — so on a stock server these two are silently dropped,
+        the grammar applies from token 0, and the model does not think at all.
+        The failure is quiet: replies still parse, they are just unreasoned. See
+        reports/2026-08-19-qwen38-bringup.md."""
+        family = self._thinking_family(effort)
+        if family is None:
+            return {}
+        return {
+            "grammar_lazy": True,
+            "grammar_triggers": [{"type": _TRIGGER_PATTERN, "value": family.trigger}],
+        }
+
+
+class VlmDetector(_ServedModel):
     """Detects PII directly from a page image.
 
     `want_boxes` makes the ONE-pass boxes prompt (`geometry="vlm"`). It stays
@@ -749,14 +964,13 @@ class VlmDetector:
     and exists as a switch because constrained decoding alters the sampled
     distribution, so it is an A/B axis rather than a serialization detail.
 
+    `reasoning_effort` is the detection pass's — `detect`, the only pass outside
+    `hybrid` — and `grounding_reasoning_effort` is `localize`'s, "off" by
+    default (see `DEFAULT_GROUNDING_EFFORT`), or "same" to copy the first.
+
     `box_order` is the order boxes are ASKED for in, and so read back in (see
-    `BOX_ORDERS`). Under "auto" it is the served model's native order, chosen
-    before the first boxed request: from the model an earlier reply named, or
-    else by asking the server once (`served_model`, injectable). A model no
-    family matches is refused there, before a boxed request is spent on it —
-    boxless requests run against any model, which is what lets `--geometry
-    ocr` and pass 1 work regardless. Every later reply is checked against the
-    model the prompt was chosen for.
+    `BOX_ORDERS`). Under "auto" it is the served model family's, resolved as
+    `_ServedModel` describes; an explicit order overrides only that.
     """
 
     # Which layer-0 modality this detector IS, for the run to describe itself
@@ -775,12 +989,17 @@ class VlmDetector:
         encode_image: Callable[[object], str] | None = None,
         grammar: bool = True,
         reasoning_effort: str = DEFAULT_EFFORT,
+        grounding_reasoning_effort: str = DEFAULT_GROUNDING_EFFORT,
         reasoning_budget: int = DEFAULT_REASONING_BUDGET,
         box_order: str = DEFAULT_BOX_ORDER,
         served_model: Callable[[str, int], str | None] | None = None,
     ) -> None:
         if reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(f"unknown reasoning effort: {reasoning_effort!r}")
+        if grounding_reasoning_effort not in GROUNDING_REASONING_EFFORTS:
+            raise ValueError(
+                f"unknown grounding reasoning effort: {grounding_reasoning_effort!r}"
+            )
         if box_order not in BOX_ORDERS:
             raise ValueError(f"unknown box order: {box_order!r}")
         self.url = url
@@ -790,32 +1009,17 @@ class VlmDetector:
         self._encode = encode_image or _encode_png
         self.grammar = grammar
         self.reasoning_effort = reasoning_effort
+        self.grounding_reasoning_effort = grounding_reasoning_effort
         self.reasoning_budget = reasoning_budget
         self.box_order = box_order
-        self._served_model = served_model or served_model_name
-        # Under "auto": the (model name, box order) the server was last seen
-        # serving, learned from any reply or asked for before the first boxed
-        # request. `_unplaceable` keeps a name no family matched, so the refusal
-        # can name it without asking the server again.
-        self._model: tuple[str, str] | None = None
-        self._unplaceable: str | None = None
+        self._init_served_model(served_model)
 
     @property
-    def thinking(self) -> bool:
-        return self.reasoning_effort != "off"
-
-    @property
-    def max_tokens(self) -> int:
-        """Answer allowance PLUS thinking allowance — they share one budget.
-
-        Sized this way because of which limit bites first. Reaching
-        `max_tokens` truncates the array mid-entry: a redaction failure that
-        `Incomplete.truncated` can report but not undo, and on a page whose
-        names and addresses are layer 0's alone to find. Reaching the reasoning
-        budget instead closes the trace cleanly and still yields a whole answer.
-        So the reasoning budget must be able to bite FIRST, which it can only do
-        if `max_tokens` leaves the answer its own room on top."""
-        return ANSWER_TOKENS + (self.reasoning_budget if self.thinking else 0)
+    def grounding_effort(self) -> str:
+        """`grounding_reasoning_effort` with "same" resolved."""
+        if self.grounding_reasoning_effort == "same":
+            return self.reasoning_effort
+        return self.grounding_reasoning_effort
 
     @property
     def prompt(self) -> str:
@@ -832,81 +1036,47 @@ class VlmDetector:
         return GRAMMAR_VALUES_BOXES if self.want_boxes else GRAMMAR_VALUES
 
     def detect(self, image) -> DetectorResult:
+        effort = self.reasoning_effort
         order = self._request_order() if self.want_boxes else None
         prompt = PROMPT + (
             in_box_order(_OUTPUT_BOXES, order) if order else _OUTPUT_VALUES
         )
-        return self._read(self._ask(image, prompt, self._detect_grammar), order)
+        response = self._ask(image, prompt, self._detect_grammar, effort)
+        return self._read(response, order, self._built_for(effort, boxed=self.want_boxes))
 
     def _request_order(self) -> str:
-        """The order to ASK for boxes in, resolved before the request is sent.
-
-        Under "auto" it comes from the model the server is serving: learned
-        from an earlier reply when there was one — under `hybrid` pass 1's —
-        and otherwise asked for once. An unplaceable model is refused HERE,
-        before a boxed request is spent on it, because no prompt can be chosen
-        for it."""
+        """The order to ASK for boxes in, resolved before the request is sent."""
         if self.box_order != "auto":
             return self.box_order
-        if self._model is None:
-            name = self._unplaceable or self._served_model(self.url, self.timeout)
-            order = box_order_for_model(name)
-            if order is None:
-                raise BoxOrderUnknown(
-                    f"cannot tell the box order of layer-0 model {name!r}, so "
-                    f"there is no telling which order to ask it for: a box "
-                    f"read the wrong way round is silently wrong. Pass "
-                    f"--box-order xyxy (x first, as Qwen) or yxyx (y first, "
-                    f"as Gemma)"
-                )
-            self._learn(name, order)
-        return self._model[1]
+        return self._family(
+            "to ask for its boxes in its own order (or pass --box-order xyxy "
+            "for x first, as Qwen, or yxyx for y first, as Gemma)"
+        ).box_order
 
-    def _read(self, response: dict, asked: str | None = None) -> DetectorResult:
-        """`read_response` in the order the boxes were `asked` for.
+    def _built_for(self, effort: str, *, boxed: bool) -> ModelFamily | None:
+        """The family a request was built for, if anything in it depended on
+        one: thinking on, or a box order chosen by "auto"."""
+        if effort != "off" or (boxed and self.box_order == "auto"):
+            return self._model[1] if self._model else None
+        return None
 
-        Under "auto" every reply also says which model answered, which keeps
-        the learned model current and catches the one way the asked order can
-        be wrong: a server that changed model between choosing the prompt and
-        answering it."""
-        if self.box_order == "auto" and isinstance(response, dict):
-            name = response.get("model")
-            if name:
-                order = box_order_for_model(name)
-                if asked is not None and order != asked:
-                    self._model = None
-                    raise BoxOrderUnknown(
-                        f"asked layer-0 for {asked} boxes, but the reply came "
-                        f"from {name!r}"
-                        + (f", which answers {order}" if order else "")
-                        + ": did the server change model mid-run? Re-run, or "
-                        "pass --box-order"
-                    )
-                if order is None:
-                    self._unplaceable = name
-                else:
-                    self._learn(name, order)
+    def _read(
+        self,
+        response: dict,
+        asked: str | None = None,
+        built_for: ModelFamily | None = None,
+    ) -> DetectorResult:
+        """`read_response` in the order the boxes were `asked` for, after
+        checking the reply came from the family the request was built for."""
+        self._check_reply(response, built_for)
         # A boxless prompt's reply carries no box anything will use, so which
         # order it is parsed in is moot.
         return read_response(response, asked or "xyxy")
 
-    def _learn(self, name: str, order: str) -> None:
-        # Printed, not warned, and again whenever the model changes: which order
-        # a run asked for its boxes in is an operational fact worth seeing, and
-        # `warnings` would show it once per code location.
-        if self._model == (name, order):
-            return
-        self._model = (name, order)
-        self._unplaceable = None
-        print(
-            f"pii: layer-0 model {_model_file(name)} -> box order {order} (auto)",
-            file=sys.stderr,
-        )
-
     def localize(self, image, findings: list[VlmFinding]) -> DetectorResult:
         """Pass 2: hand the already-detected values back and ask only where
         they are, returning the findings with `box` filled in where the model
-        placed them.
+        placed them. Thinks at `grounding_effort`, "off" by default.
 
         The model's answer is treated as a POOL of hints rather than a
         one-to-one reply: it routinely returns a different number of boxes
@@ -926,22 +1096,22 @@ class VlmDetector:
         listing = "\n".join(
             f"- {value}" for value in dict.fromkeys(f.text for f in findings)
         )
+        effort = self.grounding_effort
         order = self._request_order()
-        hints = self._read(
-            self._ask(
-                image,
-                # Re-spelled BEFORE the values go in, so a value that happens
-                # to contain a coordinate phrase is never rewritten.
-                in_box_order(_LOCATE_PROMPT, order).format(values=listing),
-                GRAMMAR_LOCATE if self.grammar else None,
-            ),
-            order,
+        response = self._ask(
+            image,
+            # Re-spelled BEFORE the values go in, so a value that happens to
+            # contain a coordinate phrase is never rewritten.
+            in_box_order(_LOCATE_PROMPT, order).format(values=listing),
+            GRAMMAR_LOCATE if self.grammar else None,
+            effort,
         )
+        hints = self._read(response, order, self._built_for(effort, boxed=True))
         return replace(
             hints, findings=attach_boxes(findings, hints.findings)
         )
 
-    def _ask(self, image, prompt: str, grammar: str | None = None) -> dict:
+    def _ask(self, image, prompt: str, grammar: str | None, effort: str) -> dict:
         payload = {
             "messages": [
                 {
@@ -964,62 +1134,17 @@ class VlmDetector:
             "top_k": 1,
             "top_p": 1.0,
             "seed": 42,
-            "max_tokens": self.max_tokens,
+            "max_tokens": self._max_tokens(effort),
             "stream": False,
         }
-        payload.update(self._reasoning_fields())
+        payload.update(self._reasoning_fields(effort))
         if grammar:
             # Per-request rather than a server flag, so the shape we enforce is
             # versioned with the code that parses it — the same reasoning that
             # keeps the sampling parameters above out of a launch script.
             payload["grammar"] = grammar
-            payload.update(self._lazy_fields())
+            payload.update(self._lazy_fields(effort))
         return self.transport(self.url, payload, self.timeout)
-
-    def _reasoning_fields(self) -> dict:
-        """Thinking on (effort + budget + cut-off), or the pre-2026-08-19 off.
-
-        All per-request, for the reason `grammar` is: a server flag would apply
-        to every caller of that server and could not be versioned with the code
-        that reads the reply. Needs `llama-server --jinja` for
-        `chat_template_kwargs` to reach the template at all."""
-        if not self.thinking:
-            # The template then writes a PRE-CLOSED think block into the prompt,
-            # so the budget sampler sees start-and-end among the prefill tokens
-            # and the grammar applies from the first generated token. That is
-            # exactly the old behaviour, which is what makes "off" a usable
-            # baseline rather than a third thing.
-            return {"chat_template_kwargs": {"enable_thinking": False}}
-        return {
-            "chat_template_kwargs": {"reasoning_effort": self.reasoning_effort},
-            "reasoning_budget_tokens": self.reasoning_budget,
-            "reasoning_budget_message": REASONING_CUTOFF,
-        }
-
-    def _lazy_fields(self) -> dict:
-        """Make the grammar engage only after the thinking block.
-
-        llama.cpp does the hard part: with a lazy grammar AND a reasoning-budget
-        sampler, `grammar_should_apply()` is false for the whole thinking block,
-        so the GBNF cannot constrain the trace by construction rather than by a
-        trigger that happens to avoid it. The trigger then engages it at the
-        array.
-
-        **Requires a llama-server carrying the grammar_lazy passthrough fix.**
-        Upstream's OAI layer overwrites `grammar_lazy` and `grammar_triggers`
-        from the chat template unconditionally, and its copy-remaining loop only
-        fills absent keys — so on a stock server these two are silently dropped,
-        the grammar applies from token 0, and the model does not think at all.
-        The failure is quiet: replies still parse, they are just unreasoned. See
-        reports/2026-08-19-qwen38-bringup.md."""
-        if not self.thinking:
-            return {}
-        return {
-            "grammar_lazy": True,
-            "grammar_triggers": [
-                {"type": _TRIGGER_PATTERN, "value": GRAMMAR_TRIGGER}
-            ],
-        }
 
 
 class NullDetector:
@@ -1096,13 +1221,19 @@ class VlmUnavailable(VlmError):
     """The model server could not be reached at all."""
 
 
-class BoxOrderUnknown(VlmError):
-    """No box order can be chosen for the served model under "auto" — its name
-    matches no known family, or the model answering is not the one the prompt
-    was chosen for.
+class ModelFamilyUnknown(VlmError):
+    """A request needs the served model's family (`ModelFamily`) and none can be
+    had: its name matches no known family, or the model answering is not the
+    family the request was built for.
 
     A VlmError so every front-end already reports it as a message rather than
     a traceback: like a missing server, it is the operator's to fix."""
+
+
+class ReasoningEffortUnsupported(VlmError):
+    """An effort level the served model's chat template does not read — Gemma's
+    has none. Refused rather than sent, since the template would ignore it and
+    two runs differing only in it would look like a comparison."""
 
 
 def squash_map(text: str) -> tuple[str, list[int]]:

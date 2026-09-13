@@ -7,6 +7,8 @@ from pii.core.vlm import (
     DEFAULT_BOX_ORDER,
     DEFAULT_EFFORT,
     DEFAULT_GEOMETRY,
+    DEFAULT_GROUNDING_EFFORT,
+    GROUNDING_REASONING_EFFORTS,
     GEOMETRIES,
     REASONING_EFFORTS,
 )
@@ -110,6 +112,12 @@ def main() -> int:
                          "compare them")
     gr.add_argument("--reasoning-effort", choices=list(REASONING_EFFORTS),
                     default=DEFAULT_EFFORT)
+    gr.add_argument("--grounding-reasoning-effort",
+                    choices=list(GROUNDING_REASONING_EFFORTS),
+                    default=DEFAULT_GROUNDING_EFFORT,
+                    help="how hard the model thinks in the grounding pass "
+                         "(pass 2 of --geometry hybrid): off (default), "
+                         "same as --reasoning-effort, or a level")
     gr.add_argument("--box-order", choices=list(BOX_ORDERS),
                     default=DEFAULT_BOX_ORDER,
                     help="the coordinate order the layer-0 model is asked "
@@ -159,6 +167,12 @@ def main() -> int:
                          "default). The A/B that matters is hybrid vs ocr: "
                          "same detector, same locator, boxes as the only "
                          "variable")
+    sc.add_argument("--grounding-reasoning-effort",
+                    choices=list(GROUNDING_REASONING_EFFORTS),
+                    default=DEFAULT_GROUNDING_EFFORT,
+                    help="how hard the model thinks in the grounding pass "
+                         "(pass 2 of --geometry hybrid): off (default), "
+                         "same as --reasoning-effort, or a level")
     sc.add_argument("--box-order", choices=list(BOX_ORDERS),
                     default=DEFAULT_BOX_ORDER,
                     help="the coordinate order the layer-0 model is asked "
@@ -219,7 +233,8 @@ def main() -> int:
                                geometry=args.geometry,
                                reasoning_effort=args.reasoning_effort,
                                limit=args.limit,
-                               box_order=args.box_order)
+                               box_order=args.box_order,
+                               grounding_reasoning_effort=args.grounding_reasoning_effort)
     if args.modality == "image":
         from pii_eval.score_image import score_image
 
@@ -229,7 +244,8 @@ def main() -> int:
                            ocr_backend=args.ocr_backend,
                            geometry=args.geometry,
                            reasoning_effort=args.reasoning_effort,
-                           box_order=args.box_order)
+                           box_order=args.box_order,
+                           grounding_reasoning_effort=args.grounding_reasoning_effort)
     if args.modality == "pdf":
         from pii_eval.score_pdf import score_pdf
 
@@ -243,7 +259,8 @@ def main() -> int:
                          ocr_backend=args.ocr_backend,
                          geometry=args.geometry,
                          reasoning_effort=args.reasoning_effort,
-                         box_order=args.box_order)
+                         box_order=args.box_order,
+                         grounding_reasoning_effort=args.grounding_reasoning_effort)
     from pii_eval.score import score
 
     return score(args.corpus or _default_corpus(args.seed),

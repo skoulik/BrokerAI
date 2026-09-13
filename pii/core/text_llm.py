@@ -28,6 +28,8 @@ the keys of `vlm.TYPE_MAP`.
 
 from __future__ import annotations
 
+from typing import Callable
+
 from pii.core.vlm import (
     DEFAULT_EFFORT,
     DEFAULT_REASONING_BUDGET,
@@ -37,7 +39,7 @@ from pii.core.vlm import (
     Incomplete,
     REASONING_EFFORTS,
     Transport,
-    VlmDetector,
+    _ServedModel,
     http_transport,
     read_response,
     VlmFinding,
@@ -151,7 +153,7 @@ def windows(text: str) -> list[str]:
     return out
 
 
-class TextDetector:
+class TextDetector(_ServedModel):
     """Detects PII directly from document text.
 
     Mirrors `vlm.VlmDetector`'s contract minus geometry: `detect(text)` returns
@@ -159,7 +161,8 @@ class TextDetector:
     values grammar and the `finish_reason` handling with the vision path — the
     same class vocabulary enforced the same way. The transport is injectable
     for the same reason it is there — so the testbench never needs a model
-    server.
+    server. Thinking follows the served model's family, resolved exactly as
+    the vision detector resolves it (`vlm._ServedModel`).
     """
 
     # See VlmDetector.layer0 — the modality this detector is, for the run to
@@ -175,6 +178,7 @@ class TextDetector:
         grammar: bool = True,
         reasoning_effort: str = DEFAULT_EFFORT,
         reasoning_budget: int = DEFAULT_REASONING_BUDGET,
+        served_model: Callable[[str, int], str | None] | None = None,
     ) -> None:
         if reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(f"unknown reasoning effort: {reasoning_effort!r}")
@@ -184,17 +188,10 @@ class TextDetector:
         self.grammar = grammar
         self.reasoning_effort = reasoning_effort
         self.reasoning_budget = reasoning_budget
+        self._init_served_model(served_model)
 
-    @property
-    def thinking(self) -> bool:
-        return self.reasoning_effort != "off"
-
-    @property
-    def max_tokens(self) -> int:
-        """Answer allowance plus thinking allowance - see
-        `VlmDetector.max_tokens` for why the budget must be able to bite
-        before `max_tokens` does."""
-        return MAX_TOKENS + (self.reasoning_budget if self.thinking else 0)
+    # The answer allowance `_ServedModel._max_tokens` adds the budget to.
+    _answer_tokens = MAX_TOKENS
 
     def detect(self, text: str) -> DetectorResult:
         """Findings over the whole text, deduplicated by (value, type).
@@ -211,13 +208,15 @@ class TextDetector:
         """
         seen: dict[tuple[str, str], VlmFinding] = {}
         incomplete = Incomplete()
+        effort = self.reasoning_effort
         for window in windows(text):
-            result = read_response(
-                self._ask(
-                    build_prompt(window),
-                    GRAMMAR_VALUES if self.grammar else None,
-                )
+            response = self._ask(
+                build_prompt(window),
+                GRAMMAR_VALUES if self.grammar else None,
             )
+            built_for = self._model[1] if effort != "off" and self._model else None
+            self._check_reply(response, built_for)
+            result = read_response(response)
             incomplete += result.incomplete
             for finding in result.findings:
                 seen.setdefault((finding.text, finding.entity_type), finding)
@@ -233,17 +232,17 @@ class TextDetector:
             "top_k": 1,
             "top_p": 1.0,
             "seed": 42,
-            "max_tokens": self.max_tokens,
+            "max_tokens": self._max_tokens(self.reasoning_effort),
             "stream": False,
         }
-        # Thinking, the budget, the cut-off message and the lazy grammar are
-        # BORROWED from the vision path rather than restated. The two
-        # detectors send the same request shape to the same server, and a
-        # second copy of that reasoning would be a second thing to keep in
-        # step - the same argument that already makes them share
-        # GRAMMAR_VALUES and read_response.
-        payload.update(VlmDetector._reasoning_fields(self))
+        # Thinking, the budget, the cut-off message and the lazy grammar come
+        # from `_ServedModel`, shared with the vision path rather than restated:
+        # the two detectors send the same request shape to the same server, and
+        # a second copy would be a second thing to keep in step with the model
+        # family - the argument that already makes them share GRAMMAR_VALUES
+        # and read_response.
+        payload.update(self._reasoning_fields(self.reasoning_effort))
         if grammar:
             payload["grammar"] = grammar
-            payload.update(VlmDetector._lazy_fields(self))
+            payload.update(self._lazy_fields(self.reasoning_effort))
         return self.transport(self.url, payload, self.timeout)

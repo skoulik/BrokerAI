@@ -839,23 +839,20 @@ text tier's record is in [DONE.md](DONE.md).)
       production is, write it in the dependency table with its quant, and say so in the eval
       reports' headers. Cheap, and it stops the next comparison being between unknowns.
 
-- [ ] **Gemma 4: support thinking, then run the corpus with it on** *(Sergei, 2026-09-13,
-      scheduled on condition that the thinking-off corpus quality was promising. It was: 91.2%
-      against Qwen3.8's 94.1%, every extra leak in the shared truncated-entity class, at about
-      a tenth of the wall time. See
-      [reports/2026-09-13-gemma4-26b-bringup.md](reports/2026-09-13-gemma4-26b-bringup.md).)*
-      Today `reasoning_effort != "off"` sends Qwen's protocol. That is a `reasoning_effort`
-      template kwarg, which Gemma's template ignores, plus a lazy grammar triggered on
-      `</think>`, which Gemma never emits. So the grammar would never engage. Gemma switches
-      thinking on with `enable_thinking` (or `<|think|>` in the system prompt) and closes its
-      trace with its own channel tokens. Needs:
-      - the per-model protocol: kwarg, trigger regex, and how the reasoning-budget sampler finds
-        the trace boundaries;
-      - `strip_thinking` for Gemma's format;
-      - the dual coverage.
-
-      Then `score` and `ground` over `real/1` at the effort that makes the Qwen3.8 comparison
-      fair. That run is the one that separates model from configuration.
+- [ ] **Gemma 4: try a larger reasoning budget** *(Sergei, 2026-09-13)*.
+      - **Why:** on the first thinking-on `real/1` survival run (hybrid, pass 1 thinking,
+        grounding off, `DEFAULT_REASONING_BUDGET` 4096), **8 of 30 thinking replies were cut
+        off** by the budget. The one-page probes hit it too: 1.pdf p1 in hybrid, and both
+        pages tried in combined mode.
+      - **Baseline to beat:** recall 94.1%, gate PASS, 39 min for survival.
+      - **Needs first:**
+        - A way to set the budget per run. Today it is only the `reasoning_budget`
+          constructor argument; there is no CLI or `pii_eval` flag.
+        - A cut-off counter in `pii_eval`, so the number above is reproducible. It came from
+          a scratchpad wrapper around `http_transport` that counted `REASONING_CUTOFF` in
+          each reply's `reasoning_content`.
+      - **Then:** 8192 against 4096 on `real/1`, comparing recall, over-strip, how many
+        replies are cut, and wall time. `max_tokens` grows with the budget automatically.
 
 - [ ] **Gemma 4: a re-sent request can answer differently** *(Sergei, 2026-09-13, scheduled on
       the same condition)*. The identical detect request gave 15 findings (349 tokens) or 13
@@ -897,8 +894,9 @@ text tier's record is in [DONE.md](DONE.md).)
 
 ## Serving — local llama.cpp patches
 
-Local commits live on the **`brokerai-serving`** branch of `~/src/llama.cpp` on the Mac, which
-is what `build/` (production) is built from. Full engineering record and every number quoted
+Local commits live on the **`brokerai-serving`** branch of `~/src/llama.cpp` on the Mac. Since
+2026-09-13 it sits on upstream b10939 and is built to `build-b10939/`, which serves Gemma 4;
+`build/` keeps the b10499-based binary Qwen3.8 was measured on. Full engineering record and every number quoted
 below: [reports/2026-08-20-vision-tower-head-dim-72.md](reports/2026-08-20-vision-tower-head-dim-72.md).
 Shipped 2026-08-20: four `metal:` commits (mul_mm threadgroup swizzle + its generalizations),
 worth pp8980 117.92 → 144.60 t/s, plus `-ub 512` in `serve.sh`. Added 2026-08-22: `1bcb1ed48`
@@ -906,6 +904,23 @@ worth pp8980 117.92 → 144.60 t/s, plus `-ub 512` in `serve.sh`. Added 2026-08-
 correctness coverage of the reordered path at all** (every gate-tripping eval case had one row
 tile, so the remap was the identity); three cases close it, and a mutation proves they cover
 what the old 1154 did not. Details in the report's "Fixed, and confirmed" section.
+
+- [ ] **Why pass 2 lost Gemma's cached image after a long pass-1 trace** *(2026-09-13, found
+      while choosing how to switch thinking off for the grounding pass)*.
+      - **Setup:** pass 1 thinking on (a 2.8–4.5k-token reply), then pass 2 with the
+        IDENTICAL prefix (thinking kwargs unchanged, `reasoning_budget_tokens: 0`).
+      - **Result:** pass 2 re-read the whole prompt on both pages tried (`prompt_n` 1472 and
+        1371, `cache_n` 0). The very first thinking-on probe had reused it (`prompt_n` 343)
+        after an equally long pass 1.
+      - **What the log shows:** "selected slot by LCP similarity, f_sim_best 0.75, f_keep
+        0.19". In `server-context.cpp`, `f_keep < 0.5` saves the slot to the RAM prompt cache
+        and then tries a better cached prompt. The save copies without clearing, and
+        `server_prompt_cache::load` returns true when nothing better is found, so that path
+        alone does not explain a full re-read.
+      - **Ruled out:** cache size; the prompt prefix.
+      - **Next step:** a server run at trace verbosity to see what clears the slot.
+      - **Matters because:** it costs ~9 s/page on Gemma whichever way pass 2 thinks, and on a
+        Qwen-sized image it would be ~120 s.
 
 - [ ] **Reclaim the head_dim-72 flash-attention padding — ~10.8 s/page.** *(Deferred by Sergei
       2026-08-20: "let's postpone the odd padding, but write it down".)* Qwen3-VL's vision

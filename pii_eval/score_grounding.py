@@ -47,7 +47,13 @@ from PIL import Image
 from pii.core import PiiPipeline, PseudonymMap
 from pii.core.image_mode import strip_image
 from pii.core.locator import denormalize
-from pii.core.vlm import DEFAULT_BOX_ORDER, DEFAULT_EFFORT, DEFAULT_GEOMETRY, Incomplete
+from pii.core.vlm import (
+    DEFAULT_BOX_ORDER,
+    DEFAULT_EFFORT,
+    DEFAULT_GEOMETRY,
+    DEFAULT_GROUNDING_EFFORT,
+    Incomplete,
+)
 from pii_eval.build import CORPUS_KEEP_FILE
 from pii_eval.score_image import _squash, build_detector, find_value
 
@@ -203,13 +209,14 @@ def score_grounding(corpus: str, threshold: float = 0.4,
                     geometry: str = DEFAULT_GEOMETRY,
                     reasoning_effort: str = DEFAULT_EFFORT,
                     limit: int = 0,
-                    box_order: str = DEFAULT_BOX_ORDER) -> int:
+                    box_order: str = DEFAULT_BOX_ORDER,
+                    grounding_reasoning_effort: str = DEFAULT_GROUNDING_EFFORT) -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     truth = json.loads((corpus_path / "truth.json").read_text("utf-8"))
     by_id = {d["id"]: d for d in truth["docs"]}
 
-    detector = build_detector(geometry, reasoning_effort, box_order)
+    detector = build_detector(geometry, reasoning_effort, box_order, grounding_reasoning_effort)
     pipeline = PiiPipeline(threshold=threshold, entity_keep=CORPUS_KEEP_FILE)
 
     model_rows, paint_rows, spurious, overpaint = [], [], [], []
@@ -313,7 +320,7 @@ def score_grounding(corpus: str, threshold: float = 0.4,
               f"skipped - no string to match a model finding against",
               file=sys.stderr)
     return _summarize(model_rows, paint_rows, spurious, overpaint, incomplete,
-                      geometry, reasoning_effort)
+                      geometry, reasoning_effort, grounding_reasoning_effort)
 
 
 def _same_value(found: str, truth_value: str) -> bool:
@@ -329,8 +336,9 @@ def _same_value(found: str, truth_value: str) -> bool:
 
 
 def _summarize(model_rows, paint_rows, spurious, overpaint, incomplete,
-               geometry, effort) -> int:
-    print(f"\ngrounding: geometry={geometry} reasoning-effort={effort}")
+               geometry, effort, grounding_effort=DEFAULT_GROUNDING_EFFORT) -> int:
+    print(f"\ngrounding: geometry={geometry} reasoning-effort={effort} "
+          f"grounding-reasoning-effort={grounding_effort}")
     if incomplete:
         # Same reasoning as the survival scorers: a page whose answer never
         # finished measures the token budget, not grounding.

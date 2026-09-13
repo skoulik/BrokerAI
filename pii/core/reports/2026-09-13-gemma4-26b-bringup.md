@@ -1,15 +1,18 @@
 # Gemma 4 26B-A4B bringup: a page in 25 seconds, and three things the engine assumes about Qwen
 
-**Date:** 2026-09-13 · **Status: serving layer deployed and measured; one engine change (box
-order, asked in each model's native order) made; one corpus configuration run twice, thinking
-off.** Sergei asked to try Gemma 4 as a
-layer-0 candidate, starting with the 26B MoE variant at Q8_0 and with MTP.
+**Date:** 2026-09-13 · **Status: serving layer deployed and measured; two engine changes made
+(boxes asked in each model's native order; thinking per model family and per pass); three corpus
+runs.** Sergei asked to try Gemma 4 as a layer-0 candidate, starting with the 26B MoE variant at
+Q8_0 and with MTP.
 
-**Corpus result (`real/1`, hybrid, thinking off):** recall **91.2%** (93/102) and **gate FAIL**
-on one critical leak. Qwen3.8's recorded run scored 94.1% and passed, but under a different
-configuration. **Every one of the 9 leaks is the truncated-own-entity class Qwen3.8 already
-leaked on**, and 6 of them are the identical values. The run took **15 min** for survival and
-**9 min** for grounding, against Qwen3.8's 2h20m and 2h18m. See "The corpus run" below.
+**Best configuration: hybrid, thinking ON in detection and OFF in grounding.** On `real/1` that
+gives recall **94.1%** (6 leaks), **gate PASS**, and **190/209** occurrences fully painted
+(mean 94%). Qwen3.8's recorded xhigh run gives 94.1%, PASS and 185/209 (mean 90%). It costs
+**~80 min** for survival plus grounding, against Qwen3.8's ~4.5 h. The price is a little more
+over-strip.
+
+With thinking off, the same model runs in ~21 min at recall 90–91%, gate FAIL. See "Thinking in
+the detection pass".
 
 **Headline:** detect + localize for one statement page takes **~25 s**. Qwen3.8-27B takes
 **~167–270 s** for the same page, depending on reasoning effort (2026-08-19), and Qwen3.6-27B
@@ -169,7 +172,8 @@ Gemma 4 is switched into thinking by `enable_thinking`, or `<|think|>` in the sy
 does not use Qwen's `reasoning_effort`. Its trace does not end in `</think>`, so `vlm.py`'s lazy
 grammar trigger would never fire and the grammar would never engage. This run used
 `reasoning_effort="off"`, which `vlm.py` already maps to `enable_thinking: false`, and that works
-unchanged. **Thinking on is untested.**
+unchanged. Thinking on was implemented and measured afterwards; see "Thinking in the
+detection pass".
 
 ## What one page says about quality, which is little
 
@@ -317,10 +321,60 @@ That run 1 covered it anyway is **run-to-run variance in layer 0**, and the most
 is the re-sent-request divergence in `TODO.md`. That is a second piece of evidence it matters:
 it moved a corpus leak, not only a one-page finding count.
 
+## Thinking in the detection pass
+
+The thinking protocol is now per model family (`vlm.ModelFamily`). For Gemma that means
+`enable_thinking: true`, a lazy grammar triggered after `<channel|>`, and no effort levels.
+Reasoning is set per pass: `--reasoning-effort` for detection, and
+`--grounding-reasoning-effort` for grounding, off by default (Sergei's call, 2026-09-13).
+Design in ARCHITECTURE "Layer 0".
+
+**Why grounding stays off.** Probed first on two pages, pass 2 thinking cost 3–4k tokens
+(~50 s) and drew the same boxes as pass 2 without it (13–19 s). A reasoning budget of 0 with
+thinking left on, which keeps the prompt prefix identical, gave the same boxes and did **not**
+preserve the image cache either (see TODO, Serving).
+
+**Corpus run, `real/1`:** hybrid, detection `medium`, grounding `off`, budget 4096, Q8_0 +
+MTP.
+
+| | thinking off (native order) | **thinking in detection** | Qwen3.8 xhigh combined |
+|---|---|---|---|
+| recall (leaks) | 90.2% (10) | **94.1% (6)** | 94.1% (6) |
+| gate | FAIL (1 critical) | **PASS** | PASS |
+| painted: fully covered / mean ink / partial | 180 / 89% / 9 | **190 / 94% / 10** | 185 / 90% / 7 |
+| model boxes: boxed / ink contained / IoU | 158 / 69% / 54% | 156 / 69% / 58% | 173 / 71% / 57% |
+| model boxes matching no truth | 158 | 185 | — |
+| ORGANIZATION kept / over-stripped (of 24) | 9 / 15 | 5 / 19 | 8 / 16 |
+| survival + grounding | 11.5 + 9.5 min | 39 + 41 min | 2h20m + 2h18m |
+| thinking replies cut by the budget | — | **9 of 31** | — |
+
+**What thinking bought.**
+- Four leaks fixed, including the critical PERSON_JOINT (the joint holders' printed initials
+  on d10), a place name, the full management-company name inside d10's transaction line, and
+  one clipped trust name.
+- Painted coverage improved exactly where it had been weak: PERSON_JOINT 12 → 18 of 22,
+  ORGANIZATION 33 → 36 of 42, LOCATION 3 → 4 of 5.
+
+**What remains.** The six leaks are a place name, which is by design, and five abbreviated or
+clipped renderings of the customer's own names in transaction lines: the prefix class every
+run here and Qwen3.8's shared.
+
+**What it cost.**
+- About 4x the wall time of thinking off: still a third of Qwen3.8's.
+- Somewhat more over-strip: four more institutional organization names replaced, which is the
+  keep-list gap.
+- More spurious model boxes.
+- **9 of 31 thinking replies ran into the 4096-token budget**, so a larger budget is a
+  scheduled follow-up.
+
+**Sergei's read**, from his own sweeps of the reference folder earlier the same day: combined
+single-pass mode is slightly worse than two-pass on both recall and precision, but much better
+than Qwen's combined mode. That is what led here, rather than a combined corpus run.
+
 ## What this does NOT establish
 
-- **A controlled comparison.** Geometry and thinking both differ from the Qwen3.8 run.
-- **Whether thinking closes the gap.** Thinking-on is not implemented for Gemma.
+- **A controlled comparison with Qwen3.8.** Geometry differs from its recorded run, and so
+  does the grounding pass, which thought there.
 - **Whether the 1120-token budget costs recall.** No leak here points at a misread, but the
   truncated-entity class would hide one.
 - **Precision.** The truth's deliberate gaps still conflate false positives with policy.
@@ -330,12 +384,15 @@ it moved a corpus leak, not only a one-page finding count.
 
 ## Next
 
-Scheduled in [TODO.md](../TODO.md), on Sergei's condition that the corpus quality be
-promising:
+In [TODO.md](../TODO.md):
 
-1. **Debug the re-sent-request divergence.** Also correct `http_transport`'s idempotency claim.
-2. **Support thinking for Gemma and run the corpus with it on.** This is the run that makes
-   the Qwen3.8 comparison fair.
+1. **A larger reasoning budget**, since 9 of 31 thinking replies were cut. It needs a budget
+   flag and a cut-off counter in `pii_eval` first.
+2. **Debug the re-sent-request divergence.** Also correct `http_transport`'s idempotency claim.
+3. **Find why pass 2 lost the cached image** after a long pass-1 trace with an identical
+   prefix.
+
+Thinking support itself is done (DONE.md).
 
 ## Reproduction
 
@@ -356,3 +413,7 @@ Stripped outputs are kept beside the corpus: `stripped.gemma4_26b_hybrid_off`, a
 run's output copied to `stripped.qwen38_combined_xhigh` before this run overwrote `stripped/`.
 The side-by-side leak table came from re-reading both with `reread_engine` and `find_value`,
 the scorer's own instrument.
+
+The thinking run used the defaults (`python -m pii_eval score -c pii_eval/corpora/real/1
+--modality pdf`, then `ground`), wrapped by a scratchpad script that counted the
+reasoning-budget cut-off message in each reply. Its output is `stripped.gemma4_26b_hybrid_think1`.

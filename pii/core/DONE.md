@@ -3878,3 +3878,72 @@ the move; new completed tasks append to the matching section with their records.
       Details: [reports/2026-09-13-gemma4-26b-bringup.md](reports/2026-09-13-gemma4-26b-bringup.md).
       Judged promising, so Sergei's two conditional follow-ups are in TODO.md: thinking for
       Gemma, and the re-sent-request divergence.
+
+- [x] **Thinking spoken per model family, and set per pass; Gemma 4 thinking on the corpus**
+      *(Sergei, 2026-09-13. Scheduled on condition the thinking-off quality was promising;
+      plan agreed as "a good plan". After his own combined-mode sweeps: "let's move on to
+      thinking ON implementation. Perhaps we can enable reasoning per-pass: 1st pass ON, 2nd
+      pass (grounding) - OFF". He chose a separate flag, with grounding off for every model,
+      and asked that the GBNF trigger be updated too.)*
+
+      **Why.** `reasoning_effort != "off"` sent Qwen's protocol to any model. That is a
+      `reasoning_effort` kwarg Gemma's template ignores, plus a lazy grammar triggered on
+      `</think>`, which Gemma never emits. Gemma would not think, the grammar would never
+      engage, and the reply would still parse.
+
+      **What shipped.**
+      - **`vlm.ModelFamily`**, one row per family (`QWEN`, `GEMMA`): box order, the effort
+        levels its template reads, the thinking kwargs, and the lazy-grammar trigger.
+        `GRAMMAR_TRIGGER` and `box_order_for_model` are gone, replaced by the family's
+        trigger and `family_for_model`.
+      - **`vlm._ServedModel`**, a mixin shared by `VlmDetector` and `TextDetector`. It
+        resolves the family on first need, learned from a reply or else one
+        `GET /v1/models`. It refuses an unplaceable model before a request that depends on it
+        (`ModelFamilyUnknown`, renamed from `BoxOrderUnknown`), checks every reply against the
+        family its request was built for, and builds the reasoning and lazy-grammar fields per
+        request.
+      - **Efforts.** Gemma accepts `medium` (thinking on) and `off`. `low` and `xhigh` raise
+        `ReasoningEffortUnsupported`.
+      - **Per pass.** `VlmDetector(grounding_reasoning_effort=...)`, and
+        `--grounding-reasoning-effort off|low|medium|xhigh|same` on `pii strip` and
+        `pii_eval score`/`ground`, off by default. This **changes Qwen's default** as well:
+        its earlier two-pass runs thought in both passes. The CLI refuses the flag for text
+        input and for geometries with no grounding pass.
+      - **`strip_thinking`** also strips Gemma's `<|channel>thought … <channel|>`.
+
+      **Probes that shaped it**, 2026-09-13, one or two pages:
+      - Gemma thinking works through the lazy trigger `<channel\|>[\s\S]*?(\[)`, and
+        answers start at `[` with no fence.
+      - Pass 2 thinking cost 3–4k tokens for the same boxes as thinking off.
+      - A reasoning budget of 0 with thinking left on, which keeps the prefix identical,
+        did not save the image cache either. That is now an open item in TODO.md, Serving.
+      - Combined mode with thinking on hit the 4096 budget on both pages tried.
+
+      **Dual coverage.**
+      - pytest, suite 818 → 840:
+        - each family's request fields and trigger, and that Qwen's are unchanged;
+        - the family resolved once before a thinking pass 1, and thinking off needing none;
+        - refusal of an unplaceable model, and of an effort Gemma does not read;
+        - grounding off by default, `same`, and grounding thinking while detection does not;
+        - the reply-family mismatch, and `strip_thinking` on Gemma's format;
+        - the text detector sending Gemma's protocol, and the CLI flag guards.
+      - Corpus: `real/1` below.
+
+      **Corpus `real/1`,** hybrid, detection `medium`, grounding `off`, budget 4096:
+
+      | | thinking off | thinking in detection | Qwen3.8 xhigh combined |
+      |---|---|---|---|
+      | recall | 90.2% | **94.1%** | 94.1% |
+      | gate | FAIL | **PASS** | PASS |
+      | painted, fully covered / mean | 180 / 89% | **190 / 94%** | 185 / 90% |
+      | ORGANIZATION over-stripped | 15 | 19 | 16 |
+      | survival + grounding | 21 min | 80 min | ~4.5 h |
+      | thinking replies cut at budget | — | 9 of 31 | — |
+
+      - **Leaks fixed:** four, including the critical PERSON_JOINT on d10.
+      - **Leaks left:** six, the by-design place name plus the prefix class.
+      - **Coverage:** PERSON_JOINT painted 12 → 18 of 22.
+      - **Follow-up:** a larger budget is now in TODO.md.
+
+      Details: [reports/2026-09-13-gemma4-26b-bringup.md](reports/2026-09-13-gemma4-26b-bringup.md),
+      "Thinking in the detection pass". Design: ARCHITECTURE "Layer 0".

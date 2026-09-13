@@ -16,7 +16,7 @@ from PIL import Image
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import Box
 from pii.core.vlm import (
-    BoxOrderUnknown,
+    ModelFamilyUnknown,
     GRAMMAR_LOCATE,
     GRAMMAR_VALUES,
     GRAMMAR_VALUES_BOXES,
@@ -27,7 +27,7 @@ from pii.core.vlm import (
     VlmError,
     VlmFinding,
     attach_boxes,
-    box_order_for_model,
+    family_for_model,
     fold_digits,
     parse_findings,
     read_response,
@@ -38,6 +38,11 @@ from pii.core.vlm import (
 # always carries one, and box order is read from it (see BOX_ORDERS).
 QWEN = "/Users/claude/models/qwen3.8-27b/Qwen3.8-27B-Q8_0.gguf"
 GEMMA = "/Users/claude/models/gemma-4-26b-a4b/gemma-4-26B-A4B-it-Q8_0.gguf"
+
+
+def _qwen(url, timeout):
+    """A `served_model` stub: the server says it is serving Qwen."""
+    return QWEN
 
 
 def _reply(content: str, finish_reason: str = "stop", model: str | None = QWEN) -> dict:
@@ -252,17 +257,17 @@ def test_the_class_enum_is_exactly_the_mapped_vocabulary():
 
 def test_each_prompt_shape_gets_the_matching_grammar():
     values = _transport("[]")
-    VlmDetector(transport=values).detect(Image.new("RGB", (4, 4), "white"))
+    VlmDetector(transport=values, served_model=_qwen).detect(Image.new("RGB", (4, 4), "white"))
     assert values.seen["payload"]["grammar"] == GRAMMAR_VALUES
 
     boxes = _transport("[]")
-    VlmDetector(transport=boxes, want_boxes=True, box_order="xyxy").detect(
+    VlmDetector(transport=boxes, want_boxes=True, box_order="xyxy", served_model=_qwen).detect(
         Image.new("RGB", (4, 4), "white")
     )
     assert boxes.seen["payload"]["grammar"] == GRAMMAR_VALUES_BOXES
 
     locate = _transport('[{"text": "A", "bbox_2d": [1, 2, 3, 4]}]')
-    VlmDetector(transport=locate, box_order="xyxy").localize(
+    VlmDetector(transport=locate, box_order="xyxy", served_model=_qwen).localize(
         Image.new("RGB", (4, 4), "white"),
         [VlmFinding(text="A", entity_type="PERSON")],
     )
@@ -280,7 +285,7 @@ def test_only_the_boxes_grammar_admits_a_bbox():
 def test_the_grammar_field_is_absent_when_switched_off():
     # Not empty — absent, so the A/B is exactly grammar on vs off.
     send = _transport("[]")
-    VlmDetector(transport=send, grammar=False).detect(
+    VlmDetector(transport=send, grammar=False, served_model=_qwen).detect(
         Image.new("RGB", (4, 4), "white")
     )
     assert "grammar" not in send.seen["payload"]
@@ -323,7 +328,7 @@ def test_grammar_writes_a_backslash_as_a_hex_escape():
 
 def test_detector_sends_image_and_prompt():
     send = _transport('[{"text": "A", "type": "PII_NAME"}]')
-    det = VlmDetector(url="http://x:1", transport=send)
+    det = VlmDetector(url="http://x:1", transport=send, served_model=_qwen)
     found = det.detect(Image.new("RGB", (8, 8), "white")).findings
 
     assert [f.text for f in found] == ["A"]
@@ -496,7 +501,9 @@ def test_hybrid_learns_the_model_from_pass_one_without_asking_the_server():
     # Pass 1 carries no boxes, but its reply names the model: pass 2's prompt is
     # chosen from that, at no extra request.
     detect = _transport('[{"text": "A. Person", "type": "PII_NAME"}]', GEMMA)
-    det = VlmDetector(transport=detect, served_model=_explode)
+    # Thinking off on pass 1: a thinking request needs the family BEFORE it goes
+    # out (see test_thinking_asks_the_server_before_pass_one).
+    det = VlmDetector(transport=detect, served_model=_explode, reasoning_effort="off")
     findings = det.detect(_WHITE).findings
     det.transport = locate = _transport(_LOCATED, GEMMA)
     (out,) = det.localize(_WHITE, findings).findings
@@ -522,7 +529,7 @@ def test_an_unplaceable_model_is_refused_before_a_boxed_request_is_sent():
     det = VlmDetector(
         transport=_explode, served_model=lambda url, timeout: "/models/mystery-7b.gguf"
     )
-    with pytest.raises(BoxOrderUnknown) as caught:
+    with pytest.raises(ModelFamilyUnknown) as caught:
         det.localize(_WHITE, _PERSON)
     assert "mystery-7b" in str(caught.value)
     assert "--box-order" in str(caught.value)
@@ -532,11 +539,11 @@ def test_an_unplaceable_model_is_refused_before_a_boxed_request_is_sent():
 
 def test_an_unplaceable_model_named_by_pass_one_is_refused_without_asking_again():
     detect = _transport('[{"text": "A", "type": "PII_NAME"}]', "/models/mystery.gguf")
-    det = VlmDetector(transport=detect, served_model=_explode)
+    det = VlmDetector(transport=detect, served_model=_explode, reasoning_effort="off")
     # A boxless pass runs against any model: there is nothing to misread.
     (found,) = det.detect(_WHITE).findings
     assert found.text == "A"
-    with pytest.raises(BoxOrderUnknown) as caught:
+    with pytest.raises(ModelFamilyUnknown) as caught:
         det.localize(_WHITE, [found])
     assert "mystery.gguf" in str(caught.value)
 
@@ -545,9 +552,9 @@ def test_a_reply_from_a_different_model_than_the_prompt_was_chosen_for_is_refuse
     # The server changed model between choosing the prompt and answering it.
     send = _transport(_LOCATED, QWEN)
     det = VlmDetector(transport=send, served_model=lambda url, timeout: GEMMA)
-    with pytest.raises(BoxOrderUnknown) as caught:
+    with pytest.raises(ModelFamilyUnknown) as caught:
         det.localize(_WHITE, _PERSON)
-    assert "yxyx" in str(caught.value) and "Qwen3.8" in str(caught.value)
+    assert "gemma family" in str(caught.value) and "Qwen3.8" in str(caught.value)
 
 
 def test_the_chosen_order_is_announced_once_per_model(capsys):
@@ -556,7 +563,7 @@ def test_the_chosen_order_is_announced_once_per_model(capsys):
     det.localize(_WHITE, _PERSON)
     det.localize(_WHITE, _PERSON)
     err = capsys.readouterr().err
-    assert err.count("box order yxyx (auto)") == 1
+    assert err.count("-> gemma family") == 1
     # The file name, not the server's full path.
     assert "gemma-4-26B-A4B-it-Q8_0.gguf" in err and "/Users/" not in err
 
@@ -598,8 +605,9 @@ def test_served_model_name_failure_is_actionable():
         (None, None),
     ],
 )
-def test_box_order_for_model(name, order):
-    assert box_order_for_model(name) == order
+def test_family_for_model(name, order):
+    family = family_for_model(name)
+    assert (family.box_order if family else None) == order
 
 
 def test_an_unresolved_order_never_reaches_the_parser():
@@ -1181,6 +1189,7 @@ def _payload(**kwargs) -> dict:
         def save(self, buf, fmt):
             buf.write(b"png")
 
+    kwargs.setdefault("served_model", _qwen)
     VlmDetector(transport=transport, **kwargs).detect(Img())
     return sent[0]
 
@@ -1195,13 +1204,13 @@ def test_thinking_is_on_by_default_with_a_budget_and_a_cut_off():
 
 
 def test_the_grammar_is_lazy_so_it_never_constrains_the_thinking():
-    from pii.core.vlm import GRAMMAR_TRIGGER
+    from pii.core.vlm import QWEN
 
     payload = _payload()
     assert payload["grammar_lazy"] is True
     # An int on the wire: llama.cpp reads `.at("type").get<int>()`, so a string
     # is an HTTP 400 rather than a fallback.
-    assert payload["grammar_triggers"] == [{"type": 2, "value": GRAMMAR_TRIGGER}]
+    assert payload["grammar_triggers"] == [{"type": 2, "value": QWEN.trigger}]
 
 
 def test_the_trigger_captures_the_bracket_and_not_the_think_tag():
@@ -1210,10 +1219,12 @@ def test_the_trigger_captures_the_bracket_and_not_the_think_tag():
     # to a grammar whose root starts with "[" would reject every continuation.
     import re
 
-    from pii.core.vlm import GRAMMAR_TRIGGER
+    from pii.core.vlm import GEMMA, QWEN
 
-    match = re.search(GRAMMAR_TRIGGER, "thinking about [things]</think>\n\n[{}]")
-    assert match.group(1) == "["
+    qwen = re.search(QWEN.trigger, "thinking about [things]</think>\n\n[{}]")
+    assert qwen.group(1) == "[" and qwen.start(1) > qwen.string.index("</think>")
+    gemma = re.search(GEMMA.trigger, "<|channel>thought\nabout [x]<channel|>[{}]")
+    assert gemma.group(1) == "[" and gemma.start(1) > gemma.string.index("<channel|>")
 
 
 def test_no_lazy_grammar_when_thinking_is_off():
@@ -1258,6 +1269,137 @@ def test_a_matched_think_pair_is_still_stripped():
 
 def test_a_reply_with_no_thinking_at_all_is_untouched():
     raw = '[{"text": "SERGEI KULIK", "type": "PII_NAME"}]'
+    assert [f.text for f in parse_findings(raw)] == ["SERGEI KULIK"]
+
+
+# --- thinking per model family, and per pass --------------------------------
+# How thinking is switched on and where its trace ends is the model FAMILY's
+# (2026-09-13): a Qwen request sent to Gemma never thinks and its grammar never
+# engages, and the reply still parses. So the family is resolved before a
+# thinking request, and the grounding pass has its own effort, off by default.
+
+
+def _gemma(url, timeout):
+    return GEMMA
+
+
+def _payloads(calls: int = 2, **kwargs) -> list[dict]:
+    """The payloads of one detect() and one localize() call, in order."""
+    sent = []
+    reply_model = kwargs.pop("_reply_model", QWEN)
+
+    def transport(url, payload, timeout):
+        sent.append(payload)
+        body = '[{"text": "A", "type": "PII_NAME"}]' if len(sent) == 1 else '[]'
+        return _reply(body, model=reply_model)
+
+    kwargs.setdefault("served_model", _qwen)
+    det = VlmDetector(transport=transport, box_order="xyxy", **kwargs)
+    found = det.detect(_WHITE).findings
+    if calls > 1:
+        det.localize(_WHITE, found)
+    return sent
+
+
+def test_gemma_thinking_sends_its_switch_budget_and_trigger():
+    from pii.core.vlm import GEMMA as GEMMA_FAMILY, REASONING_CUTOFF
+
+    detect, _ = _payloads(served_model=_gemma, _reply_model=GEMMA)
+    assert detect["chat_template_kwargs"] == {"enable_thinking": True}
+    assert detect["reasoning_budget_tokens"] == 4096
+    assert detect["reasoning_budget_message"] == REASONING_CUTOFF
+    assert detect["grammar_triggers"] == [{"type": 2, "value": GEMMA_FAMILY.trigger}]
+
+
+def test_qwen_thinking_is_unchanged():
+    from pii.core.vlm import QWEN as QWEN_FAMILY
+
+    detect, _ = _payloads(reasoning_effort="xhigh")
+    assert detect["chat_template_kwargs"] == {"reasoning_effort": "xhigh"}
+    assert detect["grammar_triggers"] == [{"type": 2, "value": QWEN_FAMILY.trigger}]
+
+
+def test_thinking_asks_the_server_once_before_pass_one():
+    asked = []
+
+    def served(url, timeout):
+        asked.append(url)
+        return QWEN
+
+    sent = _payloads(served_model=served)
+    # Once, for pass 1; pass 2 needs nothing more.
+    assert len(asked) == 1
+    assert len(sent) == 2
+
+
+def test_thinking_off_needs_no_family():
+    (detect,) = _payloads(calls=1, reasoning_effort="off", served_model=_explode)
+    assert detect["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "grammar_lazy" not in detect
+
+
+def test_an_unplaceable_model_is_refused_before_a_thinking_request():
+    det = VlmDetector(
+        transport=_explode, served_model=lambda url, timeout: "/models/mystery-7b.gguf"
+    )
+    with pytest.raises(ModelFamilyUnknown) as caught:
+        det.detect(_WHITE)
+    assert "mystery-7b" in str(caught.value)
+    assert "--reasoning-effort off" in str(caught.value)
+
+
+@pytest.mark.parametrize("effort", ["low", "xhigh"])
+def test_gemma_refuses_an_effort_level_its_template_does_not_read(effort):
+    from pii.core.vlm import ReasoningEffortUnsupported
+
+    det = VlmDetector(transport=_explode, served_model=_gemma, reasoning_effort=effort)
+    with pytest.raises(ReasoningEffortUnsupported) as caught:
+        det.detect(_WHITE)
+    assert "gemma" in str(caught.value) and effort in str(caught.value)
+    assert isinstance(caught.value, VlmError)
+
+
+def test_the_grounding_pass_does_not_think_by_default():
+    detect, localize = _payloads()
+    assert detect["chat_template_kwargs"] == {"reasoning_effort": "medium"}
+    assert localize["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_budget_tokens" not in localize and "grammar_lazy" not in localize
+    assert localize["max_tokens"] == 4096
+
+
+def test_grounding_same_copies_the_detection_effort():
+    _, localize = _payloads(reasoning_effort="xhigh", grounding_reasoning_effort="same")
+    assert localize["chat_template_kwargs"] == {"reasoning_effort": "xhigh"}
+    assert localize["grammar_lazy"] is True
+
+
+def test_grounding_can_think_while_detection_does_not():
+    detect, localize = _payloads(reasoning_effort="off", grounding_reasoning_effort="medium")
+    assert detect["chat_template_kwargs"] == {"enable_thinking": False}
+    assert localize["chat_template_kwargs"] == {"reasoning_effort": "medium"}
+
+
+def test_an_unknown_grounding_effort_is_rejected():
+    with pytest.raises(ValueError, match="grounding reasoning effort"):
+        VlmDetector(grounding_reasoning_effort="ludicrous")
+
+
+def test_a_reply_from_another_family_than_a_thinking_request_is_refused():
+    # Built for Qwen (its effort kwarg, its trigger); answered by Gemma, which
+    # would have ignored both.
+    det = VlmDetector(transport=_transport("[]", GEMMA), served_model=_qwen)
+    with pytest.raises(ModelFamilyUnknown) as caught:
+        det.detect(_WHITE)
+    assert "qwen family" in str(caught.value)
+
+
+def test_a_gemma_thought_channel_is_stripped_from_a_body():
+    raw = ('<|channel>thought\nReading [account] numbers.<channel|>'
+           '[{"text": "SERGEI KULIK", "type": "PII_NAME"}]')
+    assert [f.text for f in parse_findings(raw)] == ["SERGEI KULIK"]
+    # The opening half can be missing from a body a caller cut, as with Qwen.
+    raw = ('Reading [account] numbers.<channel|>'
+           '[{"text": "SERGEI KULIK", "type": "PII_NAME"}]')
     assert [f.text for f in parse_findings(raw)] == ["SERGEI KULIK"]
 
 

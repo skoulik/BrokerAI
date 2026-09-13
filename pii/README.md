@@ -188,10 +188,26 @@ for the other order does not reliably comply, and a box read the wrong way round
 is not an error, only a rectangle in the wrong place.
 
 - `auto` (**default**) asks each model in its native order, going by the name of
-  the model the server reports. It prints which order it chose
-  (`pii: layer-0 model … -> box order yxyx (auto)`). If it does not recognise
-  the model, the run stops with an error before any boxes are asked for.
+  the model the server reports. The run prints which model family it found
+  (`pii: layer-0 model … -> gemma family`). If it does not recognise the model,
+  the run stops with an error before any boxes are asked for.
 - `xyxy` or `yxyx` sets the order yourself, for a model `auto` does not know.
+
+The model thinks before answering, and each pass can be set separately:
+
+- `--reasoning-effort` sets the pass that **detects** the values: `medium`
+  (default), `low`, `xhigh` or `off`. Qwen reads all three levels. Gemma has no
+  levels, so only `medium` (thinking on) and `off` are accepted for it, and any
+  other level stops the run with an error.
+- `--grounding-reasoning-effort` sets the **grounding** pass, the second pass of
+  `hybrid`, which is handed the values and asked where they are. It is `off` by
+  default: thinking there costs as much as detecting and draws the same boxes.
+  Use `same` to copy `--reasoning-effort`, or name a level. It applies to
+  `hybrid` only.
+
+Thinking needs the run to know the model family, the same way `auto` box order
+does, so an unrecognised model with thinking on also stops with an error. Pass
+`--reasoning-effort off` to run it without thinking.
 
 Two lines in the run output report the weaker outcomes, and they are printed
 whether or not you passed `--report`: values painted from the model's own box

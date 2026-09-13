@@ -1292,18 +1292,54 @@ right every time.
   `(x1, y1, x2, y2)`, so nothing downstream knows models differ.
 
 **How `--box-order auto` (the default) chooses.** The order must be known **before** a boxed
-request is sent, since the prompt depends on it.
-- It comes from the served model's name (`gemma` → y first, `qwen` → x first).
-- That name is learned from an earlier reply where there is one: under `hybrid`, pass 1's reply
-  names the model, so this costs no extra request. Otherwise `GET /v1/models` is asked once.
-- Name matching uses the file name only, never the directory. A name matching both families is
-  evidence for neither.
-- An unplaceable model raises `BoxOrderUnknown` before a boxed request is spent on it; boxless
-  requests run against any model. `--box-order xyxy|yxyx` is the override.
-- Every later reply is checked against the model its prompt was chosen for, which catches a
-  server restarted on another model mid-run.
+request is sent, since the prompt depends on it. It is the served model **family's**
+(`vlm.ModelFamily`: `gemma` → y first, `qwen` → x first), resolved as described next.
+`--box-order xyxy|yxyx` overrides the box order only.
 
 Evidence: [reports/2026-09-13-gemma4-26b-bringup.md](reports/2026-09-13-gemma4-26b-bringup.md).
+
+**Thinking is spoken per model family, and set per pass (2026-09-13).** Everything about a
+request that differs between families lives in one `ModelFamily` row: the box order, the
+effort levels its chat template reads, how thinking is switched on, and the lazy-grammar
+trigger at the end of its trace.
+- **Qwen:** `reasoning_effort: low|medium|xhigh`, trace ending `</think>`.
+- **Gemma:** `enable_thinking: true` and no levels, trace ending `<channel|>`.
+
+Sent to the wrong family, a request does not fail. Qwen's kwarg is ignored by Gemma's
+template, and Qwen's trigger never fires on Gemma, so the model does not think, the grammar
+never engages, and the reply still parses. That is why the family is **resolved, never
+assumed**:
+- It comes from the served model's file name (never the directory; a name matching both
+  families is evidence for neither).
+- It is learned from an earlier reply where possible, otherwise asked once with
+  `GET /v1/models`. Under `hybrid` with pass 1 thinking-off, pass 1's reply supplies it at no
+  extra request. With thinking on, pass 1 itself needs it.
+- A request that depends on neither (thinking off, no boxes) runs against any model.
+- An unplaceable model raises `ModelFamilyUnknown` before a request that needs it is sent.
+- Every reply is checked against the family its request was built for, which catches a server
+  restarted on another model mid-run.
+- An effort the family's template does not read (`low`/`xhigh` on Gemma) raises
+  `ReasoningEffortUnsupported`. Two runs differing only in a flag the model never saw would
+  look like a comparison.
+
+**The grounding pass has its own effort, off by default for every model**
+(`--grounding-reasoning-effort`, Sergei 2026-09-13). Pass 2 is handed the values and asked
+only where they are. Both bring-ups measured its thinking as spent on placing them: Qwen3.8
+thought 1515 tokens placing 14 values it had been given, against 455 finding them, and Gemma
+thinks 3–4k tokens for boxes it draws just as well without thinking.
+
+**This changed Qwen's default too.** Its two-pass numbers before 2026-09-13 were taken thinking
+in both passes; `same` reproduces that.
+
+The price of off is the image cache, and it is not uniform:
+- **Qwen `medium` and `off`** inject nothing ahead of the image, so pass 2 still reuses it.
+- **Qwen `low`/`xhigh`** add a system line, so pass 2 pays a full image prefill, ~120 s on
+  Qwen3.8.
+- **Gemma's thinking switch** adds a system turn, so pass 2 re-reads its image (~9 s).
+
+Pass-2 image reuse after a long Gemma pass-1 trace was also seen to fail with a byte-identical
+prefix, cause not established. So keeping thinking on would not reliably save that prefill
+either.
 
 **A value is one span or several — the page string does not always hold it whole
 (2026-08-13).** `ocr_page._rows` bands a page **visually**, which is what puts a label beside

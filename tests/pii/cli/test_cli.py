@@ -92,6 +92,41 @@ def test_box_order_defaults_to_auto():
     assert _build_detector(Namespace(image=True)).box_order == "auto"
 
 
+# ------------------------------------------------- grounding reasoning
+
+def test_grounding_reasoning_defaults_to_off():
+    from argparse import Namespace
+
+    from pii.cli import _build_detector
+
+    detector = _build_detector(Namespace(pdf=True))
+    assert detector.grounding_reasoning_effort == "off"
+
+
+@pytest.mark.parametrize("effort", ["off", "medium", "same"])
+def test_grounding_reasoning_reaches_the_vision_detector(effort):
+    from argparse import Namespace
+
+    from pii.cli import _build_detector
+
+    detector = _build_detector(Namespace(pdf=True, grounding_reasoning_effort=effort))
+    assert detector.grounding_reasoning_effort == effort
+
+
+@pytest.mark.parametrize("geometry", ["combined", "ocr", "vlm"])
+def test_grounding_reasoning_is_refused_where_there_is_no_grounding_pass(geometry):
+    """Only hybrid makes a second pass: the flag would be accepted and change
+    nothing. Refused before the server is touched."""
+    with pytest.raises(SystemExit):
+        main(["strip", "page.png", "--image", "-o", "out.png", "--geometry", geometry,
+              "--grounding-reasoning-effort", "medium"])
+
+
+def test_grounding_reasoning_rejects_text_input():
+    with pytest.raises(SystemExit):
+        main(["strip", "doc.txt", "--map", "m.json", "--grounding-reasoning-effort", "same"])
+
+
 # ------------------------------------------------- layer 0 turned off
 
 def test_layer0_off_rejects_geometry_vlm():

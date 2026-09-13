@@ -157,9 +157,17 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   every box (2026-09-13).
   - `in_box_order` swaps coordinate NAMES only, and `_findings_from` is the one place a box
     becomes `(x1, y1, x2, y2)`.
-  - Under `auto`, an unplaceable model is REFUSED before a boxed request (`BoxOrderUnknown`).
+  - Under `auto`, an unplaceable model is REFUSED before a boxed request (`ModelFamilyUnknown`).
     Never default an unknown model to `xyxy`, and never "fix" a reply by guessing its order
     from the box shapes.
+- **Everything that differs between model families lives in one `vlm.ModelFamily` row** — box
+  order, thinking switch, effort levels, lazy-grammar trigger. Never add a family-specific
+  constant beside it: a Qwen request sent to Gemma does not fail, it just never thinks and its
+  grammar never engages (2026-09-13). A thinking request needs the family resolved first, and
+  an effort a family's template does not read is refused, not sent.
+- **The grounding pass (`localize`) thinks OFF by default, for every model.** Thinking there was
+  measured to place the same boxes at the cost of a second detection's worth of tokens. Qwen's
+  pre-2026-09-13 two-pass numbers were taken with it on (`--grounding-reasoning-effort same`).
 - **Fuzzy matching is permitted exactly where a box constrains the candidate set.** Inside a
   box, edit distance can only pick something in the right place; page-wide it would paint the
   WRONG region, so `--geometry ocr` stays at exact-or-squash. The confusion table in
