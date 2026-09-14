@@ -1504,6 +1504,23 @@ def _payloads(calls: int = 2, **kwargs) -> list[dict]:
     return sent
 
 
+@pytest.mark.parametrize("served, name, cached", [(_gemma, GEMMA, False), (_qwen, QWEN, True)])
+def test_the_prompt_cache_follows_the_model_family(served, name, cached):
+    """A cached prompt re-evaluates differently, so greedy output reproduces only
+    with the cache off (2026-09-15); Qwen trades that for restoring its post-image
+    checkpoint on pass 2. Both passes."""
+    for payload in _payloads(served_model=served, _reply_model=name):
+        assert payload["cache_prompt"] is cached
+
+
+def test_the_prompt_cache_is_off_while_the_family_is_unknown():
+    # Thinking off with a box order given needs no family, so none is resolved -
+    # and such a request must still reproduce against any model.
+    unknown = lambda url, timeout: "/models/mystery-7B.gguf"  # noqa: E731
+    for payload in _payloads(reasoning_effort="off", served_model=unknown, _reply_model=None):
+        assert payload["cache_prompt"] is False
+
+
 def test_gemma_thinking_sends_its_switch_budget_and_trigger():
     from pii.core.vlm import GEMMA as GEMMA_FAMILY, REASONING_CUTOFF
 

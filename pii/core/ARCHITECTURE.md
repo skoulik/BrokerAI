@@ -1244,14 +1244,17 @@ nothing left to choose between.
 each one is. They are split because asking for both at once costs **7.4% recall corpus-wide**
 (350 → 324 distinct values over 31 pages) — the model spends budget on geometry instead of
 detection, and the page that lost its policy number lost the hardest-won detection on it. The
-split is affordable because the server restores a context checkpoint taken immediately after the
-image, so pass 2 reuses the whole image prefill: **~0.5 s against the ~60 s the image itself
-cost** (measured 2026-08-13 over a 4-page document, end to end). That depends on serving flags,
-not just on our code — Qwen3.6 is hybrid SSM+attention and cannot roll its memory back to an
-arbitrary position, so without a post-image checkpoint every second pass re-projects the page in
-full and the split doubles prefill instead of costing nothing. It needs the patched
-llama-server and `-ctxcp > 0`; see
-[reports/2026-08-13-qwen36-ssm-prompt-cache.md](reports/2026-08-13-qwen36-ssm-prompt-cache.md).
+split is near-free where the prompt cache is on: the server restores a context checkpoint taken
+immediately after the image, so pass 2 reuses the whole image prefill — **~0.5 s against the
+~60 s the image itself cost** (Qwen3.6, measured 2026-08-13 over a 4-page document, end to end;
+patched llama-server and `-ctxcp > 0`, see
+[reports/2026-08-13-qwen36-ssm-prompt-cache.md](reports/2026-08-13-qwen36-ssm-prompt-cache.md)).
+That reuse costs reproducibility (see the transport paragraph below), so it is a per-family
+choice, `ModelFamily.prompt_cache` (2026-09-15). **Qwen keeps it on** for the checkpoint;
+**Gemma 4 has it off**, and pass 2 prefills the page again — which costs nothing with detection
+thinking on (the default), since pass 2's system turn then differs from pass 1's and it reused 2
+tokens either way (`real/1` 42.4 min off, 43 on); with thinking off in both passes it gives up
+~9 s of image prefill a page.
 Two-pass also boxes *more* tightly than one-pass (1.24× vs 1.41× ink).
 
 **A model box is a search constraint, not paint geometry.** The boxes are stochastically bad
@@ -1451,7 +1454,15 @@ applies it silently, per page, unauditably. That belongs in a deterministic, log
 **Transport is injectable and stdlib-only** (`urllib`), so `pii.core` gains no dependency and
 the testbench never needs a model server. Determinism requires single-slot serving (`-np 1`);
 llama.cpp's parallel batching makes greedy decode non-reproducible, and a gate that can be
-passed by re-rolling is not a gate.
+passed by re-rolling is not a gate. It also requires **the prompt cache off** (`cache_prompt:
+false`, 2026-09-15): llama-server restores cached prompts, including ones kept in host memory
+from earlier requests (`--cache-ram`), and a full hit re-evaluates only the last prompt token, in
+a batch of one, whose logits differ from the same position inside the full batch. Greedy then
+diverges — other findings, and on some pages no thinking at all — and whether a rerun hits
+depends on what the server served before; a 2-token reuse changed grounding answers too. With it
+off, two `real/1` runs matched request for request, and every redacted page pixel for pixel. The
+setting is per model family (`ModelFamily.prompt_cache`): off for Gemma 4 and for any family
+not yet known, on for Qwen, whose pass 2 depends on it (above) — so Qwen runs do not reproduce.
 
 #### The output shape is constrained, and an empty answer is three situations (2026-08-12)
 

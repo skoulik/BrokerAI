@@ -142,9 +142,17 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   [core/ARCHITECTURE.md](core/ARCHITECTURE.md).
 - **Detection and grounding are two model passes, never one.** `detect` names the values,
   `localize` asks where they are. Asking for both at once costs 7.4% recall (measured, 31
-  pages); the split is near-free only while the server can restore a post-image context
-  checkpoint (patched llama-server, `-ctxcp > 0`), and doubles prefill per page when it cannot.
-  Never add `bbox_2d` to the detection prompt.
+  pages). With the prompt cache on (Qwen), the split is near-free only while the server can
+  restore a post-image context checkpoint (patched llama-server, `-ctxcp > 0`); with it off
+  (Gemma), pass 2 prefills the page again. Never add `bbox_2d` to the detection prompt.
+- **The prompt cache is a per-family decision, off unless the family says otherwise.**
+  `ModelFamily.prompt_cache` becomes `cache_prompt` on every layer-0 request, and an unknown
+  family gets it off. Greedy output reproduces only with it off: llama-server restores cached
+  prompts (from earlier requests too, `--cache-ram`), a full hit re-evaluates just the last
+  token in a batch of one, and its logits differ — other findings, on some pages no thinking at
+  all; even a 2-token reuse flipped grounding answers (2026-09-15, [core/DONE.md](core/DONE.md)).
+  Gemma is off; Qwen is on, knowingly trading reproducibility for its pass-2 checkpoint. Never
+  turn it on for a family without accepting that its runs stop reproducing.
 - **A model box is a search constraint, not paint geometry.** Layer 0's boxes are
   stochastically unsafe to paint (16% clip by >20 px) but reliable enough to say *which*
   occurrence a value is — painting tolerance is zero pixels, localization tolerance is half a
@@ -161,7 +169,7 @@ items move to [core/DONE.md](core/DONE.md) with their records.
     Never default an unknown model to `xyxy`, and never "fix" a reply by guessing its order
     from the box shapes.
 - **Everything that differs between model families lives in one `vlm.ModelFamily` row** — box
-  order, thinking switch, effort levels, lazy-grammar trigger. Never add a family-specific
+  order, thinking switch, effort levels, lazy-grammar trigger, prompt cache. Never add a family-specific
   constant beside it: a Qwen request sent to Gemma does not fail, it just never thinks and its
   grammar never engages (2026-09-13). A thinking request needs the family resolved first, and
   an effort a family's template does not read is refused, not sent.

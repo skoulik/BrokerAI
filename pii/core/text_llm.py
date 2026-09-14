@@ -231,8 +231,9 @@ class TextDetector(_ServedModel):
         payload = {
             "messages": [{"role": "user", "content": prompt}],
             # Greedy and pinned, for the same reason as the vision path:
-            # single-slot serving (-np 1) makes greedy decode reproducible, and
-            # a gate you can pass by re-rolling is not a gate.
+            # single-slot serving (-np 1) and the prompt cache off make greedy
+            # decode reproducible, and a gate you can pass by re-rolling is not a
+            # gate.
             "temperature": 0.0,
             "top_k": 1,
             "top_p": 1.0,
@@ -247,6 +248,7 @@ class TextDetector(_ServedModel):
         # family - the argument that already makes them share GRAMMAR_VALUES
         # and read_response.
         payload.update(self._reasoning_fields(self.reasoning_effort))
+        payload.update(self._cache_fields())
         if grammar:
             payload["grammar"] = grammar
             payload.update(self._lazy_fields(self.reasoning_effort))

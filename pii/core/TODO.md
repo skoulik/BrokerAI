@@ -882,44 +882,36 @@ text tier's record is in [DONE.md](DONE.md).)
         on CUDA/Vulkan (Metal unconfirmed), speculation after an image may need a fix as MTP
         did ([PR #22105](https://github.com/ggml-org/llama.cpp/pull/22105)).
 
-- [ ] **Gemma 4: a re-sent request can answer differently** *(Sergei, 2026-09-13, scheduled on
-      the same condition)*. The identical detect request gave 15 findings (349 tokens) or 13
-      (298 tokens), depending on server cache state. It gave 15 when the prompt was evaluated
-      whole or as a cached image plus 329 text tokens, and 13 when the whole prompt was cached
-      and only the last token re-evaluated. It reproduces with MTP off. The hypothesis is that
-      logits differ numerically between a 1-token and a multi-token batch on Metal, on a
-      near-tie page; that is inferred, not isolated.
-      - **Start with** `cache_prompt: false` twice, which should be identical, then bisect batch
-        size, e.g. `-ub` or `n_cache_reuse`. Sergei suspects floating-point resolution
-        sensitivity (2026-09-14), scheduled right after the prompt and budget runs.
-      - **Also check the render path:** a page rendered by `pdf_to_images` (the single-page
-        probe) never looped on d05 p2, while the same page inside a `strip_pdf` run
-        (`_render_page`) looped every time. Cache state is the likely difference, but the two
-        renders are not yet shown to be pixel-identical.
-      - **Consequence to fix either way:** `vlm.http_transport`'s docstring says a retry
-        "returns the same answer". That is false when a retry follows a reply that reached the
-        server but not the client, because the re-send hits the full-prompt cache.
-      - **Gate impact:** a fresh server plus the normal pass sequence was deterministic in all
-        five cold runs measured. **But it has already moved a corpus result:** two `real/1`
-        runs leaked `1/SK MANAGEMENT VICTORIA PTY LTD` on d10 in one run and not the other,
-        although re-stripping d10 gives identical findings under both configurations.
-      - **Not only the fully cached case (2026-09-14):** the same detection requests on d01, sent
-        once by `pii_eval score` and again by `pii strip` an hour later with other requests
-        between, gave thinking traces that diverge on all four pages, 800–4,700 characters in,
-        each at a near-tie wording choice. Greedy decode is not reproducible across runs on
-        this server as served.
-      - **Then re-check MTP** *(Sergei, 2026-09-14, after the prompt tuning)*. A study of Gemma 4
-        12B and 26B-A4B on llama.cpp found MTP decoding byte-identical to standard decoding in
-        only 118 of 200 completions for 26B-A4B, at −0.83 points of quality
-        ([gemma-4-12B-it discussion 52](https://huggingface.co/google/gemma-4-12B-it/discussions/52)).
-        Our server runs the MTP drafter, and every Gemma 4 number in DONE.md was taken with
-        it on. Measure `real/1` with and without `-md`: byte-equality of replies, recall, wall
-        time.
-        - **And re-sweep `--spec-draft-n-max` with thinking on.** We kept n-max 2 from the
-          2026-09-13 sweep (flat from 2 to 4, slower at 6 with acceptance 81%), which appears to
-          predate thinking, so it timed short JSON answers. Detection now decodes ~4k-token
-          traces, and repetitive text drafts well: deeper drafts may pay where they did not. The
-          study above found N=6 still gaining, on an RTX 5070 Ti at Q4_0.
+- [ ] **llama.cpp: find where the batch shape changes the logits** *(Sergei, 2026-09-15: worth
+      doing anyway, and it also bears on the MTP setting)*. Greedy output on the Mac changes
+      with how a prompt or a draft is batched. A full cache hit re-evaluates the last token
+      alone and thinks differently, a 2-token prefix reuse changed grounding answers, and MTP's
+      `--spec-draft-n-max` changed 3 of 4 d01 detections between 2 and 3 (DONE.md,
+      2026-09-15). `ModelFamily.prompt_cache` sidesteps the cache case for Gemma. MTP depth
+      cannot be sidestepped that way: every setting is one particular set of outputs.
+      - **First, noise or bug.** Ask for the first generated token's top logprobs (`n_probs`)
+        on d01 p4 detection twice: evaluated in full, and fully cached (the case that skipped
+        thinking). Near-identical distributions with a near-tie at the top mean numerical
+        noise. Materially different ones mean a cache-restore bug worth reporting upstream.
+      - **Then localize it.** `llama-eval-callback` prints every operation's output. Evaluate
+        one prompt as a single batch and as prefix plus last token, and compare the last
+        position op by op; a text-only prompt should show the same effect. The expected first
+        difference is a Metal kernel chosen by batch size: `mul_mv` against `mul_mm`, their
+        `_id` variants for the experts, or `flash_attn_ext_vec` against the batched kernel.
+        lldb is available on the Mac.
+      - **Decide only then** whether anything is worth fixing. Batch-invariant kernels would be
+        a slower, locally maintained patch.
+
+- [ ] **Re-check MTP** *(Sergei, 2026-09-14, after the prompt tuning)*. A study of Gemma 4 12B
+      and 26B-A4B on llama.cpp found MTP decoding byte-identical to standard decoding in only
+      118 of 200 completions for 26B-A4B, at −0.83 points of quality
+      ([gemma-4-12B-it discussion 52](https://huggingface.co/google/gemma-4-12B-it/discussions/52)).
+      Our server runs the MTP drafter, and every Gemma 4 number in DONE.md was taken with it
+      on. Measure `real/1` with and without `-md`: byte-equality of replies, recall, wall time.
+      - The `--spec-draft-n-max` re-sweep with thinking on is done (DONE.md, 2026-09-15): n-max 2
+        stays. On d01, MTP at n-max 2 gave the same 8 answers as MTP off, with 2 of 4 detection
+        traces worded differently; n-max 3, 4 and 6 changed answers. `real/1` with and without
+        `-md` is still to measure.
 
 - [ ] **De-flake the tier-1 gate / revisit `build.CRITICAL`** (2026-08-08; **re-measure before
       acting, 2026-08-12**). Under GLiNER2 the gate passed at seeds 42 and 1 and failed at 2, 3

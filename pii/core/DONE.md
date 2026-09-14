@@ -4123,3 +4123,76 @@ the move; new completed tasks append to the matching section with their records.
         the 2026-09-13 prompt; the prompt fixes do not substitute for thinking.
 
       Tests 882 -> 883.
+
+- [x] **Gemma 4: a re-sent request answered differently — llama-server's prompt cache, now a
+      per-family setting** *(Sergei, 2026-09-13; localized and fixed 2026-09-15)*. The identical
+      detection request gave 15 or 13 findings depending on server state. A `real/1` leak (d10
+      `1/SK MANAGEMENT VICTORIA PTY LTD`) came and went between runs, and d01 traces diverged
+      between `pii_eval score` and `pii strip` an hour apart. Sergei suspected floating-point
+      sensitivity; it is that, and the prompt cache is what triggers it. Every request was
+      logged with its `timings.cache_n` / `prompt_n` (Q8_0, MTP on at n-max 2, greedy):
+
+      | run | what was sent | result |
+      |---|---|---|
+      | phase A | d01 p1 and p2 detection, 8 requests in varying order; 0, 2 or 12 prefix tokens reused, or `cache_prompt: false` | every full evaluation identical: p1 5 of 5, p2 2 of 2 |
+      | phase A | the same p1 request fully cached (`cache_n` 1557, `prompt_n` 1) | another trace, 3,288 tokens against 4,365; same answer |
+      | s1–s3 | `pii strip` of d01 three times back to back, 8 requests each | each request followed its cache state; p4 detection fully cached on s2 and s3 did not think at all (61 tokens against 755), with other findings |
+      | s4, s5 | the same with `cache_prompt: false` | all 8 requests identical, draft acceptance included; 4.8 min each |
+      | `real/1` A, B | survival twice, cache off, the brands-only prompt | all 62 requests identical (payload, trace, answer), every redacted page pixel-identical; 96.1%, the same 4 leaks; 42.4 min each |
+
+      - **Mechanism.** A full hit re-evaluates only the last prompt token, in a batch of one,
+        and its logits differ slightly from the same position inside the ~1,500-token batch.
+        Greedy decoding turns a near-tie into another path; it did so with MTP off too
+        (2026-09-13). `--cache-ram` (default 8,192 MiB,
+        ~220 MiB an entry here) keeps prompts from EARLIER requests, so whether a rerun hits
+        depends on everything the server served before. `cache_prompt: false` does not clear
+        the slot, so a later cache-enabled identical request still hits.
+      - **Partial reuse is not safe either.** A 2-token prefix reuse left detection unchanged
+        (3 of 3) but changed 2 of 4 grounding answers against a full evaluation. `--cache-ram 0`
+        alone would not have been enough.
+      - **Not the render path.** `pdf_to_images` is `_render_page`, and the probe and the strip
+        path gave byte-identical traces on d01 p1 and p2.
+      - **The cache-on run of the same prompt** (the table's brands-only row in the entry
+        above) had identical detection traces on all 11 documents, the same 4 leaks and
+        43 min. Its redacted pixels differed in one small region each, on d05 p2 and d07 p1,
+        where a grounding answer came out differently. Its detection numbers stand; its
+        grounding numbers carry a small cache effect. Earlier runs are not re-measured: leak
+        swings between runs with equal counts may include this effect, and the d10 flip was
+        one.
+      - **Decision: `ModelFamily.prompt_cache`.** Gemma is off, and so is a family not yet
+        known. Off costs Gemma nothing with detection thinking on, because pass 2's system turn
+        differs from pass 1's and it reused 2 tokens anyway. Qwen is on (Sergei): its pass 2
+        depends on restoring the post-image checkpoint, so Qwen runs knowingly do not
+        reproduce. The `http_transport` docstring's claim that a retry returns the same answer
+        now holds only with the cache off.
+      - **Found while testing.** Restarting the server over ssh lost the `caffeinate` that had
+        kept the closed-lid Mac awake since 2026-09-13. The Mac then slept between dark wakes:
+        model load took 16 min, decode fell to 2–8 tok/s, and connections dropped. Restarts now
+        keep the `caffeinate` (zsh's `BG_NICE` starting the server at nice 5 was checked and
+        is not the cause).
+
+      Tests 883 -> 887.
+
+- [x] **MTP depth re-swept with thinking on: n-max 2 stays** *(Sergei, 2026-09-14/15)*. The
+      2026-09-13 sweep timed short answers before detection thought. Repeated on d01 through
+      the strip path, with detection thinking at budget 4096, the prompt cache off and the
+      server restarted per setting (Q8_0, M1 Max):
+
+      | drafter | decode tok/s | drafts accepted | d01 wall (8 requests) | answers as n-max 2 | traces as n-max 2 |
+      |---|---|---|---|---|---|
+      | MTP off | 47.6 | — | 303 s | 8 of 8 | 6 of 8 |
+      | **n-max 2** | **61.1** | 90.9% | **251 s** | — | — |
+      | n-max 3 | 60.5 | 86.4% | 270 s | 4 of 8 | 3 of 8 |
+      | n-max 4 | 58.8 | 82.7% | 260 s | 6 of 8 | 5 of 8 |
+      | n-max 6 | 54.6 | 74.9% | 286 s | 6 of 8 | 5 of 8 |
+
+      - **Speed:** the longer thinking traces did not make deeper drafts pay. Acceptance falls
+        faster than draft length helps, so n-max 2 is fastest, 28% above MTP off.
+      - **Output:** every depth is its own set of outputs, the prompt-cache effect again: each
+        verification batch is n-max + 1 tokens, and its shape changes the logits. At n-max 2
+        the answers matched MTP off on all 8 requests, though two detection traces took other
+        words to reach them (4,424 tokens against 4,365, and 2,436 against 2,403). The
+        pseudonym maps held the same 10 values in every run; deeper settings renumbered 1–2 of
+        them.
+      - **Across a server restart** n-max 2 reproduced all 8 requests byte for byte (03:53 on
+        the server of 2026-09-13, 07:50 on a fresh one), draft acceptance included.

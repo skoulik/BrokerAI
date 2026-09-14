@@ -179,7 +179,8 @@ DEFAULT_BOX_ORDER = "auto"
 @dataclass(frozen=True)
 class ModelFamily:
     """Everything about talking to layer 0 that differs between model families:
-    the box order to ask in, and how thinking is switched on and read back.
+    the box order to ask in, how thinking is switched on and read back, and
+    whether the server may reuse cached prompts.
 
     Keyed on the FAMILY name in the served model's file name
     (`family_for_model`), so every Gemma is assumed to speak like Gemma 4
@@ -197,6 +198,17 @@ class ModelFamily:
     # root starts with `[` and reject every continuation. Capturing the bracket
     # is what makes the handoff exact.
     trigger: str
+    # Sent as `cache_prompt`. Off makes greedy output reproducible: llama-server
+    # reuses cached prompts - including ones kept in host memory from EARLIER
+    # requests (`--cache-ram`) - and a reused prefix changes how the rest of the
+    # prompt is batched. A full hit re-evaluates just the last token, in a batch
+    # of one, whose logits differ from the same position inside the full batch;
+    # greedy then takes another path - other findings, on some pages no thinking
+    # at all - and even a 2-token reuse flipped grounding answers. Off, two runs
+    # of `real/1` matched request for request (2026-09-15, pii/core/DONE.md).
+    # On is a trade of that for prefix reuse, worth making only where the
+    # serving setup is built on it.
+    prompt_cache: bool
 
     def supports(self, effort: str) -> bool:
         return effort == "off" or effort in (self.efforts or ("medium",))
@@ -213,11 +225,23 @@ class ModelFamily:
 
 
 # Qwen closes its trace with `</think>`; its template opens the trace itself.
-QWEN = ModelFamily("qwen", "xyxy", ("low", "medium", "xhigh"), r"</think>[\s\S]*?(\[)")
+# Prompt cache ON, knowingly giving up run-to-run reproducibility (Sergei,
+# 2026-09-15): Qwen3.6/3.8 is hybrid SSM+attention, so pass 2 over a page is
+# cheap only by restoring the checkpoint taken right after the image (patched
+# llama-server, -ctxcp > 0) - ~0.5 s against ~60 s of image prefill. Not
+# re-measured for determinism; Qwen may be retired. A gate run on Qwen that must
+# reproduce wants this off.
+QWEN = ModelFamily(
+    "qwen", "xyxy", ("low", "medium", "xhigh"), r"</think>[\s\S]*?(\[)", prompt_cache=True
+)
 # Gemma writes `<|channel>thought ... <channel|>`, from a `<|think|>` system turn
 # that `enable_thinking` adds; llama.cpp's gemma4 parser registers those tags, so
 # the reasoning budget and the `reasoning_content` split work unchanged (2026-09-13).
-GEMMA = ModelFamily("gemma", "yxyx", (), r"<channel\|>[\s\S]*?(\[)")
+# Prompt cache off: with detection thinking (the default) reuse bought nothing -
+# pass 2's system turn differs from pass 1's, so it reused 2 tokens, and `real/1`
+# ran 42.4 min off against 43 on. With thinking off in both passes it would reuse
+# the image, ~9 s a page.
+GEMMA = ModelFamily("gemma", "yxyx", (), r"<channel\|>[\s\S]*?(\[)", prompt_cache=False)
 FAMILIES = (QWEN, GEMMA)
 
 # The detection prompt (pass 1). What each part is for, and which parts were
@@ -321,14 +345,16 @@ If the page contains none, output []"""
 # byte-identical to the single-pass values prompt) and boxes MORE tightly
 # (1.24x vs 1.41x ink). Evidence: reports/2026-08-08-vlm-oneshot-qwen36.md.
 #
-# OPERATIONAL, and it is not visible from this file: pass 2 is cheap only
+# OPERATIONAL, and it is not visible from this file: on a family with the
+# prompt cache on (`ModelFamily.prompt_cache`, Qwen), pass 2 is cheap only
 # because the server restores a context checkpoint taken right after the image,
 # which needs the patched llama-server and -ctxcp > 0. Two edits here would
 # silently forfeit that and double the prefill of every page — putting anything
 # ahead of the image in _ask's message list, and re-encoding the page to
 # different PNG bytes between the two calls, since the server keys the image
 # chunk on a hash of the encoded bytes. Neither fails loudly; both just get
-# slow. See reports/2026-08-13-qwen36-ssm-prompt-cache.md.
+# slow. See reports/2026-08-13-qwen36-ssm-prompt-cache.md. With the cache off
+# (Gemma), pass 2 prefills the page again, for reproducibility (2026-09-15).
 _LOCATE_PROMPT = """This page has already been read. Below is the list of text values found \
 on it. Your only job now is to say WHERE each one is printed.
 
@@ -553,9 +579,12 @@ def http_transport(url: str, payload: dict, timeout: int) -> dict:
     the whole point: a status code means the server read the request and
     answered it, so retrying would hide a bad request behind a delay, while a
     reset pipe means the answer never arrived and asking again is the only way
-    to learn anything. Retrying is safe here specifically because the request is
-    idempotent — greedy, `seed` pinned — so a second ask returns the same
-    answer and a retry can only recover a result, never change one.
+    to learn anything. Retrying is safe here because the request is idempotent —
+    greedy, `seed` pinned, and the prompt cache off — so a second ask returns the
+    same answer and a retry can only recover a result, never change one. For a
+    family with `ModelFamily.prompt_cache` on that does not hold: a re-send hits
+    the prompt cached by the first attempt and re-evaluates differently, so a
+    retry can change the answer (it still cannot lose one).
 
     Why it exists (2026-08-19): a 56-minute corpus run died on a single TCP
     reset while the server sat healthy and had already generated the reply.
@@ -992,6 +1021,14 @@ class _ServedModel:
             )
         return family
 
+    def _cache_fields(self) -> dict:
+        """`cache_prompt` as the served model's family sets it, and off while the
+        family is not known yet: a request that needs no family (thinking off, box
+        order given) must still run reproducibly against any model. Not resolved
+        here, so it never costs a request or refuses an unplaceable model."""
+        family = self._model[1] if self._model else None
+        return {"cache_prompt": bool(family and family.prompt_cache)}
+
     def _max_tokens(self, effort: str) -> int:
         """Answer allowance PLUS thinking allowance — they share one budget.
 
@@ -1234,8 +1271,9 @@ class VlmDetector(_ServedModel):
                 }
             ],
             # Greedy and pinned. Determinism is a gate requirement: single-slot
-            # serving (-np 1) makes greedy decode reproducible; parallel batching
-            # does not, and a gate you can pass by re-rolling is not a gate.
+            # serving (-np 1) and the prompt cache off (`ModelFamily.prompt_cache`)
+            # make greedy decode reproducible; parallel batching does not, and a
+            # gate you can pass by re-rolling is not a gate.
             "temperature": 0.0,
             "top_k": 1,
             "top_p": 1.0,
@@ -1244,6 +1282,8 @@ class VlmDetector(_ServedModel):
             "stream": False,
         }
         payload.update(self._reasoning_fields(effort))
+        # After the reasoning fields, which resolve the family when thinking is on.
+        payload.update(self._cache_fields())
         if grammar:
             # Per-request rather than a server flag, so the shape we enforce is
             # versioned with the code that parses it — the same reasoning that

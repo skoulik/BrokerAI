@@ -130,6 +130,19 @@ def test_detect_is_pinned_to_greedy_decoding():
     assert payload["seed"] == 42
 
 
+def test_the_text_path_takes_the_prompt_cache_from_the_model_family():
+    # The vision path's rule (`ModelFamily.prompt_cache`), on the same server.
+    qwen = _transport("[]")
+    TextDetector(transport=qwen, served_model=_qwen).detect("anything")
+    assert qwen.calls[0]["cache_prompt"] is True
+
+    gemma = _transport("[]")
+    TextDetector(
+        transport=gemma, served_model=lambda url, timeout: "/models/gemma-4-26B-A4B-it-Q8_0.gguf"
+    ).detect("anything")
+    assert gemma.calls[0]["cache_prompt"] is False
+
+
 def test_detect_deduplicates_the_same_value_across_windows():
     """Overlapping windows re-report the same value; only distinct
     (value, type) pairs may survive, or every occurrence would be planned
