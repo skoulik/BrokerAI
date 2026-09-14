@@ -851,6 +851,37 @@ text tier's record is in [DONE.md](DONE.md).)
         reference code that full-length traces read correctly. Part of the repetition is
         re-reading.
       - **A larger budget** (8192) stays untried; nothing now suggests it would help.
+      - **Measured 2026-09-14:** budget 2048 with a soft cut-off message on `real/1` cost recall,
+        96.1% → 92.2% (4 → 8 leaks, the fragile truncated names and place names), for 23% less
+        survival time. Keep 4096 until thinking itself improves.
+      - **Also run thinking OFF with the 2026-09-14 prompt** *(Sergei)*. The 90.2% / gate FAIL
+        number is from the old prompt, and the prompt fixes (distinct values, labels, no
+        "PII") do not depend on thinking.
+
+- [ ] **Layer-0 thinking: ideas raised 2026-09-14 and not yet scheduled.** Evidence for each is
+      in DONE.md ("Gemma 4 detection traces") unless stated.
+      - **Sampling at temperature 0.6**, if Google's 1.0 (probe queued 2026-09-14) damages
+        transcription but helps the thinking.
+      - **Grounding with thinking on, and the combined single pass, with the new prompt**
+        *(Sergei: neither is ruled out)*.
+      - **A repeat penalty inside the thinking only.** Needs a llama.cpp patch keyed on the
+        reasoning-budget sampler's in-trace state; applied to the whole reply it damaged
+        transcription.
+      - **Suppressing "Wait"/"Hmm" tokens** (NoWait, arXiv 2506.08343). Held back: a logit
+        bias also hits the answer, e.g. a surname like "Waite".
+      - **Cutting the trace client-side once a complete list appears in it** (stream and
+        abort). Fragile, since draft lists are not always final; last resort.
+      - **The truncated-text rule** ("If a value is cut short on the page, copy only the
+        characters that are printed") removed the d05 dot loop in one document run. Not in the
+        prompt; needs its own run.
+      - **Bring the text prompt in line with the vision one**: the explicit "organizations'
+        names, numbers, addresses and web addresses" sentence and value-not-label. Text input
+        is unmeasured since the 2026-09-14 changes.
+      - **The DFlash drafter** (`dflash-gemma-4-26B-A4B-it-Q8_0.gguf`, `--spec-type
+        draft-dflash`): drafts a whole block per forward pass, which may suit repetitive
+        traces better than one-token MTP. Caveats: gains reported lower on MoE targets, tested
+        on CUDA/Vulkan (Metal unconfirmed), speculation after an image may need a fix as MTP
+        did ([PR #22105](https://github.com/ggml-org/llama.cpp/pull/22105)).
 
 - [ ] **Gemma 4: a re-sent request can answer differently** *(Sergei, 2026-09-13, scheduled on
       the same condition)*. The identical detect request gave 15 findings (349 tokens) or 13
@@ -860,7 +891,12 @@ text tier's record is in [DONE.md](DONE.md).)
       logits differ numerically between a 1-token and a multi-token batch on Metal, on a
       near-tie page; that is inferred, not isolated.
       - **Start with** `cache_prompt: false` twice, which should be identical, then bisect batch
-        size, e.g. `-ub` or `n_cache_reuse`.
+        size, e.g. `-ub` or `n_cache_reuse`. Sergei suspects floating-point resolution
+        sensitivity (2026-09-14), scheduled right after the prompt and budget runs.
+      - **Also check the render path:** a page rendered by `pdf_to_images` (the single-page
+        probe) never looped on d05 p2, while the same page inside a `strip_pdf` run
+        (`_render_page`) looped every time. Cache state is the likely difference, but the two
+        renders are not yet shown to be pixel-identical.
       - **Consequence to fix either way:** `vlm.http_transport`'s docstring says a retry
         "returns the same answer". That is false when a retry follows a reply that reached the
         server but not the client, because the re-send hits the full-prompt cache.
