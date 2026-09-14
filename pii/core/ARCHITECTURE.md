@@ -1214,10 +1214,11 @@ differ from the vision path, both consequences of having the source text in hand
   from the very string it was given, so `locator.locate_in_text` places a value by finding it.
   A value that is *not* in the text means the model reformatted or invented it, and is
   surfaced on `TextStripResult.unlocated` under the same rule as the image path.
-- **One entry per DISTINCT value.** The vision prompt asks for every occurrence because each
-  occurrence needs its own box; here every occurrence is found mechanically, exactly and for
+- **One entry per DISTINCT value.** Every occurrence is found mechanically, exactly and for
   free, so asking a model to enumerate them would spend output budget on work we do better —
-  and it degrades with document length, which a page's bounded size hides.
+  and it degrades with document length, which a page's bounded size hides. The vision path's
+  boxless pass 1 asks the same since 2026-09-14; only its one-pass box prompt (`combined`,
+  `vlm`) still asks for every printing, because each needs its own box.
 
 Long text is cut into overlapping windows (`text_llm.windows`), and the overlap is a recall
 *backstop* rather than a correctness requirement: findings are located against the whole text,
@@ -1228,7 +1229,8 @@ boundaries to make that the common case.
 The two prompts are deliberately separate strings rather than spliced from shared fragments:
 `vlm.PROMPT` is frozen at the wording that was measured, and sharing would couple any future
 edit of one modality to the other. What must not drift is the class vocabulary, and that is
-pinned by a test asserting both prompts name exactly the keys of `vlm.TYPE_MAP`.
+pinned by a test asserting each prompt names exactly its own spelling of the same five classes
+(`vlm.VISION_TYPE_MAP` without "PII", `vlm.TEXT_TYPE_MAP` with it).
 
 **Text layer 0 is the only text detector since 2026-08-09**, when the A/B against GLiNER2
 retired layer 2 (that decision above carries the numbers). `--detector` went with it: there is
@@ -1411,7 +1413,8 @@ independently of the warning: Python's default filter deduplicates an identical 
 the same line, so a second page with the same residue would otherwise be silent.
 
 **The class vocabulary is coarse on purpose.** The model emits five classes
-(`PII_NAME`/`PII_ADDRESS`/`PII_COMPANY`/`PII_DOB`/`PII_IDENTIFIER`), cut along one test: *can
+(`NAME`/`ADDRESS`/`COMPANY`/`DOB`/`IDENTIFIER`; the text prompt still prefixes them `PII_`),
+cut along one test: *can
 a deterministic recognizer re-derive this class from the string alone?* Identifiers can (regex
 + checksum), and the VLM is measurably unreliable at it — the same value came back
 `CREDIT_CARD` in one run and `AU_BANK_ACCOUNT` in another. Names, addresses, companies and

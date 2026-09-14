@@ -13,17 +13,19 @@ Two things differ from the vision path, both deliberate:
   pass, no `bbox_2d`, and no locator tiers. A value is placed by finding it in
   the source string (`locator.locate_in_text`), which is exact by construction:
   the model is copying out of the very text it was given.
-- **One entry per DISTINCT value.** The vision prompt asks for every occurrence
-  because each occurrence needs its own box; here every occurrence of a value
-  is found mechanically, so asking the model to enumerate them would spend
-  output budget on work we do better. See `locator.locate_in_text`.
+- **One entry per DISTINCT value.** Every occurrence of a value is found
+  mechanically, so asking the model to enumerate them would spend output budget
+  on work we do better. See `locator.locate_in_text`. (The vision prompt's
+  boxless pass does the same; only its one-pass box prompt asks for every
+  printing, since each needs its own box.)
 
 The prompt below is a deliberate COPY of the vision one's structure rather than
 a shared string. `vlm.PROMPT` is frozen at the wording that was measured (see
 its comment), and splicing the two out of shared fragments would couple any
 future edit of one modality to the other. What must NOT drift is the class
-vocabulary, and that is pinned by a test asserting both prompts name exactly
-the keys of `vlm.TYPE_MAP`.
+vocabulary: this prompt names the classes `vlm.TEXT_TYPE_MAP`'s way and the
+vision prompt `vlm.VISION_TYPE_MAP`'s, one derived from the other, and a test
+pins each prompt to its own spelling.
 """
 
 from __future__ import annotations

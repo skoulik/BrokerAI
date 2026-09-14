@@ -78,13 +78,20 @@ from typing import Callable, Protocol
 # the split follows "can a deterministic recognizer re-derive this class from the
 # string alone?" - identifiers can (regex + checksum, layer 1's job, and the VLM
 # is measurably unreliable at it), names/addresses/companies/dates cannot.
-TYPE_MAP = {
-    "PII_NAME": "PERSON",
-    "PII_ADDRESS": "ADDRESS",
-    "PII_COMPANY": "ORGANIZATION",
-    "PII_DOB": "DATE_OF_BIRTH",
-    "PII_IDENTIFIER": "IDENTIFIER_GENERIC",
+#
+# Two spellings of the same five classes. The vision prompt names them plainly and
+# never says "PII" (2026-09-14): Gemma 4 read "PII" as personal information and
+# argued organizations, their addresses and web addresses out of it page by page. The text prompt keeps the PII_ names until that is measured there
+# too. Both are accepted, and the text spelling is derived, so neither can drift.
+VISION_TYPE_MAP = {
+    "NAME": "PERSON",
+    "ADDRESS": "ADDRESS",
+    "COMPANY": "ORGANIZATION",
+    "DOB": "DATE_OF_BIRTH",
+    "IDENTIFIER": "IDENTIFIER_GENERIC",
 }
+TEXT_TYPE_MAP = {f"PII_{name}": entity for name, entity in VISION_TYPE_MAP.items()}
+TYPE_MAP = {**VISION_TYPE_MAP, **TEXT_TYPE_MAP}
 
 # The model server usually runs on another machine (a Mac with enough unified
 # memory), so the localhost default is rarely right. PII_VLM_URL saves passing
@@ -216,75 +223,89 @@ QWEN = ModelFamily("qwen", "xyxy", ("low", "medium", "xhigh"), r"</think>[\s\S]*
 GEMMA = ModelFamily("gemma", "yxyx", (), r"<channel\|>[\s\S]*?(\[)")
 FAMILIES = (QWEN, GEMMA)
 
-# The tuned probe prompt, plus the value-not-label sentence added 2026-08-12.
-# Four properties are load-bearing and should not be edited casually - each was
-# established by measurement:
-#  - coarse classes: collapsing 14 -> 5 cost no recall and GAINED generalization
-#    (a vehicle registration was caught with no mention of vehicles);
-#  - no institutional carve-outs: over-strip is recoverable by the keep-list,
-#    under-strip is a breach, and a prompt is the wrong place for a silent,
-#    per-page, unauditable keep decision;
-#  - identifiers-live-in-headings + naming "policy, reference and claim numbers":
-#    a policy number rendered as a bold heading was missed until BOTH were
-#    present. The structural hint alone was not enough;
-#  - value-not-label: the sentence states an invariant the tool already holds
-#    ("a label is evidence, not part of the value") and that layer 0 was
-#    breaking on every page, keying the map on "Account number 6874-72521".
-#    Its SCOPE is what matters, not its phrasing. Three phrasings that named
-#    only the label produced byte-identical findings; widening it by one phrase
-#    ("never the label, heading or caption") left two pages untouched and made
-#    the model grab whole transaction-narrative rows on the third
-#    ("FROM THE TRUSTEE FOR TO ANZ ACCT LN"). Keep it narrow, and do not try to
-#    aim its large precision side-effect by rewording - per-value keep
-#    decisions belong in entity_keep.txt where they are auditable.
-#    Measurements in DONE.md.
+# The detection prompt (pass 1). What each part is for, and which parts were
+# established by measurement - edit those only with a run to show for it:
+#  - coarse classes (measured): collapsing 14 -> 5 cost no recall and GAINED
+#    generalization (a vehicle registration was caught with no mention of vehicles);
+#  - identifiers-live-anywhere + naming "insurance policy, reference or claim"
+#    (measured): a policy number rendered as a bold heading was missed until both
+#    were present;
+#  - no "PII" anywhere in the wording (2026-09-14, see VISION_TYPE_MAP): the word
+#    carries the model's own idea of personal information, which is narrower than
+#    what this tool strips;
+#  - no exceptions for organizations, and "when unsure, include it": over-strip is
+#    recoverable by the keep list and under-strip is a breach, so the prompt must
+#    not leave the model a keep decision of its own. Without the sentence, Gemma 4
+#    made one per page and made it differently on each - it left a bank's address
+#    out "to be safe" on one page and put another in on the next, and did the same
+#    with web addresses (2026-09-14). Filtering organizations is the keep list's job;
+#  - value-not-label: a label is evidence, not part of the value, and a labelled
+#    value keys the pseudonym map on a different string than a bare one. Without
+#    it the output format's "exactly as printed" was read as licence to copy the
+#    label. Keep its scope narrow: widening it to "never the label, heading or
+#    caption" once made the model grab whole transaction-narrative rows;
+#  - one line for a multi-line value: the locator matches either way, and without
+#    the sentence the model spent its thinking choosing between a line break and a
+#    space;
+#  - distinct values (`_OUTPUT_VALUES`) against every printing (`_OUTPUT_BOXES`):
+#    see those two.
+# The 2026-09-14 changes were measured together on real/1 (DONE.md). Older
+# measurements: DONE.md, reports/2026-08-19-qwen38-bringup.md.
 #
-# Two sentences were REMOVED 2026-08-19, when layer 0 became a reasoning model.
-# Both dated from the non-thinking regime and both turned out to control
-# something other than what they said:
-#  - "Do not explain your reasoning." SUPPRESSED THINKING. With it present the
-#    model emitted ZERO thinking tokens on the combined pass at xhigh; removing
-#    it alone restored 1379. It was silently defeating the thing it was being
-#    asked to do.
-#  - "Stop immediately after the closing ]." is redundant under a grammar - the
-#    root reaches an accepting state after `]`, so only EOG stays legal and the
-#    model cannot continue. Its ONLY real effect was suppressing a LEADING code
-#    fence, which it never mentions. The replacement says that directly.
-#    Removing it without a replacement brings the fence back.
-# Together the replacement scored 15 findings where the old prompt scored 14 and
-# deleting the prohibition alone scored 13 (one page, counts only).
-# Measurements: reports/2026-08-19-qwen38-bringup.md.
-PROMPT = """Find all occurrences of Personally Identifiable Information (PII) identifiers in \
+# Two sentences must stay OUT, both removed 2026-08-19 when layer 0 became a
+# reasoning model, because each controlled something other than what it said:
+#  - "Do not explain your reasoning." SUPPRESSED THINKING: with it, zero thinking
+#    tokens on the combined pass at xhigh; without it, 1379.
+#  - "Stop immediately after the closing ]." is redundant under a grammar, and its
+#    only real effect was suppressing a leading code fence - which the "no code
+#    fence" sentence now says directly.
+PROMPT = """Find the names, dates of birth, addresses, organizations and identifiers printed on \
 this page. Look for them anywhere: main text, titles, headers, footers, tables.
 
-Identifier TYPE is one of:
-* PII_NAME : a person's name, full or partial, including when used in account names;
-* PII_DOB : a person's date of birth;
-* PII_ADDRESS : a postal address, full or partial;
-* PII_COMPANY : a name of a company or an organization, full or partial, including when \
+TYPE is one of:
+* NAME : a person's name, full or partial, including when used in account names;
+* DOB : a person's date of birth;
+* ADDRESS : a postal address, full or partial;
+* COMPANY : a name of a company or an organization, full or partial, including when \
 used in account names;
-* PII_IDENTIFIER : any other PII identifier - a number or a code identifying a person, \
+* IDENTIFIER : any other identifier - a number or a code identifying a person, \
 an organization or an account, such as:
   - account number, credit card, driving licence, TFN, medicare or passport number;
   - insurance policy, reference or claim identifier;
   - membership or loyalty card number;
   - ABN, ACN or TFN number;
-  - phone number, email address;
+  - phone number, email address, web address;
   - vehicle plate number.
 
-Use an appropriate TYPE for each PII that you find, if unsure, fallback to PII_IDENTIFIER.
+Use an appropriate TYPE for each value that you find, if unsure, fallback to IDENTIFIER.
+When unsure whether to include something, include it: reporting too much is corrected later, \
+missing something is not. This applies to banks, insurers and every other organization \
+too - include their names, numbers, addresses and web addresses.
+Report the value, never the label that introduces it: in "Account number 1234-5678" the \
+value is "1234-5678".
+A value printed across several lines may be written on one line.
 Do not output monetary amounts, transaction dates, interest rates, balances, percentages - they \
 are NOT identifiers.
 Output only the JSON array, with no code fence and no other text."""
 
+# Pass 1 without boxes (`hybrid`, `ocr`) needs each value ONCE. Pass 2 returns a
+# box for every printing and `attach_boxes` gives each its own finding, and
+# `locator.locate_borrowed` finds every occurrence of a known value anyway. Asked
+# for "all occurrences", Gemma 4 argued on nearly every page over whether that
+# meant printings or values, answered both ways, and the repeats it did list
+# lost their boxes in pass 2 (2026-09-14).
 _OUTPUT_VALUES = """
+List each distinct value once, however many times it is printed on the page.
 Output in this JSON format:
-[{"type": "<TYPE>", "text": "<exact text as printed>"}]
+[{"type": "<TYPE>", "text": "<the value, exactly as printed>"}]
 If the page contains none, output []"""
 
+# The one-pass box prompt (`combined`, `vlm`) is the only source of boxes, so it
+# still needs every printing.
 _OUTPUT_BOXES = """
+List every place a value is printed: a value printed twice gets two entries.
 Output in this JSON format:
-[{"type": "<TYPE>", "text": "<exact text as printed>", "bbox_2d": [x1, y1, x2, y2]}]
+[{"type": "<TYPE>", "text": "<the value, exactly as printed>", "bbox_2d": [x1, y1, x2, y2]}]
 bbox_2d is the tight box around that text: (x1,y1) top-left, (x2,y2) bottom-right, in \
 normalized relative coordinates scaled to 1000. Make the box enclose the whole string \
 including its first and last characters.
@@ -1164,8 +1185,9 @@ class VlmDetector(_ServedModel):
         than there were findings (a value printed twice, a value it declines
         to place), and pairing by position would then silently attach one
         value's box to another. Matching is by squashed text, assigned in
-        order, and a finding that draws no hint simply keeps `box=None` and
-        falls back to unconstrained search.
+        order; a finding that draws no hint simply keeps `box=None` and falls
+        back to unconstrained search, and a surplus box for a value becomes a
+        finding of its own (`attach_boxes`).
 
         A truncated pass 2 is a milder failure than a truncated pass 1 — the
         values are already known and simply lose their search constraint, which
@@ -1277,7 +1299,15 @@ def attach_boxes(
 
     Findings and hints are both consumed in order, so N occurrences of one
     value draw the model's N boxes for it in page order. Surplus findings
-    keep `box=None`; surplus hints are discarded."""
+    keep `box=None`.
+
+    **A surplus box for a value pass 1 named becomes a finding of its own**,
+    placed right after that value's last finding. Pass 1 lists each value once
+    and pass 2 boxes every printing, so dropping the extra boxes would leave
+    each repeat to the box-free document-wide search, which cannot reach a
+    printing with no OCR text (a second logo) or one damaged past exact
+    matching. A box for a value pass 1 never named is still discarded: pass 2
+    places values, it does not detect them."""
     pool: dict[str, list[tuple[int, int, int, int]]] = {}
     for hint in hints:
         if hint.box is None:
@@ -1285,12 +1315,16 @@ def attach_boxes(
         key, _ = squash_map(hint.text)
         pool.setdefault(key, []).append(hint.box)
 
+    keys = [squash_map(finding.text)[0] for finding in findings]
+    last = {key: i for i, key in enumerate(keys)}
     out = []
-    for finding in findings:
-        key, _ = squash_map(finding.text)
+    for i, (finding, key) in enumerate(zip(findings, keys)):
         boxes = pool.get(key)
         box = boxes.pop(0) if boxes else None
         out.append(replace(finding, box=box) if box is not None else finding)
+        if last[key] == i and boxes:
+            out.extend(replace(finding, box=extra) for extra in boxes)
+            boxes.clear()
     return out
 
 

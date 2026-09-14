@@ -21,7 +21,7 @@ from pii.core.text_llm import (
     windows,
 )
 from pii.core.vlm import PROMPT as VISION_PROMPT
-from pii.core.vlm import TYPE_MAP, Incomplete, VlmError
+from pii.core.vlm import TEXT_TYPE_MAP, TYPE_MAP, VISION_TYPE_MAP, Incomplete, VlmError
 
 
 def _qwen(url, timeout):
@@ -248,9 +248,12 @@ def test_both_prompts_name_exactly_the_mapped_classes():
     """The two prompts are deliberately separate strings (see text_llm's
     docstring), so nothing but this test stops their class vocabularies from
     drifting apart — and a class the model emits but TYPE_MAP does not know
-    silently collapses to IDENTIFIER_GENERIC."""
-    assert _classes(PROMPT) == set(TYPE_MAP)
-    assert _classes(VISION_PROMPT) == set(TYPE_MAP)
+    silently collapses to IDENTIFIER_GENERIC. They spell the classes
+    differently (vlm.VISION_TYPE_MAP), but must name the same five."""
+    assert _classes(PROMPT) == set(TEXT_TYPE_MAP)
+    assert set(re.findall(r"^\* ([A-Z_]+) :", VISION_PROMPT, re.M)) == set(VISION_TYPE_MAP)
+    assert sorted(TEXT_TYPE_MAP.values()) == sorted(VISION_TYPE_MAP.values())
+    assert TYPE_MAP == {**VISION_TYPE_MAP, **TEXT_TYPE_MAP}
 
 
 def test_text_prompt_asks_for_distinct_values_only():

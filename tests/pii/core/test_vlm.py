@@ -449,7 +449,7 @@ def test_detector_sends_image_and_prompt():
     assert [f.text for f in found] == ["A"]
     content = send.seen["payload"]["messages"][0]["content"]
     assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
-    assert "PII_IDENTIFIER" in content[1]["text"]
+    assert "* IDENTIFIER :" in content[1]["text"]
     # Determinism is a gate requirement, not a preference.
     assert send.seen["payload"]["temperature"] == 0.0
     assert send.seen["payload"]["top_k"] == 1
@@ -765,6 +765,65 @@ def test_attach_boxes_tolerates_a_mismatched_hint_count():
     out = attach_boxes(findings, hints)
     assert out[0].box is None
     assert out[1].box == (3, 3, 4, 4)
+
+
+def test_a_surplus_box_for_a_named_value_becomes_its_own_finding():
+    # Pass 1 names each value once; pass 2 boxes every printing. Each extra box
+    # is a printing the box-free document-wide search may not reach.
+    findings = [
+        VlmFinding(text="LOGO CO", entity_type="ORGANIZATION"),
+        VlmFinding(text="JANE CITIZEN", entity_type="PERSON"),
+    ]
+    hints = [
+        VlmFinding(text="LOGO CO", entity_type="PERSON", box=(1, 1, 2, 2)),
+        VlmFinding(text="logo co", entity_type="PERSON", box=(5, 5, 6, 6)),
+        VlmFinding(text="JANE CITIZEN", entity_type="PERSON", box=(3, 3, 4, 4)),
+        VlmFinding(text="not asked for", entity_type="PERSON", box=(9, 9, 9, 9)),
+    ]
+    out = attach_boxes(findings, hints)
+    # Right after the value's own finding, carrying pass 1's text and class.
+    assert [(f.text, f.entity_type, f.box) for f in out] == [
+        ("LOGO CO", "ORGANIZATION", (1, 1, 2, 2)),
+        ("LOGO CO", "ORGANIZATION", (5, 5, 6, 6)),
+        ("JANE CITIZEN", "PERSON", (3, 3, 4, 4)),
+    ]
+
+
+def test_surplus_boxes_follow_the_last_finding_of_a_value_named_twice():
+    findings = [
+        VlmFinding(text="A", entity_type="PERSON"),
+        VlmFinding(text="B", entity_type="PERSON"),
+        VlmFinding(text="A", entity_type="PERSON"),
+    ]
+    hints = [VlmFinding(text="A", entity_type="PERSON", box=(i, i, i, i)) for i in range(1, 4)]
+    assert [(f.text, f.box) for f in attach_boxes(findings, hints)] == [
+        ("A", (1, 1, 1, 1)), ("B", None), ("A", (2, 2, 2, 2)), ("A", (3, 3, 3, 3)),
+    ]
+
+
+def test_the_values_prompt_asks_for_each_value_once_and_the_box_prompt_for_every_printing():
+    # Without boxes, every printing is found after pass 1 (pass 2 and the
+    # document-wide search); with them, pass 1 is the only source of boxes.
+    from pii.core.vlm import PROMPT, _OUTPUT_BOXES, _OUTPUT_VALUES
+
+    assert "each distinct value once" in _OUTPUT_VALUES
+    assert "every place a value is printed" in _OUTPUT_BOXES
+    assert "occurrences" not in PROMPT
+
+
+def test_the_detection_prompt_leaves_the_model_no_keep_decision():
+    """Over-strip is recoverable, under-strip is a breach: an unsure value is
+    included, organizations and their web addresses too, and the keep list
+    filters later. A label is evidence, not part of the value."""
+    from pii.core.vlm import PROMPT
+
+    assert "When unsure whether to include something, include it" in PROMPT
+    # The word carries the model's own, narrower idea of personal information.
+    assert "PII" not in PROMPT
+    assert "web addresses" in PROMPT
+    assert "never the label" in PROMPT
+    lowered = PROMPT.lower()
+    assert not any(bank in lowered for bank in ("anz", "westpac", "nab "))
 
 
 def test_attach_boxes_matches_through_reformatting():

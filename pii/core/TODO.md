@@ -839,21 +839,18 @@ text tier's record is in [DONE.md](DONE.md).)
       production is, write it in the dependency table with its quant, and say so in the eval
       reports' headers. Cheap, and it stops the next comparison being between unknowns.
 
-- [ ] **Gemma 4: try a larger reasoning budget** *(Sergei, 2026-09-13)*.
-      - **Why:** on the first thinking-on `real/1` survival run (hybrid, pass 1 thinking,
-        grounding off, `DEFAULT_REASONING_BUDGET` 4096), **8 of 30 thinking replies were cut
-        off** by the budget. The one-page probes hit it too: 1.pdf p1 in hybrid, and both
-        pages tried in combined mode.
-      - **Baseline to beat:** recall 94.1%, gate PASS, 39 min for survival.
-      - **Ready to run** (2026-09-14; record in DONE.md): `--reasoning-budget` on `pii_eval
-        score` and `ground`, and each run prints how many passes reached the budget, per
-        document and in total. The 4096 baseline is worth re-taking with it first: the count
-        above came from a scratchpad wrapper, not this counter.
-      - **The run:** 8192 against 4096 on `real/1`, comparing recall, over-strip, how many
-        passes reach the budget, and wall time. `max_tokens` grows with the budget
-        automatically. `score --modality pdf` keeps each document's reasoning in
-        `stripped/<doc>.reasoning.txt`, so the traces of the two runs can be compared (copy
-        them aside between runs; the second overwrites the first).
+- [ ] **Gemma 4: the reasoning budget — lower, not higher** *(Sergei, 2026-09-13; direction
+      reversed 2026-09-14)*. The budget is reached by REPETITION, not by pages that need more
+      thinking: the first complete list is usually the answer and the rest restates it (DONE.md,
+      "Gemma 4 detection traces"). Prompt wording and a repeat penalty did not remove that
+      without damage.
+      - **Next (Sergei):** a budget roughly big enough for the first complete list, with a
+        softer cut-off message that tells the model it is done rather than stopped. Run it on
+        d01–d03 + d05 against V0 first, then on `real/1`.
+      - **The trade to watch:** every probe variant that shortened thinking misread a long
+        reference code that full-length traces read correctly. Part of the repetition is
+        re-reading.
+      - **A larger budget** (8192) stays untried; nothing now suggests it would help.
 
 - [ ] **Gemma 4: a re-sent request can answer differently** *(Sergei, 2026-09-13, scheduled on
       the same condition)*. The identical detect request gave 15 findings (349 tokens) or 13
@@ -871,6 +868,23 @@ text tier's record is in [DONE.md](DONE.md).)
         five cold runs measured. **But it has already moved a corpus result:** two `real/1`
         runs leaked `1/SK MANAGEMENT VICTORIA PTY LTD` on d10 in one run and not the other,
         although re-stripping d10 gives identical findings under both configurations.
+      - **Not only the fully cached case (2026-09-14):** the same detection requests on d01, sent
+        once by `pii_eval score` and again by `pii strip` an hour later with other requests
+        between, gave thinking traces that diverge on all four pages, 800–4,700 characters in,
+        each at a near-tie wording choice. Greedy decode is not reproducible across runs on
+        this server as served.
+      - **Then re-check MTP** *(Sergei, 2026-09-14, after the prompt tuning)*. A study of Gemma 4
+        12B and 26B-A4B on llama.cpp found MTP decoding byte-identical to standard decoding in
+        only 118 of 200 completions for 26B-A4B, at −0.83 points of quality
+        ([gemma-4-12B-it discussion 52](https://huggingface.co/google/gemma-4-12B-it/discussions/52)).
+        Our server runs the MTP drafter, and every Gemma 4 number in DONE.md was taken with
+        it on. Measure `real/1` with and without `-md`: byte-equality of replies, recall, wall
+        time.
+        - **And re-sweep `--spec-draft-n-max` with thinking on.** We kept n-max 2 from the
+          2026-09-13 sweep (flat from 2 to 4, slower at 6 with acceptance 81%), which appears to
+          predate thinking, so it timed short JSON answers. Detection now decodes ~4k-token
+          traces, and repetitive text drafts well: deeper drafts may pay where they did not. The
+          study above found N=6 still gaining, on an RTX 5070 Ti at Q4_0.
 
 - [ ] **De-flake the tier-1 gate / revisit `build.CRITICAL`** (2026-08-08; **re-measure before
       acting, 2026-08-12**). Under GLiNER2 the gate passed at seeds 42 and 1 and failed at 2, 3

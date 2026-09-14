@@ -3969,3 +3969,90 @@ the move; new completed tasks append to the matching section with their records.
       - **Dual coverage:** pytest only, suite 840 → 877. This is instrumentation and no
         detection behaviour changed, so there is no corpus probe to add. The first real
         numbers come from the budget run in TODO.md.
+
+- [x] **Gemma 4 detection traces, and the prompt they led to** *(Sergei, 2026-09-14)*. The first
+      reasoning traces saved by `--debug` (three documents, 13 pages, the 2026-08-13 prompt)
+      showed where the thinking went:
+      - **Repetition.** The first complete list was the final answer on 12 of 13 pages; the
+        rest restated it, up to six times. One late re-check found a missed number.
+      - **"All occurrences" was ambiguous.** Argued ~11 times in 4 pages and answered both
+        ways, and the repeats it did list lost their boxes in pass 2 (`without_box` 10 on one
+        document).
+      - **"PII" carried the model's own idea of personal information.** Company names, a
+        bank's address and web addresses were argued out as "not personal", differently per
+        page: the insurer's domain was excluded on 3 pages of one document and included on the
+        other 3.
+      - **Labels crept into values** ("ABN …", "AFSL …") on some pages and not others, with the
+        output format's "exact text as printed" cited as the reason.
+      - **Multi-line values** were argued over (line break or space), with no downstream effect.
+      - **A degenerate loop:** ~32k dots after a truncated company name (d05 p2), contained by
+        the budget.
+
+      **The change**, committed with this record:
+      - the boxless pass 1 asks for each distinct value once (`combined`/`vlm` still ask for
+        every printing), and `attach_boxes` turns surplus pass-2 boxes into findings;
+      - "when unsure, include it", covering organizations' names, numbers, addresses and web
+        addresses explicitly (Sergei: no exceptions, filter later);
+      - value-not-label restored, and one line for a multi-line value;
+      - no "PII" anywhere in the vision prompt, classes `NAME`/`DOB`/`ADDRESS`/`COMPANY`/
+        `IDENTIFIER` (Sergei's idea). The text prompt is unchanged.
+
+      The four sentences alone were run first and died in a power outage two documents in;
+      their traces showed the occurrence, label and web-address fixes working.
+
+      **`real/1`**, hybrid, detection `medium`, grounding `off`, budget 4096:
+
+      | | 2026-09-13 prompt | 2026-09-14 prompt |
+      |---|---|---|
+      | recall (leaks) | 94.1% (6) | **96.1% (4)** |
+      | gate | PASS | PASS |
+      | painted: fully covered / mean ink / partial | 190 / 94% / 10 | **193 / 95% / 10** |
+      | model boxes: boxed / ink contained / IoU | 156 / 69% / 58% | 178 / 77% / 54% |
+      | model boxes matching no truth | 185 | 256 |
+      | ORGANIZATION kept / over-stripped (of 24) | 5 / 19 | 0 / 24 |
+      | passes reaching the budget (survival / grounding) | 9 of 31 (wrapper) | 8 / 6 |
+      | survival + grounding | 39 + 41 min | 41.5 + 39 min |
+
+      - **Leaks.** Before: two truncated renderings of the customer's company name on d05, the
+        bare abbreviation of it on d06, d09 and d10, and a place name on d09. After: the
+        truncated one on d05 and the abbreviation on d06 and d10, plus a new place name on d01
+        (a suburb in a loan nickname, which the model now reads as part of the nickname where
+        it used to type it a name).
+      - **Over-strip rose as expected:** every institutional ABN, phone number and email is now
+        replaced. That is the keep list's job.
+      - **Box counts rose partly from bookkeeping** (surplus boxes are now findings), but the
+        ink share inside boxes rose too.
+
+      **Repetition experiments** on the same four documents (d01–d03, d05; 15 pages), with real
+      thinking tokens via `/tokenize` and a scratch runner, no product code:
+
+      | | thinking tokens | budget hits | seconds | findings |
+      |---|---|---|---|---|
+      | V0 (the new prompt) | 34.2k | 4 | 1131 | 202 |
+      | same prompt, corpus run | 37.3k | 6 | — | — |
+      | P: + a procedure ("once top to bottom, check once, answer") + four rules | 38.7k | 6 | 1076 | 197 |
+      | R: + `repeat_penalty` 1.08, last-n 4096, detection only | 27.5k (13 pages) | 0 | 914 | 170 |
+      | P + R | 30.4k | 0 | 1077 | 191 |
+
+      - **Noise is large.** The same prompt twice differed by 9% in tokens and 2 budget hits,
+        and single pages by up to 45%. **Greedy decode is not reproducible across runs** on
+        this server (TODO, "a re-sent request can answer differently"); the same request sent
+        twice in a row was.
+      - **P** did not shorten thinking, and the model did not follow the procedure. Its rule
+        for truncated text ("copy only the characters printed") removed the d05 dot loop.
+      - **R** skipped thinking on 2 pages (one came back empty), put labels back into values,
+        misread repeated digits in long codes, and dropped values. **P+R** thought on every
+        page but saved no wall time (lower MTP acceptance is a guess) and still misread codes.
+        The penalty is out.
+      - **Single-page probes** (d01 p1, then d05 p2; detection pass only) tried "Do not
+        overthink…", "Keep your thinking short", "Check your list once, then answer", Chain of
+        Draft, and "Do not write out a list you have already written".
+        - In the user prompt all were within noise; the last had no effect at all.
+        - As a system message, "Check your list once" cut 32% on d01 p1 (both runs) but made
+          d05 p2 52% longer, and two system variants triggered the dot loop the plain prompt
+          avoided there.
+        - **Every variant that shortened thinking misread a long reference code** that
+          full-length traces read correctly.
+
+      Tests 877 → 881. Traces and runner outputs: `sensitive/statements/1/exp-2026-09-14-repetition/`
+      (local only).

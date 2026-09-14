@@ -298,12 +298,16 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   asks for each DISTINCT value once, and `locator.locate_in_text` marks every occurrence of
   it. Do not "fix" the prompt to enumerate occurrences: finding a known string in a known
   string is exact and free, while a model's enumeration costs output budget and decays with
-  document length. The vision prompt asks for every occurrence only because each one needs
-  its own box.
+  document length. The vision path's boxless pass 1 asks for distinct values too; pass 2 boxes
+  every printing, and `vlm.attach_boxes` turns each surplus box into a finding, so never
+  discard those boxes again. Only the one-pass box prompt (`combined`, `vlm`) asks for every
+  printing, because it is the only source of boxes (2026-09-14).
 - **The two layer-0 prompts are separate strings but ONE class vocabulary.** `vlm.PROMPT` is
   frozen at the wording that was measured, so `text_llm.PROMPT` is a copy rather than a
-  splice — but both must name exactly the keys of `vlm.TYPE_MAP`, or a class the model emits
-  silently collapses to `IDENTIFIER_GENERIC`. Pinned by a test in `test_text_llm.py`.
+  splice — but both must name the same five classes, or a class the model emits silently
+  collapses to `IDENTIFIER_GENERIC`. The vision prompt spells them without "PII"
+  (`VISION_TYPE_MAP`, 2026-09-14) and the text prompt with it
+  (`TEXT_TYPE_MAP`, derived); `TYPE_MAP` accepts both. Pinned by a test in `test_text_llm.py`.
 - **Squash matching has a length floor; exact matching must not.** Squash collapses
   separators, so a short needle matches across word boundaries — tolerable on a page where
   the model's box constrains it, unbounded in page-wide text. Exact matching keeps no floor:
