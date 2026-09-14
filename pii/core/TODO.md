@@ -853,15 +853,14 @@ text tier's record is in [DONE.md](DONE.md).)
       - **A larger budget** (8192) stays untried; nothing now suggests it would help.
       - **Measured 2026-09-14:** budget 2048 with a soft cut-off message on `real/1` cost recall,
         96.1% → 92.2% (4 → 8 leaks, the fragile truncated names and place names), for 23% less
-        survival time. Keep 4096 until thinking itself improves.
+        survival time. Keep 4096 until thinking itself improves. Temperature sampling is out
+        too (DONE.md).
       - **Also run thinking OFF with the 2026-09-14 prompt** *(Sergei)*. The 90.2% / gate FAIL
         number is from the old prompt, and the prompt fixes (distinct values, labels, no
         "PII") do not depend on thinking.
 
 - [ ] **Layer-0 thinking: ideas raised 2026-09-14 and not yet scheduled.** Evidence for each is
       in DONE.md ("Gemma 4 detection traces") unless stated.
-      - **Sampling at temperature 0.6**, if Google's 1.0 (probe queued 2026-09-14) damages
-        transcription but helps the thinking.
       - **Grounding with thinking on, and the combined single pass, with the new prompt**
         *(Sergei: neither is ruled out)*.
       - **A repeat penalty inside the thinking only.** Needs a llama.cpp patch keyed on the

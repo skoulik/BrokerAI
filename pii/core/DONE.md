@@ -4056,3 +4056,30 @@ the move; new completed tasks append to the matching section with their records.
 
       Tests 877 → 881. Traces and runner outputs: `sensitive/statements/1/exp-2026-09-14-repetition/`
       (local only).
+
+- [x] **Gemma 4: a low reasoning budget and temperature sampling, both rejected** *(Sergei,
+      2026-09-14)*. The prompt of the entry above, detection thinking, `real/1`.
+      - **Budget 2048 with a softer cut-off message** ("I have analyzed the page and found the
+        values asked for. Now I will write the answer, including every value I found."),
+        picked because the first scan of a trace is short (median 381 tokens, p90 702, max 1074
+        over 31 pages):
+
+        | | budget 4096 | budget 2048 + soft message |
+        |---|---|---|
+        | recall (leaks) | 96.1% (4) | 92.2% (8) |
+        | painted: fully covered / mean ink / partial | 193 / 95% / 10 | 183 / 90% / 8 |
+        | model boxes: boxed / ink contained / IoU | 178 / 77% / 54% | 147 / 64% / 58% |
+        | passes reaching the budget (survival) | 8 | 18 |
+        | survival + grounding | 41.5 + 39 min | 32 + 33 min |
+
+        The four extra leaks are two truncated renderings of the customer's company name and a
+        place name plus an abbreviation on another document: the values the model picks up
+        late, on re-reading. On the four-document set, budgets 1024 and 1536 halved thinking
+        (−60% / −50% tokens) and the softer message changed no answer against the current one.
+      - **Temperature 1.0, top_p 0.95, top_k 64, seed 42** (Google's recommendation), single
+        page, detection only: thinking tokens unchanged (4447 against greedy's 4424, both at
+        the budget), verbatim repetition down from 32% to 2–4% of lines (paraphrase instead),
+        a long reference code misread in all three runs where greedy read it correctly, and
+        not reproducible even back to back despite the fixed seed (MTP's draft acceptance is
+        a guess at why). Greedy reproduced byte-identically across hours with a fully cached
+        prefix. 0.6 not run (Sergei).
