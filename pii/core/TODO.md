@@ -889,10 +889,24 @@ text tier's record is in [DONE.md](DONE.md).)
       `--spec-draft-n-max` changed 3 of 4 d01 detections between 2 and 3 (DONE.md,
       2026-09-15). `ModelFamily.prompt_cache` sidesteps the cache case for Gemma. MTP depth
       cannot be sidestepped that way: every setting is one particular set of outputs.
-      - **First, noise or bug.** Ask for the first generated token's top logprobs (`n_probs`)
-        on d01 p4 detection twice: evaluated in full, and fully cached (the case that skipped
-        thinking). Near-identical distributions with a near-tie at the top mean numerical
-        noise. Materially different ones mean a cache-restore bug worth reporting upstream.
+      - **Noise or bug: both (2026-09-15, d01 p4 detection, logprobs top 20).** Two kinds of
+        full hit (`cache_n` 1557, `prompt_n` 1) behave differently:
+        - A hit on the slot's own KV (the same request just before) is noise. Logprobs are
+          within 0.016 of a full evaluation, and the whole 755-token output is identical, MTP
+          on.
+        - A hit RESTORED from host memory (`--cache-ram`, after another page held the slot)
+          deviates up to 0.12 with MTP off, still choosing the same tokens. That is ~8x the
+          slot hit, so the restored KV is not bit-identical to the slot's.
+        - With MTP on it reproducibly closes the thought after "thought\n", 3 of 3, choosing
+          `<channel|>` at logprob −8.5 where the top candidate is −0.64. No numerical noise
+          explains an 8-nat choice under greedy verification. **This looks like a bug in MTP
+          speculation after a host-memory restore**, and it is what skipped thinking on s2/s3.
+        - Next: a minimal repro, ideally text-only. Check whether the drafter's state (the
+          Gemma 4 assistant shares the target's KV) survives a `--cache-ram` restore, and
+          whether verification then compares against the right logits. Then report upstream,
+          or patch on `brokerai-serving`.
+        - Probes: scratch `first_token_probe.py`, `hit_replay.py`, `reuse_replay.py`,
+          `restore_logprobs.py`; results in `sensitive/statements/1/exp-2026-09-15-determinism/`.
       - **Then localize it.** `llama-eval-callback` prints every operation's output. Evaluate
         one prompt as a single batch and as prefix plus last token, and compare the last
         position op by op; a text-only prompt should show the same effect. The expected first
