@@ -888,25 +888,33 @@ text tier's record is in [DONE.md](DONE.md).)
       alone and thinks differently, a 2-token prefix reuse changed grounding answers, and MTP's
       `--spec-draft-n-max` changed 3 of 4 d01 detections between 2 and 3 (DONE.md,
       2026-09-15). `ModelFamily.prompt_cache` sidesteps the cache case for Gemma. MTP depth
-      cannot be sidestepped that way: every setting is one particular set of outputs.
-      - **Noise or bug: both (2026-09-15, d01 p4 detection, logprobs top 20).** Two kinds of
-        full hit (`cache_n` 1557, `prompt_n` 1) behave differently:
-        - A hit on the slot's own KV (the same request just before) is noise. Logprobs are
-          within 0.016 of a full evaluation, and the whole 755-token output is identical, MTP
-          on.
-        - A hit RESTORED from host memory (`--cache-ram`, after another page held the slot)
-          deviates up to 0.12 with MTP off, still choosing the same tokens. That is ~8x the
-          slot hit, so the restored KV is not bit-identical to the slot's.
-        - With MTP on it reproducibly closes the thought after "thought\n", 3 of 3, choosing
-          `<channel|>` at logprob −8.5 where the top candidate is −0.64. No numerical noise
-          explains an 8-nat choice under greedy verification. **This looks like a bug in MTP
-          speculation after a host-memory restore**, and it is what skipped thinking on s2/s3.
-        - Next: a minimal repro, ideally text-only. Check whether the drafter's state (the
-          Gemma 4 assistant shares the target's KV) survives a `--cache-ram` restore, and
-          whether verification then compares against the right logits. Then report upstream,
-          or patch on `brokerai-serving`.
+      cannot be sidestepped that way: every setting is one particular set of outputs. What
+      remains after the restore bug below is the batch-shape noise itself (slot hit, 2-token
+      reuse, draft depth).
+      - **The restore discrepancy is a llama.cpp bug, found and fixed locally (2026-09-15).**
+        A full hit on the slot's own KV is noise: logprobs within 0.016, and the whole
+        755-token output identical. A full hit RESTORED from host memory (`--cache-ram`) was
+        not, because `llama_kv_cache::state_write` drops sliding-window cells that are masked
+        relative to the sequence's END. That was added upstream for checkpoints (`236531595`,
+        #23981) but applies to every per-sequence save. The prompt cache saves the slot WITH
+        its generated reply and restores only the prompt prefix, whose own window needs those
+        cells. `--swa-full` makes the server treat the model as non-SWA (`n_swa = 0`), so
+        nothing notices. Token-1 deviation after a restore grew with the tokens generated
+        before the save: 0.015 / 0.11 / 0.88 / 1.17 / 8.4 for 1 / 8 / 64 / 256 / 755. At 755
+        the model closed its thought at once, the "no thinking" pages; MTP was not involved.
+        - **Fix:** drop masked cells only for `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY` (checkpoints).
+          Mac branch `kv/swa-mask-partial-only` (`e422ce962`, off `002a12ad2`, unpushed), test
+          build `~/src/llama.cpp-swafix-test` (brokerai-serving + fix), launcher
+          `serve-swafix.sh`. Patched: 0.016 at 1, 64 and 755 generated, and the real request
+          restored byte-identical to a full evaluation, MTP on. Unpatched control: 61 tokens.
+          Upstream master (`7cf1c54a9`) still has both halves.
+        - **Open (Sergei):** report or PR upstream, merge into `brokerai-serving` and rebuild.
+          The fix makes host-memory entries larger for `--swa-full` models, since SWA cells
+          beyond the window are now kept. BrokerAI is unaffected either way while Gemma sends
+          `cache_prompt: false`.
         - Probes: scratch `first_token_probe.py`, `hit_replay.py`, `reuse_replay.py`,
-          `restore_logprobs.py`; results in `sensitive/statements/1/exp-2026-09-15-determinism/`.
+          `restore_logprobs.py`, `swa_window_probe.py`, `restore_replay.py`; results in
+          `sensitive/statements/1/exp-2026-09-15-determinism/`.
       - **Then localize it.** `llama-eval-callback` prints every operation's output. Evaluate
         one prompt as a single batch and as prefix plus last token, and compare the last
         position op by op; a text-only prompt should show the same effect. The expected first
