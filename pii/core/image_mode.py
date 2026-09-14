@@ -406,7 +406,7 @@ def strip_from_vlm(
     `grouping` is what the whole document knows (`pii.core.grouping`); with
     none given this page is treated as the whole document. It does two things
     here: every finding takes its group's elected class, so a value typed
-    PII_NAME on this page and PII_COMPANY on four others is treated the same
+    NAME on this page and COMPANY on four others is treated the same
     way everywhere, and every constituent of every group is searched against
     this page's OCR text — including values layer 0 never reported here, which
     is what stops a value detected on page 1 from leaking on page 4.
@@ -451,7 +451,7 @@ def strip_from_vlm(
     if grouping is None:
         grouping = group_findings([findings])
     # The elected class replaces the page's own, both directions. Deliberate
-    # (Sergei, 2026-08-11): a 10-to-1 majority for PII_COMPANY means it is a
+    # (Sergei, 2026-08-11): a 10-to-1 majority for COMPANY means it is a
     # company, and one page's slip should not fork the value into two
     # placeholders. The vote is reported so the operator can audit it.
     findings = [

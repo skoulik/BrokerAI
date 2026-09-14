@@ -23,9 +23,8 @@ The prompt below is a deliberate COPY of the vision one's structure rather than
 a shared string. `vlm.PROMPT` is frozen at the wording that was measured (see
 its comment), and splicing the two out of shared fragments would couple any
 future edit of one modality to the other. What must NOT drift is the class
-vocabulary: this prompt names the classes `vlm.TEXT_TYPE_MAP`'s way and the
-vision prompt `vlm.VISION_TYPE_MAP`'s, one derived from the other, and a test
-pins each prompt to its own spelling.
+vocabulary, and that is pinned by a test asserting both prompts name exactly
+the keys of `vlm.TYPE_MAP`.
 """
 
 from __future__ import annotations
@@ -72,24 +71,24 @@ DEFAULT_TIMEOUT = 600
 # "can a deterministic recognizer re-derive this class from the string alone?"
 # Identifiers can — that is layer 1's job, and the model is measurably
 # unreliable at typing them — names, addresses, companies and dates cannot.
-PROMPT = """You are auditing an Australian financial document for personally \
-identifying information, so that it can be pseudonymized before leaving a secure network.
+PROMPT = """You are auditing an Australian financial document, so that it can be \
+pseudonymized before leaving a secure network.
 
 Report EVERY span of text in the document below that could identify a person or an \
 organization, or that ties the document to a particular customer. Be exhaustive: a missed \
-identifier is a privacy breach. When in doubt, report it - reporting too much is harmless \
+value cannot be recovered later. When in doubt, report it - reporting too much is harmless \
 and corrected later, missing something is not.
 
 Use these types:
-  - PII_NAME        a person's name, full or partial
-  - PII_ADDRESS     a postal address or any part of one (street line, suburb/state/postcode)
-  - PII_COMPANY     the name of a company or organization
-  - PII_DOB         a person's date of birth
-  - PII_IDENTIFIER  any number or code identifying a person, organization or account -
-                    account and customer numbers, BSB, card numbers, tax file numbers,
-                    Medicare, ABN/ACN, membership and loyalty numbers, policy, reference
-                    and claim numbers, phone numbers, email addresses, licence and
-                    passport numbers
+  - NAME        a person's name, full or partial
+  - ADDRESS     a postal address or any part of one (street line, suburb/state/postcode)
+  - COMPANY     the name of a company or organization
+  - DOB         a person's date of birth
+  - IDENTIFIER  any number or code identifying a person, organization or account -
+                account and customer numbers, BSB, card numbers, tax file numbers,
+                Medicare, ABN/ACN, membership and loyalty numbers, policy, reference
+                and claim numbers, phone numbers, email addresses, licence and
+                passport numbers
 
 Monetary amounts, transaction dates, interest rates and balances are NOT identifiers - do \
 not report them.

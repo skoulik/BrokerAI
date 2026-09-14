@@ -1229,8 +1229,7 @@ boundaries to make that the common case.
 The two prompts are deliberately separate strings rather than spliced from shared fragments:
 `vlm.PROMPT` is frozen at the wording that was measured, and sharing would couple any future
 edit of one modality to the other. What must not drift is the class vocabulary, and that is
-pinned by a test asserting each prompt names exactly its own spelling of the same five classes
-(`vlm.VISION_TYPE_MAP` without "PII", `vlm.TEXT_TYPE_MAP` with it).
+pinned by a test asserting both prompts name exactly the keys of `vlm.TYPE_MAP`.
 
 **Text layer 0 is the only text detector since 2026-08-09**, when the A/B against GLiNER2
 retired layer 2 (that decision above carries the numbers). `--detector` went with it: there is
@@ -1413,8 +1412,7 @@ independently of the warning: Python's default filter deduplicates an identical 
 the same line, so a second page with the same residue would otherwise be silent.
 
 **The class vocabulary is coarse on purpose.** The model emits five classes
-(`NAME`/`ADDRESS`/`COMPANY`/`DOB`/`IDENTIFIER`; the text prompt still prefixes them `PII_`),
-cut along one test: *can
+(`NAME`/`ADDRESS`/`COMPANY`/`DOB`/`IDENTIFIER`), cut along one test: *can
 a deterministic recognizer re-derive this class from the string alone?* Identifiers can (regex
 + checksum), and the VLM is measurably unreliable at it — the same value came back
 `CREDIT_CARD` in one run and `AU_BANK_ACCOUNT` in another. Names, addresses, companies and
@@ -1558,7 +1556,7 @@ differently once), ties broken by class priority — `PERSON > IDENTIFIER_GENERI
 DATE_OF_BIRTH > ORGANIZATION`, whose only load-bearing positions are PERSON first and
 ORGANIZATION last, it being the one class layer 0 emits that is *kept* by default. The
 elected class then replaces every member's own, in both directions. A monotonic variant was
-considered and rejected (Sergei, 2026-08-11): if `PII_COMPANY` wins 10-to-1 the odds are it is
+considered and rejected (Sergei, 2026-08-11): if `COMPANY` wins 10-to-1 the odds are it is
 a company, and refusing to relabel would also fork one value into two placeholders.
 
 So this is **the first mechanism in the tool that can un-redact something a per-page run would

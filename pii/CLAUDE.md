@@ -305,9 +305,8 @@ items move to [core/DONE.md](core/DONE.md) with their records.
 - **The two layer-0 prompts are separate strings but ONE class vocabulary.** `vlm.PROMPT` is
   frozen at the wording that was measured, so `text_llm.PROMPT` is a copy rather than a
   splice — but both must name the same five classes, or a class the model emits silently
-  collapses to `IDENTIFIER_GENERIC`. The vision prompt spells them without "PII"
-  (`VISION_TYPE_MAP`, 2026-09-14) and the text prompt with it
-  (`TEXT_TYPE_MAP`, derived); `TYPE_MAP` accepts both. Pinned by a test in `test_text_llm.py`.
+  collapses to `IDENTIFIER_GENERIC`. The names never say "PII" (2026-09-14). Pinned by a test
+  in `test_text_llm.py`.
 - **Squash matching has a length floor; exact matching must not.** Squash collapses
   separators, so a short needle matches across word boundaries — tolerable on a page where
   the model's box constrains it, unbounded in page-wide text. Exact matching keeps no floor:

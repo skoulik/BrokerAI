@@ -73,8 +73,8 @@ def _transport(content: str, model: str | None = QWEN):
 
 def test_parses_plain_array():
     found = parse_findings(
-        '[{"text": "Sergei Kulik", "type": "PII_NAME"},'
-        ' {"text": "162-097111-4", "type": "PII_IDENTIFIER"}]'
+        '[{"text": "Sergei Kulik", "type": "NAME"},'
+        ' {"text": "162-097111-4", "type": "IDENTIFIER"}]'
     )
     assert [f.text for f in found] == ["Sergei Kulik", "162-097111-4"]
     assert [f.entity_type for f in found] == ["PERSON", "IDENTIFIER_GENERIC"]
@@ -83,7 +83,7 @@ def test_parses_plain_array():
 
 def test_parses_through_code_fence_and_prose():
     found = parse_findings(
-        'Here you go:\n```json\n[{"text": "ANZ", "type": "PII_COMPANY"}]\n```'
+        'Here you go:\n```json\n[{"text": "ANZ", "type": "COMPANY"}]\n```'
     )
     assert [(f.text, f.entity_type) for f in found] == [("ANZ", "ORGANIZATION")]
 
@@ -93,7 +93,7 @@ def test_strips_thinking_block_containing_a_bracket():
     # otherwise capture the JSON scanner.
     raw = (
         "<think>the account [sic] looks like 162-0</think>"
-        '[{"text": "162-097111-4", "type": "PII_IDENTIFIER"}]'
+        '[{"text": "162-097111-4", "type": "IDENTIFIER"}]'
     )
     assert [f.text for f in parse_findings(raw)] == ["162-097111-4"]
 
@@ -105,7 +105,7 @@ def test_unknown_type_falls_back_to_generic():
 
 def test_box_is_normalized_and_ordered():
     (found,) = parse_findings(
-        '[{"text": "a", "type": "PII_NAME", "bbox_2d": [90, 80, 10, 20]}]'
+        '[{"text": "a", "type": "NAME", "bbox_2d": [90, 80, 10, 20]}]'
     )
     assert found.box == (10, 20, 90, 80)
 
@@ -113,7 +113,7 @@ def test_box_is_normalized_and_ordered():
 def test_malformed_box_is_dropped_but_finding_survives():
     # A bad box must not lose the detection — it can still be located via OCR.
     (found,) = parse_findings(
-        '[{"text": "a", "type": "PII_NAME", "bbox_2d": ["x", 1, 2, 3]}]'
+        '[{"text": "a", "type": "NAME", "bbox_2d": ["x", 1, 2, 3]}]'
     )
     assert found.text == "a" and found.box is None
 
@@ -126,7 +126,7 @@ def test_non_ascii_digits_fold_to_ascii():
     # A clean render once decoded U+06F5 for '5': visually identical, breaks
     # value matching and checksums by string identity.
     assert fold_digits("162-09711۵") == "162-097115"
-    (found,) = parse_findings('[{"text": "۵۵۵", "type": "PII_IDENTIFIER"}]')
+    (found,) = parse_findings('[{"text": "۵۵۵", "type": "IDENTIFIER"}]')
     assert found.text == "555"
 
 
@@ -154,8 +154,8 @@ def test_a_clean_page_is_not_an_incomplete_one():
 
 def test_a_cut_off_array_is_counted_as_truncated_not_read_as_empty():
     body = (
-        '[{"text": "A", "type": "PII_NAME"}, '
-        '{"text": "B", "type": "PII_NAME"}, {"text": "C'
+        '[{"text": "A", "type": "NAME"}, '
+        '{"text": "B", "type": "NAME"}, {"text": "C'
     )
     result = read_response(_reply(body, finish_reason="length"))
     assert result.incomplete == Incomplete(truncated=1)
@@ -165,8 +165,8 @@ def test_a_cut_off_array_keeps_the_entries_that_completed():
     # The whole point of salvaging: a dense page that hit the budget after N
     # findings used to contribute none of them.
     body = (
-        '[{"text": "A", "type": "PII_NAME"}, '
-        '{"text": "B", "type": "PII_COMPANY"}, {"text": "C'
+        '[{"text": "A", "type": "NAME"}, '
+        '{"text": "B", "type": "COMPANY"}, {"text": "C'
     )
     result = read_response(_reply(body, finish_reason="length"))
     assert [(f.text, f.entity_type) for f in result.findings] == [
@@ -178,7 +178,7 @@ def test_a_cut_off_array_keeps_the_entries_that_completed():
 def test_a_repetition_loop_collapses_to_one_finding():
     # Hundreds of copies of one value would otherwise arrive as hundreds of
     # separate "unredacted detection" warnings and bury the report.
-    entry = '{"text": "AT06667873802666", "type": "PII_IDENTIFIER"}'
+    entry = '{"text": "AT06667873802666", "type": "IDENTIFIER"}'
     body = "[" + ", ".join([entry] * 200) + ', {"text": "AT066'
     result = read_response(_reply(body, finish_reason="length"))
     assert [f.text for f in result.findings] == ["AT06667873802666"]
@@ -198,7 +198,7 @@ def test_repeats_that_differ_by_box_are_kept_apart_when_salvaging():
 
 def test_commas_inside_an_entry_are_not_salvage_cut_points():
     # Cutting at the comma before "type" would truncate the object itself.
-    body = '[{"text": "A", "type": "PII_NAME"}, {"text": "B", "type'
+    body = '[{"text": "A", "type": "NAME"}, {"text": "B", "type'
     result = read_response(_reply(body, finish_reason="length"))
     assert [f.text for f in result.findings] == ["A"]
 
@@ -213,7 +213,7 @@ def test_a_complete_answer_at_the_budget_is_not_called_truncated():
     # The array closed, so everything meaningful arrived; whatever the budget
     # cut was trailing.
     result = read_response(
-        _reply('[{"text": "A", "type": "PII_NAME"}]', finish_reason="length")
+        _reply('[{"text": "A", "type": "NAME"}]', finish_reason="length")
     )
     assert not result.incomplete
     assert len(result.findings) == 1
@@ -249,7 +249,7 @@ def test_a_trace_that_reached_the_budget_is_counted_but_is_not_a_hole():
     from pii.core.vlm import REASONING_CUTOFF
 
     result = read_response(_thinking_reply(
-        '[{"text": "A", "type": "PII_NAME"}]',
+        '[{"text": "A", "type": "NAME"}]',
         "Looking at the page, row by row" + REASONING_CUTOFF,
     ))
     assert result.incomplete.reasoning_budget_hit == 1
@@ -286,7 +286,7 @@ def test_an_inline_trace_is_read_when_the_server_does_not_split_it():
 
     result = read_response(_reply(
         "<|channel>thought\nrows [1] and [2]" + REASONING_CUTOFF + "<channel|>"
-        '[{"text": "A", "type": "PII_NAME"}]'
+        '[{"text": "A", "type": "NAME"}]'
     ))
     (trace,) = result.reasoning
     assert trace.text.startswith("rows [1] and [2]") and trace.budget_hit
@@ -297,7 +297,7 @@ def test_a_truncated_answer_after_a_cut_off_trace_counts_both():
     from pii.core.vlm import REASONING_CUTOFF
 
     result = read_response(_thinking_reply(
-        '[{"text": "A", "type": "PII_NAME"}, {"te', REASONING_CUTOFF,
+        '[{"text": "A", "type": "NAME"}, {"te', REASONING_CUTOFF,
         finish_reason="length",
     ))
     assert result.incomplete == Incomplete(truncated=1, reasoning_budget_hit=1)
@@ -314,7 +314,7 @@ def test_each_pass_labels_its_own_trace():
     def transport(url, payload, timeout):
         calls.append(payload)
         return _thinking_reply(
-            '[{"text": "A", "type": "PII_NAME", "bbox_2d": [1, 2, 3, 4]}]',
+            '[{"text": "A", "type": "NAME", "bbox_2d": [1, 2, 3, 4]}]',
             f"thinking, call {len(calls)}",
         )
 
@@ -442,7 +442,7 @@ def test_grammar_writes_a_backslash_as_a_hex_escape():
 
 
 def test_detector_sends_image_and_prompt():
-    send = _transport('[{"text": "A", "type": "PII_NAME"}]')
+    send = _transport('[{"text": "A", "type": "NAME"}]')
     det = VlmDetector(url="http://x:1", transport=send, served_model=_qwen)
     found = det.detect(Image.new("RGB", (8, 8), "white")).findings
 
@@ -579,7 +579,7 @@ def test_an_unresolved_order_never_reaches_a_prompt():
 
 def test_a_y_first_box_leaves_the_parser_x_first():
     (found,) = parse_findings(
-        '[{"text": "a", "type": "PII_NAME", "bbox_2d": [20, 10, 40, 30]}]',
+        '[{"text": "a", "type": "NAME", "bbox_2d": [20, 10, 40, 30]}]',
         box_order="yxyx",
     )
     assert found.box == (10, 20, 30, 40)
@@ -588,7 +588,7 @@ def test_a_y_first_box_leaves_the_parser_x_first():
 def test_a_y_first_box_is_normalized_after_the_swap():
     # Swap first, then order the corners — not the other way round.
     (found,) = parse_findings(
-        '[{"text": "a", "type": "PII_NAME", "bbox_2d": [40, 30, 20, 10]}]',
+        '[{"text": "a", "type": "NAME", "bbox_2d": [40, 30, 20, 10]}]',
         box_order="yxyx",
     )
     assert found.box == (10, 20, 30, 40)
@@ -615,7 +615,7 @@ def test_an_explicit_order_is_what_is_asked_and_read_whatever_the_model():
 def test_hybrid_learns_the_model_from_pass_one_without_asking_the_server():
     # Pass 1 carries no boxes, but its reply names the model: pass 2's prompt is
     # chosen from that, at no extra request.
-    detect = _transport('[{"text": "A. Person", "type": "PII_NAME"}]', GEMMA)
+    detect = _transport('[{"text": "A. Person", "type": "NAME"}]', GEMMA)
     # Thinking off on pass 1: a thinking request needs the family BEFORE it goes
     # out (see test_thinking_asks_the_server_before_pass_one).
     det = VlmDetector(transport=detect, served_model=_explode, reasoning_effort="off")
@@ -653,7 +653,7 @@ def test_an_unplaceable_model_is_refused_before_a_boxed_request_is_sent():
 
 
 def test_an_unplaceable_model_named_by_pass_one_is_refused_without_asking_again():
-    detect = _transport('[{"text": "A", "type": "PII_NAME"}]', "/models/mystery.gguf")
+    detect = _transport('[{"text": "A", "type": "NAME"}]', "/models/mystery.gguf")
     det = VlmDetector(transport=detect, served_model=_explode, reasoning_effort="off")
     # A boxless pass runs against any model: there is nothing to misread.
     (found,) = det.detect(_WHITE).findings
@@ -1460,18 +1460,18 @@ def test_forced_open_thinking_is_stripped_from_a_body():
     # stripped nothing, the JSON scanner latched onto a "[" inside the
     # reasoning, and parse_findings returned [] -- a CLEAN PAGE.
     raw = ('Reading the page. I see [account] numbers.</think>\n\n'
-           '[{"text": "SERGEI KULIK", "type": "PII_NAME"}]')
+           '[{"text": "SERGEI KULIK", "type": "NAME"}]')
     assert [f.text for f in parse_findings(raw)] == ["SERGEI KULIK"]
 
 
 def test_a_matched_think_pair_is_still_stripped():
     raw = ('<think>reasoning with [brackets]</think>\n'
-           '[{"text": "SERGEI KULIK", "type": "PII_NAME"}]')
+           '[{"text": "SERGEI KULIK", "type": "NAME"}]')
     assert [f.text for f in parse_findings(raw)] == ["SERGEI KULIK"]
 
 
 def test_a_reply_with_no_thinking_at_all_is_untouched():
-    raw = '[{"text": "SERGEI KULIK", "type": "PII_NAME"}]'
+    raw = '[{"text": "SERGEI KULIK", "type": "NAME"}]'
     assert [f.text for f in parse_findings(raw)] == ["SERGEI KULIK"]
 
 
@@ -1493,7 +1493,7 @@ def _payloads(calls: int = 2, **kwargs) -> list[dict]:
 
     def transport(url, payload, timeout):
         sent.append(payload)
-        body = '[{"text": "A", "type": "PII_NAME"}]' if len(sent) == 1 else '[]'
+        body = '[{"text": "A", "type": "NAME"}]' if len(sent) == 1 else '[]'
         return _reply(body, model=reply_model)
 
     kwargs.setdefault("served_model", _qwen)
@@ -1598,11 +1598,11 @@ def test_a_reply_from_another_family_than_a_thinking_request_is_refused():
 
 def test_a_gemma_thought_channel_is_stripped_from_a_body():
     raw = ('<|channel>thought\nReading [account] numbers.<channel|>'
-           '[{"text": "SERGEI KULIK", "type": "PII_NAME"}]')
+           '[{"text": "SERGEI KULIK", "type": "NAME"}]')
     assert [f.text for f in parse_findings(raw)] == ["SERGEI KULIK"]
     # The opening half can be missing from a body a caller cut, as with Qwen.
     raw = ('Reading [account] numbers.<channel|>'
-           '[{"text": "SERGEI KULIK", "type": "PII_NAME"}]')
+           '[{"text": "SERGEI KULIK", "type": "NAME"}]')
     assert [f.text for f in parse_findings(raw)] == ["SERGEI KULIK"]
 
 

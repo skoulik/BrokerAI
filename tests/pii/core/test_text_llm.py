@@ -21,7 +21,7 @@ from pii.core.text_llm import (
     windows,
 )
 from pii.core.vlm import PROMPT as VISION_PROMPT
-from pii.core.vlm import TEXT_TYPE_MAP, TYPE_MAP, VISION_TYPE_MAP, Incomplete, VlmError
+from pii.core.vlm import TYPE_MAP, Incomplete, VlmError
 
 
 def _qwen(url, timeout):
@@ -101,7 +101,7 @@ def test_window_without_line_breaks_still_advances():
 
 
 def test_detect_parses_and_returns_findings():
-    send = _transport(_findings(("Sergei Kulik", "PII_NAME")))
+    send = _transport(_findings(("Sergei Kulik", "NAME")))
     found = TextDetector(transport=send, served_model=_qwen).detect(
         "Account holder: Sergei Kulik"
     ).findings
@@ -135,7 +135,7 @@ def test_detect_deduplicates_the_same_value_across_windows():
     (value, type) pairs may survive, or every occurrence would be planned
     several times."""
     text = "".join(f"line {i}\n" for i in range(1000))
-    send = _transport(_findings(("Sergei Kulik", "PII_NAME")))
+    send = _transport(_findings(("Sergei Kulik", "NAME")))
     found = TextDetector(transport=send, served_model=_qwen).detect(text).findings
     assert len(send.calls) > 1  # genuinely windowed
     assert [(f.text, f.entity_type) for f in found] == [
@@ -146,8 +146,8 @@ def test_detect_deduplicates_the_same_value_across_windows():
 def test_detect_keeps_distinct_values_from_different_windows():
     text = "".join(f"line {i}\n" for i in range(1000))
     send = _transport(
-        _findings(("Sergei Kulik", "PII_NAME")),
-        _findings(("Olga Kulik", "PII_NAME")),
+        _findings(("Sergei Kulik", "NAME")),
+        _findings(("Olga Kulik", "NAME")),
     )
     found = TextDetector(transport=send, served_model=_qwen).detect(text).findings
     assert {f.text for f in found} == {"Sergei Kulik", "Olga Kulik"}
@@ -174,7 +174,7 @@ def test_a_cut_off_window_is_counted_and_its_findings_kept():
                 {
                     "message": {
                         "content": '[{"text": "Sergei Kulik", '
-                                   '"type": "PII_NAME"}, {"text": "Olga'
+                                   '"type": "NAME"}, {"text": "Olga'
                     },
                     "finish_reason": "length",
                 }
@@ -198,7 +198,7 @@ def test_incomplete_windows_are_summed_not_reset():
             "choices": [
                 {
                     "message": {
-                        "content": '[{"text": "A", "type": "PII_NAME"}, {"te'
+                        "content": '[{"text": "A", "type": "NAME"}, {"te'
                     },
                     "finish_reason": "length",
                 }
@@ -241,19 +241,27 @@ def test_the_text_path_speaks_each_model_familys_thinking_protocol():
 
 
 def _classes(prompt: str) -> set[str]:
-    return set(re.findall(r"\bPII_[A-Z]+\b", prompt))
+    """The class names a prompt's type list introduces: `* NAME :` in the vision
+    prompt, `  - NAME   a person's...` in the text one."""
+    return set(re.findall(r"^\s*[-*] ([A-Z]+)(?: :|\s{2,})", prompt, re.M))
 
 
 def test_both_prompts_name_exactly_the_mapped_classes():
     """The two prompts are deliberately separate strings (see text_llm's
     docstring), so nothing but this test stops their class vocabularies from
     drifting apart — and a class the model emits but TYPE_MAP does not know
-    silently collapses to IDENTIFIER_GENERIC. They spell the classes
-    differently (vlm.VISION_TYPE_MAP), but must name the same five."""
-    assert _classes(PROMPT) == set(TEXT_TYPE_MAP)
-    assert set(re.findall(r"^\* ([A-Z_]+) :", VISION_PROMPT, re.M)) == set(VISION_TYPE_MAP)
-    assert sorted(TEXT_TYPE_MAP.values()) == sorted(VISION_TYPE_MAP.values())
-    assert TYPE_MAP == {**VISION_TYPE_MAP, **TEXT_TYPE_MAP}
+    silently collapses to IDENTIFIER_GENERIC."""
+    assert _classes(PROMPT) == set(TYPE_MAP)
+    assert _classes(VISION_PROMPT) == set(TYPE_MAP)
+
+
+def test_neither_prompt_frames_the_task_as_personal_information():
+    """The word brings the model's own, narrower idea of personal information,
+    and it argued organizations and web addresses out of it (2026-09-14)."""
+    for prompt in (PROMPT, VISION_PROMPT):
+        assert "PII" not in prompt
+        assert "personal" not in prompt.lower()
+        assert "privacy" not in prompt.lower()
 
 
 def test_text_prompt_asks_for_distinct_values_only():

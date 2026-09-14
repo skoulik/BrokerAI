@@ -36,7 +36,7 @@ The failure mode does not transfer.
 
 **The vote is a two-way decision, and that is deliberate** (Sergei,
 2026-08-11). The elected class replaces every member's own class, so a value
-reported as PII_COMPANY on ten pages and PII_NAME on one is treated as a
+reported as COMPANY on ten pages and NAME on one is treated as a
 company everywhere — including on the page that named a person. This is the
 first mechanism in the tool that can *un-redact* something a per-page run would
 have redacted, which is why `EntityGroup.votes` is carried into the CLI report:

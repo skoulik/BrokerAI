@@ -79,19 +79,16 @@ from typing import Callable, Protocol
 # string alone?" - identifiers can (regex + checksum, layer 1's job, and the VLM
 # is measurably unreliable at it), names/addresses/companies/dates cannot.
 #
-# Two spellings of the same five classes. The vision prompt names them plainly and
-# never says "PII" (2026-09-14): Gemma 4 read "PII" as personal information and
-# argued organizations, their addresses and web addresses out of it page by page. The text prompt keeps the PII_ names until that is measured there
-# too. Both are accepted, and the text spelling is derived, so neither can drift.
-VISION_TYPE_MAP = {
+# The class names never say "PII" (2026-09-14): Gemma 4 read "PII" as personal
+# information and argued organizations, their addresses and web addresses out of it
+# page by page. Both prompts use these names.
+TYPE_MAP = {
     "NAME": "PERSON",
     "ADDRESS": "ADDRESS",
     "COMPANY": "ORGANIZATION",
     "DOB": "DATE_OF_BIRTH",
     "IDENTIFIER": "IDENTIFIER_GENERIC",
 }
-TEXT_TYPE_MAP = {f"PII_{name}": entity for name, entity in VISION_TYPE_MAP.items()}
-TYPE_MAP = {**VISION_TYPE_MAP, **TEXT_TYPE_MAP}
 
 # The model server usually runs on another machine (a Mac with enough unified
 # memory), so the localhost default is rarely right. PII_VLM_URL saves passing
@@ -230,7 +227,7 @@ FAMILIES = (QWEN, GEMMA)
 #  - identifiers-live-anywhere + naming "insurance policy, reference or claim"
 #    (measured): a policy number rendered as a bold heading was missed until both
 #    were present;
-#  - no "PII" anywhere in the wording (2026-09-14, see VISION_TYPE_MAP): the word
+#  - no "PII" anywhere in the wording (2026-09-14, see TYPE_MAP): the word
 #    carries the model's own idea of personal information, which is narrower than
 #    what this tool strips;
 #  - no exceptions for organizations, and "when unsure, include it": over-strip is

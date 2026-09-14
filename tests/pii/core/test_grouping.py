@@ -155,7 +155,7 @@ def test_the_vote_counts_individual_detections_not_surface_forms():
 
 
 def test_the_majority_wins_in_the_un_redacting_direction_too():
-    # Deliberate (Sergei, 2026-08-11): if PII_COMPANY wins 10-to-1 the odds
+    # Deliberate (Sergei, 2026-08-11): if COMPANY wins 10-to-1 the odds
     # are it is a company. The page that read a person is relabelled with the
     # rest — which is why the tally is reported.
     pages = [[("BUDGET DIRECT", "ORGANIZATION")] for _ in range(10)]
