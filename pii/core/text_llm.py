@@ -82,7 +82,7 @@ and corrected later, missing something is not.
 Use these types:
   - NAME        a person's name, full or partial
   - ADDRESS     a postal address or any part of one (street line, suburb/state/postcode)
-  - COMPANY     the name of a company or organization
+  - COMPANY     the name of a company, organization, trust or fund, or of a brand
   - DOB         a person's date of birth
   - IDENTIFIER  any number or code identifying a person, organization or account -
                 account and customer numbers, BSB, card numbers, tax file numbers,
@@ -90,8 +90,8 @@ Use these types:
                 and claim numbers, phone numbers, email addresses, licence and
                 passport numbers
 
-Monetary amounts, transaction dates, interest rates and balances are NOT identifiers - do \
-not report them.
+Monetary amounts, transaction dates, interest rates, balances, page numbers and statement \
+numbers are NOT identifiers - do not report them.
 
 Identifiers appear anywhere in the document, not only as the value of a labelled field. A \
 heading, title, footer, prose sentence or table row may itself contain an identifier, with \

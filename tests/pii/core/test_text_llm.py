@@ -255,6 +255,20 @@ def test_both_prompts_name_exactly_the_mapped_classes():
     assert _classes(VISION_PROMPT) == set(TYPE_MAP)
 
 
+def test_both_prompts_settle_the_decisions_the_traces_kept_re_deciding():
+    """Gemma re-argued these on page after page (2026-09-14). Sergei's calls: a
+    trust, fund or brand is a COMPANY; page and statement numbers are not
+    identifiers. Settled in the definitions, not as extra rules."""
+    for prompt in (PROMPT, VISION_PROMPT):
+        (company,) = [line for line in prompt.splitlines() if re.match(r"^\s*[-*] COMPANY\b", line)]
+        for word in ("trust", "fund", "brand"):
+            assert word in company, word
+        for word in ("product", "service"):
+            assert word not in company, word
+        assert "page numbers" in prompt and "statement numbers" in prompt
+    assert '"ABN 12 345 678 901" the value is "12 345 678 901"' in VISION_PROMPT
+
+
 def test_neither_prompt_frames_the_task_as_personal_information():
     """The word brings the model's own, narrower idea of personal information,
     and it argued organizations and web addresses out of it (2026-09-14)."""

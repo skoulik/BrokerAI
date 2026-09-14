@@ -4083,3 +4083,43 @@ the move; new completed tasks append to the matching section with their records.
         not reproducible even back to back despite the fixed seed (MTP's draft acceptance is
         a guess at why). Greedy reproduced byte-identically across hours with a fully cached
         prefix. 0.6 not run (Sergei).
+
+- [x] **The COMPANY definition, and thinking off on the new prompt** *(Sergei, 2026-09-14/15)*.
+      Mining 31 pages of traces under the prompt of `224fead` for lines where the model argues
+      with itself (about 280) found these topics still re-decided page by page: brands, products
+      and services as COMPANY (BPAY, VISA, PayPal, Qantas, "Group Card Services"), whether a
+      trust is a name or a company, statement numbers, and the label on ABNs. Sergei's calls:
+      trusts and funds are COMPANY, brands are COMPANY, page and statement numbers are out, and
+      the label example becomes an ABN, all written into the existing definitions rather than
+      as new rules.
+
+      **`real/1`**, hybrid, thinking in detection, budget 4096 unless stated:
+
+      | COMPANY covers | recall (leaks) | gate | painted: covered / mean / partial | model boxes: boxed / contain / IoU | paint on a truth box | survival + grounding |
+      |---|---|---|---|---|---|---|
+      | company, organization (`224fead`) | 96.1% (4) | PASS | 193 / 95% / 10 | 178 / 77% / 54% | ~29% | 41.5 + 39 min |
+      | + trust, fund, brand, service | 96.1% (4) | PASS | 191 / 94% / 10 | 160 / 69% / 53% | — | 42.7 + 40.5 min |
+      | + trust, fund, brand, product, service | 93.1% (7) | PASS | 191 / 94% / 8 | 142 / 63% / 58% | 26% | 40.6 + 38 min |
+      | **+ trust, fund, brand** | **96.1% (4)** | PASS | **191 / 94% / 8** | **167 / 73% / 56%** | 28% | 43 + 40 min |
+      | + trust, fund, brand, service — **thinking off** | 89.2% (11) | **FAIL** | 176 / 87% / 9 | 138 / 60% / 56% | 28% | 15 + 10 min |
+
+      - **Leaks.** The bare abbreviation "SK" on d06 and d10 leaks in every run. The rest
+        swing between runs of equal count: the two 96.1% runs with thinking shared only two
+        leaks. Products leaked the union of both plus a truncated company name on d05.
+        Brands-only leaked two place names plus the "SK" pair and caught every truncated
+        company name.
+      - **What each wording did to the traces** (argument lines, 31 pages): statement numbers
+        12 → 4; the trust question stopped being a question ("It's a trust. I'll include it
+        as COMPANY"), though the model then repeated that sentence up to six times; "brand or
+        service" doubled the brand argument (21 → 42) by moving it to brand-versus-product
+        ("AMPLIFY BUSINESS is a product name. The prompt says 'brand or service'…"); the ABN
+        example did not reduce the label hesitation (10 → 9).
+      - **"Product" over-stripped:** re-reading both runs' output, ORG placeholders rose 76 →
+        82, and product names became ORG ("Gold Car Insurance Policy", "BUSINESS ZERO TRAN…",
+        "Super", "LOAN", "Group Card Services"). With three more leaks, products and services
+        were dropped (Sergei). "Trading names" was considered and not added: the traces never
+        argued about them and "a name of a company, full or partial" covers them.
+      - **Thinking off** still fails the gate on the same printed joint initials on d10 as with
+        the 2026-09-13 prompt; the prompt fixes do not substitute for thinking.
+
+      Tests 882 -> 883.

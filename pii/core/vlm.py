@@ -244,6 +244,12 @@ FAMILIES = (QWEN, GEMMA)
 #  - one line for a multi-line value: the locator matches either way, and without
 #    the sentence the model spent its thinking choosing between a line break and a
 #    space;
+#  - decisions the traces showed the model re-deciding on every page, settled in the
+#    definitions rather than as extra rules (a rule is one more thing it re-checks):
+#    a trust, fund or brand is a COMPANY (Sergei; "brand or service" moved the argument
+#    to brand-versus-product, and adding "product" cost recall on real/1); page and
+#    statement numbers are not identifiers (Sergei: out); the label example is an
+#    ABN, the label it hesitated over (2026-09-14);
 #  - distinct values (`_OUTPUT_VALUES`) against every printing (`_OUTPUT_BOXES`):
 #    see those two.
 # The 2026-09-14 changes were measured together on real/1 (DONE.md). Older
@@ -263,8 +269,8 @@ TYPE is one of:
 * NAME : a person's name, full or partial, including when used in account names;
 * DOB : a person's date of birth;
 * ADDRESS : a postal address, full or partial;
-* COMPANY : a name of a company or an organization, full or partial, including when \
-used in account names;
+* COMPANY : a name of a company, an organization, a trust or a fund, or of a brand, full or \
+partial, including when used in account names;
 * IDENTIFIER : any other identifier - a number or a code identifying a person, \
 an organization or an account, such as:
   - account number, credit card, driving licence, TFN, medicare or passport number;
@@ -278,11 +284,11 @@ Use an appropriate TYPE for each value that you find, if unsure, fallback to IDE
 When unsure whether to include something, include it: reporting too much is corrected later, \
 missing something is not. This applies to banks, insurers and every other organization \
 too - include their names, numbers, addresses and web addresses.
-Report the value, never the label that introduces it: in "Account number 1234-5678" the \
-value is "1234-5678".
+Report the value, never the label that introduces it: in "ABN 12 345 678 901" the value is \
+"12 345 678 901".
 A value printed across several lines may be written on one line.
-Do not output monetary amounts, transaction dates, interest rates, balances, percentages - they \
-are NOT identifiers.
+Do not output monetary amounts, transaction dates, interest rates, balances, percentages, page \
+numbers or statement numbers - they are NOT identifiers.
 Output only the JSON array, with no code fence and no other text."""
 
 # Pass 1 without boxes (`hybrid`, `ocr`) needs each value ONCE. Pass 2 returns a
