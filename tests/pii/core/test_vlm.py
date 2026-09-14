@@ -232,6 +232,121 @@ def test_truncated_and_malformed_are_different_counters():
     assert sum([Incomplete(truncated=1)] * 3) == Incomplete(truncated=3)
 
 
+# ------------------------------------------- the trace, and its budget
+#
+# A trace that reached `reasoning_budget_tokens` is closed by REASONING_CUTOFF
+# and the model answers in full. That is counted, because it is what a larger
+# budget would change, but it is NOT a hole in the redaction.
+
+
+def _thinking_reply(content: str, reasoning: str, **kwargs) -> dict:
+    reply = _reply(content, **kwargs)
+    reply["choices"][0]["message"]["reasoning_content"] = reasoning
+    return reply
+
+
+def test_a_trace_that_reached_the_budget_is_counted_but_is_not_a_hole():
+    from pii.core.vlm import REASONING_CUTOFF
+
+    result = read_response(_thinking_reply(
+        '[{"text": "A", "type": "PII_NAME"}]',
+        "Looking at the page, row by row" + REASONING_CUTOFF,
+    ))
+    assert result.incomplete.reasoning_budget_hit == 1
+    # Outside `total` and truthiness, which is what every "this page is
+    # missing names" warning reads.
+    assert not result.incomplete
+    assert result.incomplete.total == 0
+    (trace,) = result.reasoning
+    assert trace.budget_hit and trace.stage == "detection"
+
+
+def test_the_cut_off_is_recognised_when_the_server_trims_its_newlines():
+    from pii.core.vlm import REASONING_CUTOFF
+
+    result = read_response(_thinking_reply("[]", "thinking " + REASONING_CUTOFF.strip()))
+    assert result.incomplete.reasoning_budget_hit == 1
+
+
+def test_a_trace_under_the_budget_is_kept_and_not_counted():
+    result = read_response(_thinking_reply("[]", "  Nothing private here.\n"))
+    assert result.incomplete == Incomplete()
+    (trace,) = result.reasoning
+    assert trace.text == "Nothing private here." and not trace.budget_hit
+
+
+def test_a_reply_that_did_not_think_carries_no_trace():
+    assert read_response(_reply("[]")).reasoning == ()
+    # Thinking off: both templates write an empty, pre-closed trace.
+    assert read_response(_reply("<think>\n\n</think>\n\n[]")).reasoning == ()
+
+
+def test_an_inline_trace_is_read_when_the_server_does_not_split_it():
+    from pii.core.vlm import REASONING_CUTOFF
+
+    result = read_response(_reply(
+        "<|channel>thought\nrows [1] and [2]" + REASONING_CUTOFF + "<channel|>"
+        '[{"text": "A", "type": "PII_NAME"}]'
+    ))
+    (trace,) = result.reasoning
+    assert trace.text.startswith("rows [1] and [2]") and trace.budget_hit
+    assert [f.text for f in result.findings] == ["A"]
+
+
+def test_a_truncated_answer_after_a_cut_off_trace_counts_both():
+    from pii.core.vlm import REASONING_CUTOFF
+
+    result = read_response(_thinking_reply(
+        '[{"text": "A", "type": "PII_NAME"}, {"te', REASONING_CUTOFF,
+        finish_reason="length",
+    ))
+    assert result.incomplete == Incomplete(truncated=1, reasoning_budget_hit=1)
+
+
+def test_budget_hits_add_up_across_pages():
+    pages = [Incomplete(reasoning_budget_hit=1), Incomplete(truncated=1)]
+    assert sum(pages) == Incomplete(truncated=1, reasoning_budget_hit=1)
+
+
+def test_each_pass_labels_its_own_trace():
+    calls = []
+
+    def transport(url, payload, timeout):
+        calls.append(payload)
+        return _thinking_reply(
+            '[{"text": "A", "type": "PII_NAME", "bbox_2d": [1, 2, 3, 4]}]',
+            f"thinking, call {len(calls)}",
+        )
+
+    class Img:
+        def save(self, buf, fmt):
+            buf.write(b"png")
+
+    detector = VlmDetector(
+        transport=transport, served_model=_qwen, grounding_reasoning_effort="same"
+    )
+    detected = detector.detect(Img())
+    located = detector.localize(Img(), detected.findings)
+    assert [(t.stage, t.text) for t in detected.reasoning] == [
+        ("detection", "thinking, call 1")
+    ]
+    assert [(t.stage, t.text) for t in located.reasoning] == [
+        ("grounding", "thinking, call 2")
+    ]
+
+
+@pytest.mark.parametrize("budget", [0, -1, 1.5, True])
+def test_a_budget_below_one_token_is_refused(budget):
+    # -1 is llama.cpp's "unlimited", which would take away the answer's own
+    # room on top of the budget.
+    from pii.core.text_llm import TextDetector
+
+    with pytest.raises(ValueError, match="reasoning budget"):
+        VlmDetector(reasoning_budget=budget)
+    with pytest.raises(ValueError, match="reasoning budget"):
+        TextDetector(reasoning_budget=budget)
+
+
 # ----------------------------------------------------------------- grammar
 #
 # The output shape is enforced at the sampler rather than parsed out of
@@ -836,6 +951,35 @@ def test_a_clean_read_carries_no_incomplete_count(pipeline):
         detector=Fine(),
     )
     assert not result.incomplete
+
+
+def test_both_passes_traces_reach_the_page_result(pipeline):
+    # For the debug output, which is written after the page is redacted.
+    from pii.core.image_mode import strip_rendered_page
+    from pii.core.vlm import ReasoningTrace
+
+    detect = ReasoningTrace("detection", "which values", budget_hit=True)
+    ground = ReasoningTrace("grounding", "where they are")
+
+    class Thinking:
+        def detect(self, image):
+            return DetectorResult(
+                [VlmFinding(text="SERGEI KULIK", entity_type="PERSON")],
+                Incomplete(reasoning_budget_hit=1), (detect,),
+            )
+
+        def localize(self, image, findings):
+            return DetectorResult(list(findings), reasoning=(ground,))
+
+    result = strip_rendered_page(
+        Image.new("RGB", (200, 40), "white"),
+        pipeline,
+        PseudonymMap(),
+        ocr_engine=lambda im: _ocr_page("SERGEI KULIK"),
+        detector=Thinking(),
+    )
+    assert result.reasoning == (detect, ground)
+    assert result.incomplete.reasoning_budget_hit == 1
 
 
 def test_value_with_no_ocr_text_is_painted_from_the_model_box(pipeline):

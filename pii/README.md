@@ -204,6 +204,12 @@ The model thinks before answering, and each pass can be set separately:
   default: thinking there costs as much as detecting and draws the same boxes.
   Use `same` to copy `--reasoning-effort`, or name a level. It applies to
   `hybrid` only.
+- `--reasoning-budget` is the most tokens the model may think for in one pass,
+  4096 by default, and the same for every pass that thinks. When a pass reaches
+  it, the model is told to stop thinking and answer. The answer keeps its own
+  allowance on top of the budget, so it is still whole. Text input takes this
+  flag too. With every pass `off` there is nothing to limit, so the run stops
+  with an error.
 
 Thinking needs the run to know the model family, the same way `auto` box order
 does, so an unrecognised model with thinking on also stops with an error. Pass
@@ -227,6 +233,11 @@ turns off the GBNF constraint on the model's reply — for comparing detection
 quality, or for a server that does not support the `grammar` field. If you see
 the "no usable JSON array" warning without having passed it, the server
 ignored the grammar.
+
+A **note**, not a warning, says how many passes reached the reasoning budget
+(on a PDF, which pages). Those answers are complete; the model had simply not
+finished thinking, so a larger `--reasoning-budget` might find more. `--debug`
+saves the thinking itself (see [The model's reasoning](#the-models-reasoning)).
 
 The OCR engine is **PaddleOCR**, and it supplies *geometry*, not detection.
 `--ocr-backend` selects the model tier: `paddle` (default, = `paddle:v6_medium`),
@@ -359,6 +370,14 @@ is what no overlay will show you, the latter is what was detected and **not reda
 `summary.layer0` names the detector that produced the listing (`vision` or `text`): a listing
 records what was found, not what was asked for. Under `--layer0 off` no listing is written at
 all, rather than an empty one.
+
+### The model's reasoning
+
+When the model thought, `--debug` also writes `statement.clean.debug.reasoning.txt`: its
+thinking for every page, one section per pass, headed `page 3 · detection` or
+`page 3 · grounding`. A section whose thinking was stopped by `--reasoning-budget` says so in
+its heading (`· hit the reasoning budget`), and the first lines give the count. Plain text,
+because a trace is thousands of tokens of prose. Nothing is written when no pass thought.
 
 **The overlay is not redacted.** It is drawn on the original page — that is the point, you are
 reading the text under the boxes — so it is near-PII: keep it local, like the map file.

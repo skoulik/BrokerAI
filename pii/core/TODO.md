@@ -845,14 +845,15 @@ text tier's record is in [DONE.md](DONE.md).)
         off** by the budget. The one-page probes hit it too: 1.pdf p1 in hybrid, and both
         pages tried in combined mode.
       - **Baseline to beat:** recall 94.1%, gate PASS, 39 min for survival.
-      - **Needs first:**
-        - A way to set the budget per run. Today it is only the `reasoning_budget`
-          constructor argument; there is no CLI or `pii_eval` flag.
-        - A cut-off counter in `pii_eval`, so the number above is reproducible. It came from
-          a scratchpad wrapper around `http_transport` that counted `REASONING_CUTOFF` in
-          each reply's `reasoning_content`.
-      - **Then:** 8192 against 4096 on `real/1`, comparing recall, over-strip, how many
-        replies are cut, and wall time. `max_tokens` grows with the budget automatically.
+      - **Ready to run** (2026-09-14; record in DONE.md): `--reasoning-budget` on `pii_eval
+        score` and `ground`, and each run prints how many passes reached the budget, per
+        document and in total. The 4096 baseline is worth re-taking with it first: the count
+        above came from a scratchpad wrapper, not this counter.
+      - **The run:** 8192 against 4096 on `real/1`, comparing recall, over-strip, how many
+        passes reach the budget, and wall time. `max_tokens` grows with the budget
+        automatically. `score --modality pdf` keeps each document's reasoning in
+        `stripped/<doc>.reasoning.txt`, so the traces of the two runs can be compared (copy
+        them aside between runs; the second overwrites the first).
 
 - [ ] **Gemma 4: a re-sent request can answer differently** *(Sergei, 2026-09-13, scheduled on
       the same condition)*. The identical detect request gave 15 findings (349 tokens) or 13

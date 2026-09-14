@@ -58,6 +58,7 @@ from pii.core.debug_overlay import (
     findings_record,
     page_debug,
     write_findings,
+    write_reasoning,
 )
 from pii.core.mapping import PseudonymMap
 from pii.core.ocr import get_ocr_page
@@ -131,6 +132,9 @@ class PdfPageResult:
     # What this page's own text layer did to its OCR (pii.core.text_layer):
     # readings confirmed, readings replaced, or the layer refused outright.
     repair: RepairReport = RepairReport()
+    # The model's thinking for this page, one vlm.ReasoningTrace per pass that
+    # thought. Near-PII: a trace quotes the page it read.
+    reasoning: tuple = ()
 
 
 @dataclass
@@ -332,6 +336,7 @@ def strip_pdf(
                     pattern_borrowed=result.pattern_borrowed,
                     incomplete=result.incomplete,
                     repair=result.repair,
+                    reasoning=read.reasoning,
                 )
             )
         # A fresh document carries nothing from the source; empty the
@@ -347,6 +352,10 @@ def strip_pdf(
             write_findings(
                 debug.findings_path(), debug_findings,
                 layer0=getattr(detector, "layer0", "on"),
+            )
+        if debug is not None:
+            write_reasoning(
+                debug.reasoning_path(), [(p.number, p.reasoning) for p in pages]
             )
     return PdfStripResult(pages=pages, groups=grouping.groups)
 

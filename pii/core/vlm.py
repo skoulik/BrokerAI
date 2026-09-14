@@ -130,11 +130,13 @@ DEFAULT_EFFORT = "medium"
 GROUNDING_REASONING_EFFORTS = REASONING_EFFORTS + ("same",)
 DEFAULT_GROUNDING_EFFORT = "off"
 
-# A cap on the thinking block, not a shaping knob. At 4096 nothing in the
-# 2026-08-19 sweep was cut (the longest trace observed was ~2077 tokens), which
-# is the point: it exists to bound a runaway repetition loop, which greedy
-# decode on a reasoning model makes a live risk, and greedy is not negotiable
-# because the gate needs determinism.
+# A cap on the thinking block. It exists to bound a runaway repetition loop,
+# which greedy decode on a reasoning model makes a live risk, and greedy is not
+# negotiable because the gate needs determinism. On Qwen3.8 nothing in the
+# 2026-08-19 sweep reached 4096. Gemma 4 thinks longer and reached it on about a
+# third of `real/1`'s pages (2026-09-13), so a run can set its own
+# (`--reasoning-budget`), and each reply that reaches it is counted
+# (`Incomplete.reasoning_budget_hit`).
 DEFAULT_REASONING_BUDGET = 4096
 
 # The answer's own allowance. This was the whole of `max_tokens` before thinking
@@ -419,11 +421,14 @@ class VlmFinding:
 
 @dataclass(frozen=True)
 class Incomplete:
-    """How many model responses in one unit of work came back unusable.
+    """How many model responses in one unit of work did not finish.
 
     COUNTED, not merely warned about, for the same reason as
     `ImageStripResult.unlocated`: Python's default warning filter shows one
     instance per code location, so the second looped page of a run is silent.
+
+    The first two counters are ANSWERS that did not finish, and they are all
+    that `total` and truthiness see — each is a hole in the redaction:
 
     - `truncated` — the generation ran into the token budget mid-array
       (`finish_reason == "length"`, and the array never closed). Layer 0 is the
@@ -440,10 +445,21 @@ class Incomplete:
       array is now reachable without the server having ignored anything. It
       remains the right counter — an answer that is not an array is not an
       empty page — but it no longer proves what it used to.
+
+    The third is a TRACE that did not finish, and is deliberately outside
+    `total`:
+
+    - `reasoning_budget_hit` — the thinking ran into `reasoning_budget_tokens`
+      and was closed by `REASONING_CUTOFF`. The answer after it is whole, so the
+      page is not a hole. What it measures is the budget: the model stopped
+      thinking before it was done, and a larger budget might have found more.
+      Folded into `total`, every Gemma page that thinks long would read as an
+      unfinished page and be reported as missing names.
     """
 
     truncated: int = 0
     malformed: int = 0
+    reasoning_budget_hit: int = 0
 
     @property
     def total(self) -> int:
@@ -456,6 +472,7 @@ class Incomplete:
         return Incomplete(
             self.truncated + other.truncated,
             self.malformed + other.malformed,
+            self.reasoning_budget_hit + other.reasoning_budget_hit,
         )
 
     def __radd__(self, other):
@@ -477,6 +494,23 @@ class DetectorResult:
 
     findings: list[VlmFinding]
     incomplete: Incomplete = Incomplete()
+    # What the model thought on the way to `findings`, one entry per reply that
+    # thought at all. Kept for the debug output (`--debug` writes it beside the
+    # findings listing); nothing in detection reads it.
+    reasoning: tuple[ReasoningTrace, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReasoningTrace:
+    """One reply's thinking, verbatim.
+
+    Near-PII like the findings listing: a trace over a page quotes the page.
+    `stage` is the pass that asked, in the flags' own words — "detection"
+    (`--reasoning-effort`) or "grounding" (`--grounding-reasoning-effort`)."""
+
+    stage: str
+    text: str
+    budget_hit: bool = False
 
 
 class Transport(Protocol):
@@ -642,11 +676,14 @@ def _model_file(name: str) -> str:
     return name.replace("\\", "/").rsplit("/", 1)[-1]
 
 
-def read_response(response: dict, box_order: str = "xyxy") -> DetectorResult:
-    """One server reply -> findings plus the failure counters.
+def read_response(
+    response: dict, box_order: str = "xyxy", stage: str = "detection"
+) -> DetectorResult:
+    """One server reply -> findings, the failure counters, and the trace.
 
     Shared by both layer-0 detectors, so the three-way split (clean page / cut
-    off / not JSON) is decided in exactly one place.
+    off / not JSON) is decided in exactly one place, and so is whether the
+    thinking ran out of budget (`_reasoning_of`). `stage` only labels the trace.
 
     `finish_reason` is the whole point of this function. llama-server reports
     `"length"` when the generation was truncated, and reading it is what
@@ -661,19 +698,51 @@ def read_response(response: dict, box_order: str = "xyxy") -> DetectorResult:
     """
     try:
         choice = response["choices"][0]
-        raw = choice["message"]["content"]
+        message = choice["message"]
+        raw = message["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise VlmError(f"unexpected response shape: {response!r}") from exc
     payload, complete = _extract_array(strip_thinking(fold_digits(raw)))
     findings = _findings_from(payload, box_order)
+    trace = _reasoning_of(message, stage)
+    hit = int(trace is not None and trace.budget_hit)
+    reasoning = (trace,) if trace is not None else ()
     if complete:
-        return DetectorResult(findings)
+        return DetectorResult(findings, Incomplete(reasoning_budget_hit=hit), reasoning)
     # The completed elements are kept either way (see _extract_array); which
     # counter this lands in is decided by WHY the array is still open — a
     # budget the generation ran into, or a body that was never JSON at all.
     if choice.get("finish_reason") == "length":
-        return DetectorResult(findings, Incomplete(truncated=1))
-    return DetectorResult(findings, Incomplete(malformed=1))
+        return DetectorResult(
+            findings, Incomplete(truncated=1, reasoning_budget_hit=hit), reasoning
+        )
+    return DetectorResult(
+        findings, Incomplete(malformed=1, reasoning_budget_hit=hit), reasoning
+    )
+
+
+def _reasoning_of(message: dict, stage: str) -> ReasoningTrace | None:
+    """The reply's thinking, or None if it did not think.
+
+    llama-server puts the trace in `reasoning_content` by default. A server
+    that leaves it inline in `content` is read too, as far as the first closing
+    tag, which is where `strip_thinking` ends it.
+
+    A trace that ran out of budget is recognised by `REASONING_CUTOFF`, which
+    the server writes into the trace at the point it closes it. Matched without
+    its surrounding newlines, which a server may trim."""
+    text = message.get("reasoning_content") or ""
+    if not text.strip():
+        content = message.get("content") or ""
+        for opening, closing in _TRACE_TAGS:
+            head, closed, _ = content.partition(closing)
+            if closed:
+                text = head.split(opening, 1)[-1]
+                break
+    text = text.strip()
+    if not text:
+        return None
+    return ReasoningTrace(stage, text, REASONING_CUTOFF.strip() in text)
 
 
 def parse_findings(raw: str, box_order: str = "xyxy") -> list[VlmFinding]:
@@ -797,6 +866,14 @@ def _salvage(body: str, start: int, cut: int | None) -> list | None:
     return list(
         {json.dumps(item, sort_keys=True): item for item in payload}.values()
     )
+
+
+def _check_budget(tokens: int) -> None:
+    """Refuse a reasoning budget below 1 token. llama.cpp reads -1 as unlimited,
+    which would take away the room `_max_tokens` keeps for the answer on top of
+    the budget — the property that lets the budget bite first."""
+    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 1:
+        raise ValueError(f"reasoning budget must be at least 1 token: {tokens!r}")
 
 
 class _ServedModel:
@@ -1002,6 +1079,7 @@ class VlmDetector(_ServedModel):
             )
         if box_order not in BOX_ORDERS:
             raise ValueError(f"unknown box order: {box_order!r}")
+        _check_budget(reasoning_budget)
         self.url = url
         self.transport = transport or http_transport
         self.timeout = timeout
@@ -1042,7 +1120,9 @@ class VlmDetector(_ServedModel):
             in_box_order(_OUTPUT_BOXES, order) if order else _OUTPUT_VALUES
         )
         response = self._ask(image, prompt, self._detect_grammar, effort)
-        return self._read(response, order, self._built_for(effort, boxed=self.want_boxes))
+        return self._read(
+            response, order, self._built_for(effort, boxed=self.want_boxes), "detection"
+        )
 
     def _request_order(self) -> str:
         """The order to ASK for boxes in, resolved before the request is sent."""
@@ -1065,13 +1145,14 @@ class VlmDetector(_ServedModel):
         response: dict,
         asked: str | None = None,
         built_for: ModelFamily | None = None,
+        stage: str = "detection",
     ) -> DetectorResult:
         """`read_response` in the order the boxes were `asked` for, after
         checking the reply came from the family the request was built for."""
         self._check_reply(response, built_for)
         # A boxless prompt's reply carries no box anything will use, so which
         # order it is parsed in is moot.
-        return read_response(response, asked or "xyxy")
+        return read_response(response, asked or "xyxy", stage)
 
     def localize(self, image, findings: list[VlmFinding]) -> DetectorResult:
         """Pass 2: hand the already-detected values back and ask only where
@@ -1106,7 +1187,7 @@ class VlmDetector(_ServedModel):
             GRAMMAR_LOCATE if self.grammar else None,
             effort,
         )
-        hints = self._read(response, order, self._built_for(effort, boxed=True))
+        hints = self._read(response, order, self._built_for(effort, boxed=True), "grounding")
         return replace(
             hints, findings=attach_boxes(findings, hints.findings)
         )

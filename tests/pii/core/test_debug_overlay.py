@@ -501,3 +501,41 @@ def test_ocr_layer_is_all_grey_without_a_text_layer():
     drawn = _colors(out)
     assert _AGREED_COLOR not in drawn
     assert _REPAIRED_COLOR not in drawn
+
+
+# ------------------------------------------------- the model's reasoning
+
+
+def test_reasoning_is_written_page_by_page_with_the_budget_marked(tmp_path):
+    from pii.core.debug_overlay import DebugSpec, write_reasoning
+    from pii.core.vlm import ReasoningTrace
+
+    spec = DebugSpec(layers=("ocr",), path=tmp_path / "doc.clean.debug.pdf")
+    assert Path(spec.reasoning_path()).name == "doc.clean.debug.reasoning.txt"
+    written = write_reasoning(spec.reasoning_path(), [
+        (1, (ReasoningTrace("detection", "page one, detecting", budget_hit=True),
+             ReasoningTrace("grounding", "page one, placing"))),
+        (2, ()),
+        (3, (ReasoningTrace("detection", "page three"),)),
+    ])
+    assert written
+    text = Path(spec.reasoning_path()).read_text("utf-8")
+    # Near-PII, and said so at the top, like every other debug artifact.
+    assert "NOT redacted" in text.splitlines()[0]
+    assert "3 trace(s), 1 of which hit the reasoning budget" in text
+    headings = [line for line in text.splitlines() if line.startswith("=====")]
+    assert headings == [
+        "===== page 1 · detection · hit the reasoning budget =====",
+        "===== page 1 · grounding =====",
+        "===== page 3 · detection =====",
+    ]
+    assert text.index("page one, detecting") < text.index("page three")
+
+
+def test_no_reasoning_file_when_nothing_thought(tmp_path):
+    """A blank debug artifact is not written: thinking off, or no layer 0."""
+    from pii.core.debug_overlay import write_reasoning
+
+    path = tmp_path / "doc.clean.debug.reasoning.txt"
+    assert write_reasoning(path, [(1, ()), (2, ())]) is False
+    assert not path.exists()

@@ -28,6 +28,7 @@ from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
 from pii_eval.build import CORPUS_KEEP_FILE
 from pii.core.csv_mode import strip_csv
 from pii.core.text_mode import strip_text
+from pii.core.vlm import DEFAULT_REASONING_BUDGET
 
 
 def _norm(s: str) -> str:
@@ -125,19 +126,20 @@ def _noise(findings, inv_entities, kind):
     return out
 
 
-def build_text_detector():
+def build_text_detector(reasoning_budget: int = DEFAULT_REASONING_BUDGET):
     """The layer-0 detector for text/CSV documents. Imported lazily so the
     model-server dependency lands only when a scoring run starts."""
     from pii.core.text_llm import TextDetector
 
-    return TextDetector()
+    return TextDetector(reasoning_budget=reasoning_budget)
 
 
 def score(corpus: str, threshold: float = 0.4,
-          invalid_identifiers: str = "likely") -> int:
+          invalid_identifiers: str = "likely",
+          reasoning_budget: int = DEFAULT_REASONING_BUDGET) -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "truth.json").read_text("utf-8"))
-    layer0 = build_text_detector()
+    layer0 = build_text_detector(reasoning_budget)
     # The corpus's own keep list, not the shipped one: the keep axis must
     # measure the tool against what this generator emits (see
     # pii_eval/entity_keep.txt).

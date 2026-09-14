@@ -699,3 +699,51 @@ def test_a_layer_1_needle_never_re_types_what_layer_1_said_here(
     }
     assert types == {"AU_AFSL", "AU_CREDIT_LICENCE"}
     assert page.pattern_borrowed == []
+
+
+def test_strip_pdf_writes_the_models_reasoning_beside_the_overlays(
+    tmp_path, pipeline, monkeypatch
+):
+    """Every page's trace, in page order, and carried on the page result too.
+    Taken from sweep 1's read: the file is written after redaction, which has
+    no use for it."""
+    from pii.core.debug_overlay import DebugSpec
+    from pii.core.vlm import ReasoningTrace
+
+    class Thinking:
+        page = 0
+
+        def detect(self, image):
+            self.page += 1
+            trace = ReasoningTrace("detection", f"thoughts on page {self.page}")
+            return DetectorResult([], reasoning=(trace,))
+
+        def localize(self, image, findings):
+            return DetectorResult(list(findings))
+
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr)
+    src = tmp_path / "doc.pdf"
+    _make_marked_pdf(src, pages=2)
+    spec = DebugSpec(layers=("ocr",), path=tmp_path / "doc.clean.debug.pdf")
+    result = strip_pdf(src, pipeline, PseudonymMap(), tmp_path / "doc.clean.pdf",
+                       dpi=72, detector=Thinking(), debug=spec)
+
+    assert [[t.text for t in p.reasoning] for p in result.pages] == [
+        ["thoughts on page 1"], ["thoughts on page 2"],
+    ]
+    text = Path(spec.reasoning_path()).read_text("utf-8")
+    assert text.index("thoughts on page 1") < text.index("thoughts on page 2")
+
+
+def test_strip_pdf_writes_no_reasoning_when_the_model_did_not_think(
+    tmp_path, pipeline, monkeypatch, no_findings
+):
+    from pii.core.debug_overlay import DebugSpec
+
+    monkeypatch.setattr(pdf_mode, "get_ocr_page", lambda backend: _fake_ocr)
+    src = tmp_path / "doc.pdf"
+    _make_marked_pdf(src, pages=1)
+    spec = DebugSpec(layers=("ocr",), path=tmp_path / "doc.clean.debug.pdf")
+    strip_pdf(src, pipeline, PseudonymMap(), tmp_path / "doc.clean.pdf",
+              dpi=72, detector=no_findings, debug=spec)
+    assert not Path(spec.reasoning_path()).exists()

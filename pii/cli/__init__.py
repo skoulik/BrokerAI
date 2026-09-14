@@ -33,12 +33,26 @@ from pii.core.vlm import (
     DEFAULT_GROUNDING_EFFORT,
     GROUNDING_REASONING_EFFORTS,
     DEFAULT_GEOMETRY,
+    DEFAULT_REASONING_BUDGET,
     DEFAULT_URL,
     GEOMETRIES,
     Incomplete,
     REASONING_EFFORTS,
     VlmError,
 )
+
+
+def _reasoning_budget(value: str) -> int:
+    """argparse type for `--reasoning-budget`: a whole number of tokens, at
+    least 1 (why, on `pii.core.vlm._check_budget`). Checked at parse time so a
+    bad value fails as a usage error rather than a traceback."""
+    try:
+        tokens = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number of tokens: {value!r}")
+    if tokens < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1 token, got {tokens}")
+    return tokens
 
 
 def _read(source: str) -> str:
@@ -95,6 +109,8 @@ def _build_detector(args):
     grammar = getattr(args, "grammar", True)
     box_order = getattr(args, "box_order", DEFAULT_BOX_ORDER)
     grounding = getattr(args, "grounding_reasoning_effort", DEFAULT_GROUNDING_EFFORT)
+    effort = getattr(args, "reasoning_effort", DEFAULT_EFFORT)
+    budget = getattr(args, "reasoning_budget", DEFAULT_REASONING_BUDGET)
 
     if not media and box_order != DEFAULT_BOX_ORDER:
         # Same reasoning as --geometry below: the text path asks for no boxes,
@@ -120,6 +136,16 @@ def _build_detector(args):
             "page, so detected values are located in the text itself"
         )
 
+    grounding_effort = effort if grounding == "same" else grounding
+    nothing_thinks = effort == "off" and (geometry != "hybrid" or grounding_effort == "off")
+    if budget != DEFAULT_REASONING_BUDGET and media and nothing_thinks:
+        # Once more: a budget for thinking that no pass does would be accepted
+        # and change nothing. The text path always thinks, so it never lands here.
+        raise SystemExit(
+            "--reasoning-budget has nothing to limit: no pass thinks with "
+            "--reasoning-effort off and no grounding pass thinking"
+        )
+
     if getattr(args, "layer0", "auto") == "off":
         if geometry == "vlm":
             # That path never runs OCR, so with layer 0 silent there is no
@@ -140,7 +166,7 @@ def _build_detector(args):
     if not media:
         from pii.core.text_llm import TextDetector
 
-        return TextDetector(url=url, grammar=grammar)
+        return TextDetector(url=url, grammar=grammar, reasoning_budget=budget)
 
     from pii.core.vlm import VlmDetector
 
@@ -152,8 +178,9 @@ def _build_detector(args):
         # `hybrid` and `ocr` geometry comes from the second pass instead.
         want_boxes=geometry in ("vlm", "combined"),
         grammar=grammar,
-        reasoning_effort=getattr(args, "reasoning_effort", DEFAULT_EFFORT),
+        reasoning_effort=effort,
         grounding_reasoning_effort=grounding,
+        reasoning_budget=budget,
         box_order=box_order,
     )
 
@@ -266,6 +293,16 @@ def _report_incomplete(incomplete, file=None, prefix: str = "") -> None:
             f"carried no usable JSON array — same consequence as being cut "
             f"off. Unless --no-grammar was passed, this means the server "
             f"ignored the grammar; check that it is llama.cpp",
+            file=file,
+        )
+    if incomplete.reasoning_budget_hit:
+        # A note, not a warning: the answers are whole. What it says is that
+        # the model had not finished thinking, which is the budget's doing.
+        print(
+            f"{prefix}note: {incomplete.reasoning_budget_hit} model pass(es) "
+            f"reached the reasoning budget and were told to stop thinking and "
+            f"answer. Their answers are complete, but a larger "
+            f"--reasoning-budget might find more",
             file=file,
         )
 
@@ -397,16 +434,21 @@ def _debug_spec(args, detector):
     return DebugSpec(layers=layers, path=args.debug_out, findings=False)
 
 
-def _debug_note(spec) -> None:
+def _debug_note(spec, reasoning: bool = False) -> None:
     """List the debug artifacts — and the warning that goes with all of them.
 
     The overlays are drawn on the ORIGINAL page, so they carry the very text
     the output does not. Warned once per run rather than once per file (four
     identical warnings train an operator to skip them), but every path is
     named: an operator who forgets which of these files is the safe one has a
-    breach, not an inconvenience."""
+    breach, not an inconvenience.
+
+    `reasoning` says whether the model's thinking was written: it is only
+    there when some pass thought."""
     paths = spec.paths()
     listing = " + 1 findings listing" if spec.findings else ""
+    if reasoning:
+        listing += " + the model's reasoning"
     print(
         f"wrote {len(paths)} debug overlay(s){listing} — NOT "
         f"redacted, they show the original page; keep them local, like the "
@@ -414,12 +456,14 @@ def _debug_note(spec) -> None:
         file=sys.stderr,
     )
     for layer, path in paths:
-        print(f"  {layer:<8} -> {path}", file=sys.stderr)
+        print(f"  {layer:<9} -> {path}", file=sys.stderr)
     if spec.findings:
         # Named apart from the layers because it is not one: it carries every
         # layer-0 finding, including the ones with no box, which no overlay can
         # draw. See pii.core.debug_overlay.findings_record.
-        print(f"  {'findings':<8} -> {spec.findings_path()}", file=sys.stderr)
+        print(f"  {'findings':<9} -> {spec.findings_path()}", file=sys.stderr)
+    if reasoning:
+        print(f"  {'reasoning':<9} -> {spec.reasoning_path()}", file=sys.stderr)
 
 
 def _strip_media(args, pipeline, detector):
@@ -449,6 +493,7 @@ def _strip_media(args, pipeline, detector):
                 findings_record,
                 page_debug,
                 write_findings,
+                write_reasoning,
             )
 
             record = page_debug(result)
@@ -459,7 +504,12 @@ def _strip_media(args, pipeline, detector):
                     debug_spec.findings_path(), [findings_record(record)],
                     layer0=getattr(detector, "layer0", "on"),
                 )
-            _debug_note(debug_spec)
+            _debug_note(
+                debug_spec,
+                reasoning=write_reasoning(
+                    debug_spec.reasoning_path(), [(1, result.reasoning)]
+                ),
+            )
         if args.report:
             if result.ocr is not None:
                 print(f"{len(result.spans)} entities detected:", file=sys.stderr)
@@ -506,7 +556,9 @@ def _strip_media(args, pipeline, detector):
                            debug=debug_spec)
         pmap.save()
         if debug_spec is not None:
-            _debug_note(debug_spec)
+            _debug_note(
+                debug_spec, reasoning=any(p.reasoning for p in result.pages)
+            )
         if args.report:
             total = sum(len(p.spans) for p in result.pages)
             print(f"{total} entities detected:", file=sys.stderr)
@@ -532,6 +584,13 @@ def _strip_media(args, pipeline, detector):
             print(
                 f"pages with an unfinished model response: "
                 f"{', '.join(str(n) for n in affected)}",
+                file=sys.stderr,
+            )
+        budget_hit = [p.number for p in result.pages if p.incomplete.reasoning_budget_hit]
+        if budget_hit:
+            print(
+                f"pages whose thinking reached the reasoning budget: "
+                f"{', '.join(str(n) for n in budget_hit)}",
                 file=sys.stderr,
             )
         # start= matters: an empty document would otherwise sum to the int 0.
@@ -660,6 +719,16 @@ def main(argv=None) -> int:
              "values and asked only where they are. off (default): thinking "
              "there was measured to cost as much as detecting and to draw the "
              "same boxes. same copies --reasoning-effort; or name a level",
+    )
+    p_strip.add_argument(
+        "--reasoning-budget", type=_reasoning_budget, metavar="TOKENS",
+        default=DEFAULT_REASONING_BUDGET,
+        help="the most tokens the layer-0 model may think for in one pass "
+             f"(default {DEFAULT_REASONING_BUDGET}); the same budget applies to "
+             "every pass that thinks. When a pass reaches it, the model is told "
+             "to stop thinking and answer, so the answer is still whole, and the "
+             "run says how many passes that happened to. The answer keeps its "
+             "own token allowance on top of the budget",
     )
     p_strip.add_argument(
         "--box-order", choices=list(BOX_ORDERS), default=DEFAULT_BOX_ORDER,

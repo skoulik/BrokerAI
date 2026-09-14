@@ -143,6 +143,9 @@ class ImageStripResult:
     # replaced, and whether it was refused outright. Empty for any input that
     # has no text layer at all.
     repair: RepairReport = RepairReport()
+    # The model's thinking for this page, one trace per pass that thought
+    # (vlm.ReasoningTrace), for the debug output. Near-PII: it quotes the page.
+    reasoning: tuple = ()
 
 
 @dataclass
@@ -167,6 +170,9 @@ class PageRead:
     incomplete: Incomplete = Incomplete()
     # What the PDF's own text layer did to this page's OCR, if it had one.
     repair: RepairReport = RepairReport()
+    # Each pass's thinking (vlm.ReasoningTrace). Nothing in redaction reads it;
+    # it is carried to the debug output, which is written in sweep 2.
+    reasoning: tuple = ()
 
 
 def strip_image(
@@ -273,7 +279,7 @@ def read_page(
     if geometry not in GEOMETRIES:
         raise ValueError(f"unknown geometry: {geometry!r}")
     read = detector.detect(image)
-    findings, incomplete = read.findings, read.incomplete
+    findings, incomplete, reasoning = read.findings, read.incomplete, read.reasoning
     if geometry == "hybrid":
         # Pass 2: the boxes are a search constraint for the locator, not
         # paint geometry. Kept a separate call from detect() so pass 1
@@ -281,6 +287,7 @@ def read_page(
         located = detector.localize(image, findings)
         findings = located.findings
         incomplete += located.incomplete
+        reasoning += located.reasoning
     _warn_incomplete(incomplete)
     ocr, repair, needles = None, RepairReport(), ()
     if geometry != "vlm":
@@ -292,7 +299,7 @@ def read_page(
         needles = layer1_needles(pipeline, ocr)
     return PageRead(
         findings=findings, ocr=ocr, incomplete=incomplete, repair=repair,
-        layer1=needles,
+        layer1=needles, reasoning=reasoning,
     )
 
 
@@ -364,12 +371,16 @@ def strip_rendered_page(
         image, ocr_engine, detector=detector, pipeline=pipeline,
         geometry=geometry, text_layer=text_layer,
     )
-    return strip_from_vlm(
+    result = strip_from_vlm(
         image, read.findings, pipeline, pmap, ocr=read.ocr, pad=pad,
         grouping=group_findings([read.findings]),
         needles=read.layer1,
         incomplete=read.incomplete, repair=read.repair,
     )
+    # Set here rather than passed through `strip_from_vlm`, which redacts and
+    # has no use for it; `strip_pdf` takes it from the read the same way.
+    result.reasoning = read.reasoning
+    return result
 
 
 def strip_from_vlm(

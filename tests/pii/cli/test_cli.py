@@ -127,6 +127,94 @@ def test_grounding_reasoning_rejects_text_input():
         main(["strip", "doc.txt", "--map", "m.json", "--grounding-reasoning-effort", "same"])
 
 
+# ------------------------------------------------- reasoning budget
+
+def test_reasoning_budget_defaults_to_the_core_default():
+    from argparse import Namespace
+
+    from pii.cli import _build_detector
+    from pii.core.vlm import DEFAULT_REASONING_BUDGET
+
+    assert _build_detector(Namespace(pdf=True)).reasoning_budget == DEFAULT_REASONING_BUDGET
+
+
+def test_reasoning_budget_reaches_both_detectors():
+    from argparse import Namespace
+
+    from pii.cli import _build_detector
+
+    assert _build_detector(Namespace(pdf=True, reasoning_budget=8192)).reasoning_budget == 8192
+    # The text path thinks too, so the budget is not a vision-only flag.
+    assert _build_detector(Namespace(reasoning_budget=8192)).reasoning_budget == 8192
+
+
+def test_reasoning_budget_is_parsed_from_the_command_line(monkeypatch):
+    import pii.cli
+
+    seen = {}
+
+    def build(args):
+        seen["budget"] = args.reasoning_budget
+        raise SystemExit(0)
+
+    monkeypatch.setattr(pii.cli, "_build_detector", build)
+    with pytest.raises(SystemExit):
+        main(["strip", "doc.pdf", "--pdf", "-o", "out.pdf", "--reasoning-budget", "8192"])
+    assert seen == {"budget": 8192}
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "lots"])
+def test_reasoning_budget_rejects_what_is_not_a_positive_token_count(value):
+    with pytest.raises(SystemExit):
+        main(["strip", "doc.pdf", "--pdf", "-o", "out.pdf", "--reasoning-budget", value])
+
+
+@pytest.mark.parametrize("geometry", ["hybrid", "combined", "ocr", "vlm"])
+def test_reasoning_budget_is_refused_where_nothing_thinks(geometry):
+    """Every pass off: the budget would be accepted and limit nothing."""
+    with pytest.raises(SystemExit):
+        main(["strip", "page.png", "--image", "-o", "out.png", "--geometry", geometry,
+              "--reasoning-effort", "off", "--reasoning-budget", "8192"])
+
+
+def test_reasoning_budget_is_accepted_when_only_grounding_thinks():
+    from argparse import Namespace
+
+    from pii.cli import _build_detector
+
+    detector = _build_detector(Namespace(
+        pdf=True, reasoning_effort="off", grounding_reasoning_effort="medium",
+        reasoning_budget=8192,
+    ))
+    assert detector.reasoning_budget == 8192
+
+
+def test_a_budget_hit_is_a_note_and_not_a_warning(capsys):
+    """The answers are whole, so nothing here may read as a redaction hole."""
+    from pii.cli import _report_incomplete
+    from pii.core.vlm import Incomplete
+
+    _report_incomplete(Incomplete(reasoning_budget_hit=3))
+    err = capsys.readouterr().err
+    assert "note: 3 model pass(es) reached the reasoning budget" in err
+    assert "--reasoning-budget" in err
+    assert "WARNING" not in err
+
+
+def test_the_debug_note_lists_the_reasoning_when_it_was_written(capsys):
+    from pii.cli import _debug_note
+    from pii.core.debug_overlay import DebugSpec
+
+    spec = DebugSpec(layers=("ocr",), path="p.clean.debug.png")
+    _debug_note(spec, reasoning=True)
+    err = capsys.readouterr().err
+    assert "+ the model's reasoning" in err
+    assert spec.reasoning_path() in err
+
+    _debug_note(spec)
+    assert "reasoning" not in capsys.readouterr().err
+
+
 # ------------------------------------------------- layer 0 turned off
 
 def test_layer0_off_rejects_geometry_vlm():

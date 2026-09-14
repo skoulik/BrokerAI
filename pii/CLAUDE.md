@@ -277,6 +277,9 @@ items move to [core/DONE.md](core/DONE.md) with their records.
   a `detect()` that returns a bare list: layer 0 is the only detector for PERSON / ADDRESS /
   ORGANIZATION, so a page read from a cut-off answer loses exactly those and still looks
   plausibly redacted.
+- **A trace that reached the reasoning budget is not a hole.** Keep
+  `Incomplete.reasoning_budget_hit` out of `total` and truthiness: the answer after a cut trace
+  is whole, and those two drive every "may be missing names" warning (2026-09-14).
 - **A truncated answer is salvaged, and only there do identical entries collapse.** The
   elements before the cut are real detections — 38 of them on the specimen, against 0 before.
   The collapse is confined to that path because a loop's occurrence counts are worthless while

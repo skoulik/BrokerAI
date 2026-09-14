@@ -52,10 +52,11 @@ from pii.core.vlm import (
     DEFAULT_EFFORT,
     DEFAULT_GEOMETRY,
     DEFAULT_GROUNDING_EFFORT,
+    DEFAULT_REASONING_BUDGET,
     Incomplete,
 )
 from pii_eval.build import CORPUS_KEEP_FILE
-from pii_eval.score_image import _squash, build_detector, find_value
+from pii_eval.score_image import _squash, budget_line, build_detector, find_value
 
 # A model box counts as a usable constraint when it contains at least this much
 # of the truth box. Not 1.0: the constraint only has to bracket the value well
@@ -210,13 +211,15 @@ def score_grounding(corpus: str, threshold: float = 0.4,
                     reasoning_effort: str = DEFAULT_EFFORT,
                     limit: int = 0,
                     box_order: str = DEFAULT_BOX_ORDER,
-                    grounding_reasoning_effort: str = DEFAULT_GROUNDING_EFFORT) -> int:
+                    grounding_reasoning_effort: str = DEFAULT_GROUNDING_EFFORT,
+                    reasoning_budget: int = DEFAULT_REASONING_BUDGET) -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     truth = json.loads((corpus_path / "truth.json").read_text("utf-8"))
     by_id = {d["id"]: d for d in truth["docs"]}
 
-    detector = build_detector(geometry, reasoning_effort, box_order, grounding_reasoning_effort)
+    detector = build_detector(geometry, reasoning_effort, box_order,
+                              grounding_reasoning_effort, reasoning_budget)
     pipeline = PiiPipeline(threshold=threshold, entity_keep=CORPUS_KEEP_FILE)
 
     model_rows, paint_rows, spurious, overpaint = [], [], [], []
@@ -320,7 +323,8 @@ def score_grounding(corpus: str, threshold: float = 0.4,
               f"skipped - no string to match a model finding against",
               file=sys.stderr)
     return _summarize(model_rows, paint_rows, spurious, overpaint, incomplete,
-                      geometry, reasoning_effort, grounding_reasoning_effort)
+                      geometry, reasoning_effort, grounding_reasoning_effort,
+                      reasoning_budget)
 
 
 def _same_value(found: str, truth_value: str) -> bool:
@@ -336,9 +340,11 @@ def _same_value(found: str, truth_value: str) -> bool:
 
 
 def _summarize(model_rows, paint_rows, spurious, overpaint, incomplete,
-               geometry, effort, grounding_effort=DEFAULT_GROUNDING_EFFORT) -> int:
+               geometry, effort, grounding_effort=DEFAULT_GROUNDING_EFFORT,
+               budget=DEFAULT_REASONING_BUDGET) -> int:
     print(f"\ngrounding: geometry={geometry} reasoning-effort={effort} "
           f"grounding-reasoning-effort={grounding_effort}")
+    print(budget_line(incomplete, budget))
     if incomplete:
         # Same reasoning as the survival scorers: a page whose answer never
         # finished measures the token budget, not grounding.

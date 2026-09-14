@@ -3947,3 +3947,25 @@ the move; new completed tasks append to the matching section with their records.
 
       Details: [reports/2026-09-13-gemma4-26b-bringup.md](reports/2026-09-13-gemma4-26b-bringup.md),
       "Thinking in the detection pass". Design: ARCHITECTURE "Layer 0".
+
+- [x] **A reasoning budget per run, a count of passes that reach it, and the traces kept for
+      `--debug`** *(Sergei, 2026-09-14: the prerequisites of "Gemma 4: try a larger reasoning
+      budget", plus "save the model's reasoning in the debug output")*.
+      - **`--reasoning-budget TOKENS`** on `pii strip` and on `pii_eval score` / `ground`,
+        reaching both detectors. Default still 4096. The CLI refuses it when no pass thinks,
+        and core refuses a budget below 1 (llama.cpp's -1 means unlimited).
+      - **`Incomplete.reasoning_budget_hit`**, set in `read_response` when the trace carries
+        `REASONING_CUTOFF`, read from `reasoning_content` or from an inline trace. It is
+        outside `total` and truthiness, since the answer after a cut trace is whole. The CLI
+        prints a note (PDF: which pages). `pii_eval` prints it per document and as a run total
+        with the budget, and `score --modality pdf` now reports `Incomplete` per document,
+        which it did not before.
+      - **`ReasoningTrace`** per reply, labelled `detection` or `grounding`, carried on
+        `DetectorResult` → `PageRead` → `ImageStripResult` / `PdfPageResult`. `--debug`
+        writes `<base>.reasoning.txt`, and `score --modality pdf` writes
+        `stripped/<doc>.reasoning.txt`. Neither is written when nothing thought.
+      - **Not done:** the text scorer (`score --modality text`) takes the flag but still
+        reports no `Incomplete` at all, as before.
+      - **Dual coverage:** pytest only, suite 840 → 877. This is instrumentation and no
+        detection behaviour changed, so there is no corpus probe to add. The first real
+        numbers come from the budget run in TODO.md.

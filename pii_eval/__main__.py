@@ -8,10 +8,16 @@ from pii.core.vlm import (
     DEFAULT_EFFORT,
     DEFAULT_GEOMETRY,
     DEFAULT_GROUNDING_EFFORT,
+    DEFAULT_REASONING_BUDGET,
     GROUNDING_REASONING_EFFORTS,
     GEOMETRIES,
     REASONING_EFFORTS,
 )
+
+_BUDGET_HELP = (f"the most tokens the layer-0 model may think for in one pass "
+                f"(default {DEFAULT_REASONING_BUDGET}). A strip-side axis like "
+                f"--reasoning-effort. Passes that reach it are counted in the "
+                f"output")
 
 # Canonical home of every generated corpus (gitignored): one folder per
 # modality (text/, image/), one subfolder per seed.
@@ -118,6 +124,8 @@ def main() -> int:
                     help="how hard the model thinks in the grounding pass "
                          "(pass 2 of --geometry hybrid): off (default), "
                          "same as --reasoning-effort, or a level")
+    gr.add_argument("--reasoning-budget", type=int, metavar="TOKENS",
+                    default=DEFAULT_REASONING_BUDGET, help=_BUDGET_HELP)
     gr.add_argument("--box-order", choices=list(BOX_ORDERS),
                     default=DEFAULT_BOX_ORDER,
                     help="the coordinate order the layer-0 model is asked "
@@ -173,6 +181,8 @@ def main() -> int:
                     help="how hard the model thinks in the grounding pass "
                          "(pass 2 of --geometry hybrid): off (default), "
                          "same as --reasoning-effort, or a level")
+    sc.add_argument("--reasoning-budget", type=int, metavar="TOKENS",
+                    default=DEFAULT_REASONING_BUDGET, help=_BUDGET_HELP)
     sc.add_argument("--box-order", choices=list(BOX_ORDERS),
                     default=DEFAULT_BOX_ORDER,
                     help="the coordinate order the layer-0 model is asked "
@@ -234,7 +244,8 @@ def main() -> int:
                                reasoning_effort=args.reasoning_effort,
                                limit=args.limit,
                                box_order=args.box_order,
-                               grounding_reasoning_effort=args.grounding_reasoning_effort)
+                               grounding_reasoning_effort=args.grounding_reasoning_effort,
+                               reasoning_budget=args.reasoning_budget)
     if args.modality == "image":
         from pii_eval.score_image import score_image
 
@@ -245,7 +256,8 @@ def main() -> int:
                            geometry=args.geometry,
                            reasoning_effort=args.reasoning_effort,
                            box_order=args.box_order,
-                           grounding_reasoning_effort=args.grounding_reasoning_effort)
+                           grounding_reasoning_effort=args.grounding_reasoning_effort,
+                           reasoning_budget=args.reasoning_budget)
     if args.modality == "pdf":
         from pii_eval.score_pdf import score_pdf
 
@@ -260,12 +272,14 @@ def main() -> int:
                          geometry=args.geometry,
                          reasoning_effort=args.reasoning_effort,
                          box_order=args.box_order,
-                         grounding_reasoning_effort=args.grounding_reasoning_effort)
+                         grounding_reasoning_effort=args.grounding_reasoning_effort,
+                         reasoning_budget=args.reasoning_budget)
     from pii_eval.score import score
 
     return score(args.corpus or _default_corpus(args.seed),
                  threshold=args.threshold,
-                 invalid_identifiers=args.invalid_identifiers)
+                 invalid_identifiers=args.invalid_identifiers,
+                 reasoning_budget=args.reasoning_budget)
 
 
 if __name__ == "__main__":

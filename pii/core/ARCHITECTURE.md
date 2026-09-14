@@ -1341,6 +1341,25 @@ Pass-2 image reuse after a long Gemma pass-1 trace was also seen to fail with a 
 prefix, cause not established. So keeping thinking on would not reliably save that prefill
 either.
 
+**The reasoning budget is set per run, and a pass that reaches it is counted (2026-09-14).**
+`--reasoning-budget` (default `DEFAULT_REASONING_BUDGET`, 4096) is sent as
+`reasoning_budget_tokens` on every pass that thinks, and `max_tokens` is the budget plus the
+answer's own allowance, so the budget always bites first. That is what makes reaching it
+harmless to the redaction: the server closes the trace with `REASONING_CUTOFF` and the model
+still writes its whole answer. It was fixed until Gemma 4 reached it on about a third of
+`real/1`'s pages.
+- **Counted, as `Incomplete.reasoning_budget_hit`, but outside `total` and truthiness.** Those
+  two drive every "this page may be missing names" warning. A cut trace is not a missing answer,
+  and counting it there would report every long-thinking Gemma page as a hole.
+- **Recognised by the cut-off text in the trace**, in `read_response`, the one place every reply
+  already goes through. llama.cpp reports nothing else when the budget runs out.
+- **At least 1 token.** llama.cpp reads -1 as unlimited, which would take the answer's room away.
+
+**The trace is kept for `--debug` (2026-09-14).** `read_response` returns each reply's thinking
+as a `ReasoningTrace` labelled with the pass that asked. `read_page` collects both passes and
+`strip_pdf` / the CLI write them as `<base>.reasoning.txt`. Nothing in detection or redaction
+reads a trace. A trace quotes the page, so it is near-PII like the rest of the debug output.
+
 **A value is one span or several — the page string does not always hold it whole
 (2026-08-13).** `ocr_page._rows` bands a page **visually**, which is what puts a label beside
 its value and is load-bearing for context promotion. The price is that two cards side by side
@@ -1465,7 +1484,9 @@ made the output look plausible. `read_response` therefore splits every reply thr
 | malformed | generation ended, no usable array | salvage + `Incomplete.malformed` |
 
 The two counters stay apart because they have different causes and only one has a fix an
-operator can act on; with a grammar in force, `malformed` means the server ignored it.
+operator can act on; with a grammar in force, `malformed` means the server ignored it. A third,
+`reasoning_budget_hit`, rides on the same object and is not a failure: the answer is whole (see
+the reasoning budget, above).
 `Incomplete` is carried to the caller on every result object (`ImageStripResult`,
 `PdfPageResult` per page, `TextStripResult`) under the same rule as `unlocated` — a warning
 alone is deduplicated by Python's default filter, so the second looped page of a run would be

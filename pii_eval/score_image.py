@@ -40,6 +40,7 @@ from pii.core.vlm import (
     DEFAULT_EFFORT,
     DEFAULT_GEOMETRY,
     DEFAULT_GROUNDING_EFFORT,
+    DEFAULT_REASONING_BUDGET,
     Incomplete,
 )
 from pii_eval.build import CORPUS_KEEP_FILE
@@ -210,14 +211,15 @@ def reread_engine():
 def build_detector(geometry: str = DEFAULT_GEOMETRY,
                    reasoning_effort: str = DEFAULT_EFFORT,
                    box_order: str = DEFAULT_BOX_ORDER,
-                   grounding_reasoning_effort: str = DEFAULT_GROUNDING_EFFORT):
+                   grounding_reasoning_effort: str = DEFAULT_GROUNDING_EFFORT,
+                   reasoning_budget: int = DEFAULT_REASONING_BUDGET):
     """The layer-0 detector for the STRIP side. Imported lazily so the
     model-server dependency lands only when a scoring run starts.
 
-    `reasoning_effort` is an axis of the strip configuration, not of the
-    instrument: it changes what the model under test does, so two runs that
-    differ in it are two configurations being compared, exactly like
-    `geometry`."""
+    `reasoning_effort` and `reasoning_budget` are axes of the strip
+    configuration, not of the instrument: they change what the model under
+    test does, so two runs that differ in one are two configurations being
+    compared, exactly like `geometry`."""
     from pii.core.vlm import VlmDetector
 
     # The one-pass boxes prompt serves both geometries that ask for boxes up
@@ -226,7 +228,32 @@ def build_detector(geometry: str = DEFAULT_GEOMETRY,
     return VlmDetector(want_boxes=geometry in ("vlm", "combined"),
                        reasoning_effort=reasoning_effort,
                        grounding_reasoning_effort=grounding_reasoning_effort,
+                       reasoning_budget=reasoning_budget,
                        box_order=box_order)
+
+
+def incomplete_note(incomplete: Incomplete) -> str:
+    """The per-document note on model replies that did not finish, or "".
+
+    Printed beside the score because it CHANGES WHAT THE SCORE MEANS: a miss on
+    a page whose answer never finished measures the token budget, not detection
+    quality. A pass that reached the reasoning budget still answered in full,
+    so it is noted apart from those, without the `!!`."""
+    note = ""
+    if incomplete:
+        note += (f"  !! {incomplete.truncated} cut-off / "
+                 f"{incomplete.malformed} unparseable model response(s)")
+    if incomplete.reasoning_budget_hit:
+        note += (f"  ({incomplete.reasoning_budget_hit} pass(es) reached the "
+                 f"reasoning budget)")
+    return note
+
+
+def budget_line(incomplete: Incomplete, budget: int) -> str:
+    """The run's total of passes that reached the reasoning budget, with the
+    budget itself, so two runs at different budgets can be compared."""
+    return (f"  reasoning budget {budget} tokens: "
+            f"{incomplete.reasoning_budget_hit} pass(es) reached it")
 
 
 def score_image(corpus: str, threshold: float = 0.4,
@@ -235,9 +262,11 @@ def score_image(corpus: str, threshold: float = 0.4,
                 geometry: str = DEFAULT_GEOMETRY,
                 reasoning_effort: str = DEFAULT_EFFORT,
                 box_order: str = DEFAULT_BOX_ORDER,
-                grounding_reasoning_effort: str = DEFAULT_GROUNDING_EFFORT) -> int:
+                grounding_reasoning_effort: str = DEFAULT_GROUNDING_EFFORT,
+                reasoning_budget: int = DEFAULT_REASONING_BUDGET) -> int:
     ocr = reread_engine()
-    vlm = build_detector(geometry, reasoning_effort, box_order, grounding_reasoning_effort)
+    vlm = build_detector(geometry, reasoning_effort, box_order,
+                         grounding_reasoning_effort, reasoning_budget)
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     source = (corpus_path / manifest["source"]).resolve()
@@ -253,6 +282,7 @@ def score_image(corpus: str, threshold: float = 0.4,
     all_entities = []
     all_invalid = []
     noise = []
+    run_incomplete = Incomplete()
     for doc in manifest["docs"]:
         entities = truth_by_file[doc["source"]]["entities"]
         # One map per DOCUMENT, spanning its pages — the CLI's per-document
@@ -279,14 +309,10 @@ def score_image(corpus: str, threshold: float = 0.4,
         all_entities.extend(reg_ents)
         all_invalid.extend(inv_ents)
         noise.extend((doc["source"], f) for f in _noise(invalid, inv_ents))
-        # Printed beside the score because it CHANGES WHAT THE SCORE MEANS: a
-        # miss on a page whose model answer never finished measures the token
-        # budget, not detection quality.
-        note = ""
-        if incomplete:
-            note = (f"  !! {incomplete.truncated} cut-off / "
-                    f"{incomplete.malformed} unparseable model response(s)")
+        run_incomplete += incomplete
         print(f"  scored {doc['source']} ({len(doc['pages'])} pages) "
-              f"[{doc['font']} {doc['size']}px]{note}", file=sys.stderr)
+              f"[{doc['font']} {doc['size']}px]{incomplete_note(incomplete)}",
+              file=sys.stderr)
 
+    print(budget_line(run_incomplete, reasoning_budget), file=sys.stderr)
     return summarize(all_entities, all_invalid, noise, invalid_identifiers)

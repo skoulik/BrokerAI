@@ -40,6 +40,7 @@ from pii.core.vlm import (
     REASONING_EFFORTS,
     Transport,
     _ServedModel,
+    _check_budget,
     http_transport,
     read_response,
     VlmFinding,
@@ -182,6 +183,7 @@ class TextDetector(_ServedModel):
     ) -> None:
         if reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(f"unknown reasoning effort: {reasoning_effort!r}")
+        _check_budget(reasoning_budget)
         self.url = url
         self.transport = transport or http_transport
         self.timeout = timeout
@@ -208,6 +210,7 @@ class TextDetector(_ServedModel):
         """
         seen: dict[tuple[str, str], VlmFinding] = {}
         incomplete = Incomplete()
+        reasoning = ()
         effort = self.reasoning_effort
         for window in windows(text):
             response = self._ask(
@@ -218,9 +221,10 @@ class TextDetector(_ServedModel):
             self._check_reply(response, built_for)
             result = read_response(response)
             incomplete += result.incomplete
+            reasoning += result.reasoning
             for finding in result.findings:
                 seen.setdefault((finding.text, finding.entity_type), finding)
-        return DetectorResult(list(seen.values()), incomplete)
+        return DetectorResult(list(seen.values()), incomplete, reasoning)
 
     def _ask(self, prompt: str, grammar: str | None = None) -> dict:
         payload = {

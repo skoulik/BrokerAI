@@ -17,7 +17,8 @@ Differences from the synthetic image tier:
   default (2026-07-18); cross-document consistency belongs to the future
   global/group map layers.
 - Stripped PDFs are kept under <corpus>/stripped/ for eyeball review
-  (the corpus is gitignored; outputs stay local like the corpus itself).
+  (the corpus is gitignored; outputs stay local like the corpus itself),
+  with the model's reasoning beside each when it thought.
 
 Expected on first runs: the keep-side table reports institutional
 identities (bank names/ABNs/1300 numbers) as over-stripped — that is the
@@ -29,19 +30,24 @@ import sys
 from pathlib import Path
 
 from pii.core import INVALID_ENTITY_TYPES, PiiPipeline, PseudonymMap
+from pii.core.debug_overlay import write_reasoning
 from pii.core.pdf_mode import pdf_to_images, strip_pdf
 from pii.core.vlm import (
     DEFAULT_BOX_ORDER,
     DEFAULT_EFFORT,
     DEFAULT_GEOMETRY,
     DEFAULT_GROUNDING_EFFORT,
+    DEFAULT_REASONING_BUDGET,
+    Incomplete,
 )
 from pii_eval.build import CORPUS_KEEP_FILE, CRITICAL
 from pii_eval.score_image import (
     _noise,
     _score_invalid,
     _score_survival,
+    budget_line,
     build_detector,
+    incomplete_note,
     reread_engine,
     summarize,
 )
@@ -53,7 +59,8 @@ def score_pdf(corpus: str, threshold: float = 0.4,
               geometry: str = DEFAULT_GEOMETRY,
               reasoning_effort: str = DEFAULT_EFFORT,
               box_order: str = DEFAULT_BOX_ORDER,
-              grounding_reasoning_effort: str = DEFAULT_GROUNDING_EFFORT) -> int:
+              grounding_reasoning_effort: str = DEFAULT_GROUNDING_EFFORT,
+              reasoning_budget: int = DEFAULT_REASONING_BUDGET) -> int:
     corpus_path = Path(corpus)
     manifest = json.loads((corpus_path / "manifest.json").read_text("utf-8"))
     documents = list(_documents(corpus_path, manifest))
@@ -62,7 +69,8 @@ def score_pdf(corpus: str, threshold: float = 0.4,
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ocr = reread_engine()
-    vlm = build_detector(geometry, reasoning_effort, box_order, grounding_reasoning_effort)
+    vlm = build_detector(geometry, reasoning_effort, box_order,
+                         grounding_reasoning_effort, reasoning_budget)
     # The corpus's own keep list, not the shipped one: the keep axis must
     # measure the tool against what this generator emits (see
     # pii_eval/entity_keep.txt).
@@ -75,6 +83,7 @@ def score_pdf(corpus: str, threshold: float = 0.4,
     noise = []
     skipped_valueless = 0
     borrowed = 0
+    run_incomplete = Incomplete()
     for doc_id, source_pdf, truth_entities in documents:
         out_pdf = out_dir / f"{doc_id}.clean.pdf"
         result = strip_pdf(
@@ -85,6 +94,10 @@ def score_pdf(corpus: str, threshold: float = 0.4,
                 f"  {_id} page {n}/{c} {phase} ...", file=sys.stderr
             ),
         )
+        # Beside the stripped PDF, for comparing what the model thought across
+        # runs (at two budgets, say). Not written when nothing thought.
+        write_reasoning(out_dir / f"{doc_id}.reasoning.txt",
+                        [(p.number, p.reasoning) for p in result.pages])
         reread = "\n".join(
             ocr(image).text for image in pdf_to_images(out_pdf, dpi=dpi)
         )
@@ -103,8 +116,11 @@ def score_pdf(corpus: str, threshold: float = 0.4,
         all_entities.extend(reg_ents)
         all_invalid.extend(inv_ents)
         noise.extend((doc_id, f) for f in _noise(findings, inv_ents))
+        incomplete = sum((p.incomplete for p in result.pages), Incomplete())
+        run_incomplete += incomplete
         print(f"  scored {doc_id} ({len(result.pages)} pages, "
-              f"{len(result.groups)} entity groups) <- {source_pdf.name}",
+              f"{len(result.groups)} entity groups) <- {source_pdf.name}"
+              f"{incomplete_note(incomplete)}",
               file=sys.stderr)
 
     if skipped_valueless:
@@ -118,6 +134,7 @@ def score_pdf(corpus: str, threshold: float = 0.4,
         # pipeline makes, and it should show up as recall in the table above.
         print(f"  {borrowed} span(s) redacted from detections made elsewhere "
               f"in their document", file=sys.stderr)
+    print(budget_line(run_incomplete, reasoning_budget), file=sys.stderr)
     return summarize(all_entities, all_invalid, noise, invalid_identifiers)
 
 

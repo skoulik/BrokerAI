@@ -44,6 +44,10 @@ the layer-0 overlay draws the model's box and nothing else (Sergei,
 2026-08-13), which keeps the layer honest and leaves the boxless findings to be
 read here.
 
+When the model thought, the run also writes what it thought
+(`write_reasoning`, `<base>.reasoning.txt`): every pass's trace, per page, each
+marked where it ran out of reasoning budget.
+
 The layer-0 / locate split is load-bearing rather than tidiness (Sergei,
 2026-08-11): layer 0 is the VLM alone with its rough boxes, and which tier
 placed a value is a decision made AFTER it, from the OCR text with that box as
@@ -155,6 +159,10 @@ class DebugSpec:
     def findings_path(self) -> str:
         """Where `write_findings` puts the run's layer-0 listing."""
         return str(Path(self.path).with_suffix(".findings.json"))
+
+    def reasoning_path(self) -> str:
+        """Where `write_reasoning` puts the model's thinking."""
+        return str(Path(self.path).with_suffix(".reasoning.txt"))
 
 
 def drop_layer0_layers(
@@ -370,6 +378,39 @@ def write_findings(
     Path(path).write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def write_reasoning(
+    path: str | Path, pages: Sequence[tuple[int, Sequence]]
+) -> bool:
+    """Write the model's thinking, page by page and pass by pass. Returns
+    whether a file was written.
+
+    `pages` is `(page number, traces)`, the traces being `vlm.ReasoningTrace`.
+    Plain text, not a field in the findings listing: a trace runs to thousands
+    of tokens of prose, which is readable as prose and not as one escaped JSON
+    string.
+
+    NOTHING is written when no pass thought (every effort `off`, or
+    `--layer0 off`), for the reason a blank overlay is not written: the file
+    would carry no diagnostics. A trace quotes the page it read, so this is
+    near-PII like every other debug artifact."""
+    traces = [(number, trace) for number, found in pages for trace in found]
+    if not traces:
+        return False
+    hit = sum(1 for _, trace in traces if trace.budget_hit)
+    lines = [
+        "layer-0 reasoning — NOT redacted, it quotes the original page; keep "
+        "it local, like the map file.",
+        f"{len(traces)} trace(s), {hit} of which hit the reasoning budget.",
+    ]
+    for number, trace in traces:
+        heading = f"page {number} · {trace.stage}"
+        if trace.budget_hit:
+            heading += " · hit the reasoning budget"
+        lines += ["", f"===== {heading} =====", "", trace.text]
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return True
 
 
 def _word_segments(ocr: RecognizerInput, source: str) -> list[Segment]:
