@@ -978,6 +978,32 @@ text tier's record is in [DONE.md](DONE.md).)
         - **Revisit when** llama.cpp support merges with image input and Metal sampling. A quick
           quality spot check through MLX on a few pages is possible sooner if wanted.
 
+- [ ] **Loose model boxes: exact vertically, off horizontally** *(Sergei, 2026-09-15; after the
+      work above)*. On 1.pdf page 4 (his sweep, `gemma-4-div-fix-prompt-arg-fixes-15.09`), the
+      grounding boxes, compared with OCR positions of the same words in 0-1000 units, were within
+      ±2 vertically but off by 8-55 horizontally (20-136 px of 2,480), with a varying sign. Not a
+      scaling or box-order bug. The likely floor is image resolution: 1,120 tokens over an A4
+      page is roughly one token column per ~90 px, about the width of "ANZ" (estimate). Why
+      vertical does better is a hypothesis: lines are separated by whitespace, while a word
+      inside a line is not, and a y unit is 3.5 px against an x unit's 2.5 px. Every finding on
+      that page was still placed on the right OCR word, since a model box only constrains the
+      search.
+      1. **Measure the harm first**, across `real/1`: placements that took the wrong occurrence
+         of a value repeated close to itself, and findings painted from the model's own box
+         (the "matched no OCR text" warnings). Two ANZ boxes on page 4 have no matching OCR word
+         nearby - check them in the `locate` overlay.
+      2. **An anisotropic search box, no model calls.** Tier 3 pads the model box by
+         `FALLBACK_PAD_RATIO * box.height` (min 8 px) on every side, ~24 px on body text, far
+         below the horizontal error seen. Widen it in x (about one token column), and consider
+         the same asymmetry wherever box overlap ranks placement candidates.
+      3. **Coarse-to-fine crops, if 1-2 are not enough.** Crop around each whole-page box, padded
+         a couple of token widths in x and a line or two in y, and ask for the value's box in the
+         crop at the full 1,120 tokens. Blind tiling is not the design: tiles need overlaps, cut
+         words and absent values handled, and a model asked about one image reports values from
+         others (Qwen, 2026-08-12). A crop around a known box removes the absent-value case,
+         padding covers cut words, and a value wider than its crop keeps the whole-page box. Cost:
+         ~9 s of prefill per crop cluster.
+
 - [ ] **llama.cpp: find where the batch shape changes the logits** *(Sergei, 2026-09-15: worth
       doing anyway, and it also bears on the MTP setting)*. Greedy output on the Mac changes
       with how a prompt or a draft is batched. A full cache hit re-evaluates the last token
