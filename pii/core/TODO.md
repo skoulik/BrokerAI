@@ -752,6 +752,28 @@ below gets picked up against the old shape of the tool.
       Input (2026-07-14, invalid-identifiers work): invalid-class spans already rank below
       any valid type in `_merge_overlaps` (union extents, valid class wins the placeholder)
       — fold that rule into the general algorithm definition.
+- [ ] **A layer-1 `URL` class for web addresses** *(Sergei, 2026-09-15)*. Web addresses reach
+      the output only through layer 0, as `IDENTIFIER_GENERIC` (`ID_n`), or as `ORGANIZATION`
+      when the model reads a domain as a brand. Gemma weighed `budgetdirect.com.au` against
+      COMPANY 14 times on `real/1` and put `MEBANK.COM.AU` under COMPANY in a draft. The prompt
+      now says a web address is an IDENTIFIER "even when it spells a company's name"; a
+      deterministic class would settle it regardless of the model.
+      - **What it buys:** a stable class and placeholder (`URL_n`); a keep-list section of its
+        own, so an institution's domain can be kept without a keep entry under
+        `IDENTIFIER_GENERIC` (see "A keep entry is filed under a class the pipeline may not
+        settle on" above); and a recall floor for domains the model misses.
+      - **Shape:** an `EmailRule`-style rule, Presidio's URL pattern harvested, validated by
+        the public-suffix check `EmailRule` already does with `tldextract`. It covers bare
+        domains (`budgetdirect.com.au`), `www.` forms and full URLs with a path.
+      - **Must be decided:**
+        - Ranking. `_rank` puts every specific class in one tier, so a layer-0
+          `ORGANIZATION` on the same span can outscore `URL`. A domain-shaped span should
+          take `URL`, which is a ranking rule and not just a new pattern.
+        - E-mail overlap. The domain inside an e-mail address must not become a separate
+          `URL` member that forks the address.
+        - OCR damage. A space or `,` read inside a domain must not split it.
+      - Dual coverage on landing: pytest, plus a pii_eval probe with a `URL` truth type.
+
 - [ ] Loyalty-program ID class (issue #7, 2026-07-22 — **re-check before designing anything**).
       The Qantas frequent-flyer number on the Amplify statement (page 2) was not detected: no
       layer-1 class covers it, yet it identifies the customer. What changed since: layer 0's
