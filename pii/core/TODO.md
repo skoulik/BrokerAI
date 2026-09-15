@@ -33,6 +33,44 @@ below gets picked up against the old shape of the tool.
   paint, so they serve as a *search constraint* instead (`--geometry hybrid`, the default);
   `--geometry vlm` is a comparison instrument only.
 
+## Plan — layer 0 (Gemma 4), as agreed with Sergei on 2026-09-15
+
+Where things stand: detection prompt tuning is concluded (`fbc040f`: 95.1% on `real/1`, gate
+PASS, DONE.md). Runs are reproducible (`ModelFamily.prompt_cache`, and the llama.cpp SWA
+restore fix serving from `brokerai-serving` `40e3f3b3b`). MTP n-max 2 stays. The keep list
+covers legal names (`952bd10`). The items below are in the order agreed. Each has its own
+entry further down with the details.
+
+1. **The d05 `Sk Ma` leak** — detected (typed PERSON), yet it survives redaction. Probably
+   placement or grouping, not the prompt; local analysis, no model needed first.
+2. **`real/1` with MTP on against off** — the one missing piece of "Re-check MTP".
+3. **After prompt tuning** (Sergei's list):
+   - DFlash;
+   - Google's QAT Q4_0, with one K-quant as the quality comparison;
+   - a speed check of Gemma 4 12B Unified.
+   DiffusionGemma is postponed.
+4. **Loose model boxes:**
+   1. measure the harm;
+   2. an anisotropic search box;
+   3. crop blank margins;
+   4. coarse-to-fine crops.
+5. **Remaining thinking ideas:** the truncated-text rule (d05 dot loop); grounding thinking on,
+   or the combined single pass, with the new prompt; aligning the text prompt with the vision one
+   (see "Layer-0 thinking: ideas raised 2026-09-14").
+6. **Lower priority:**
+   - the layer-1 `URL` class;
+   - brands against products (open);
+   - titles (postponed);
+   - llama.cpp: an upstream report of the SWA restore bug (Sergei is commenting on #28873
+     first), and the batch-shape noise.
+
+Working rules from these sessions:
+- Judge a prompt change on a `real/1` run, never on a leak or two: every edit flips near-tie
+  values.
+- Sergei runs his own sweeps from `main`: never edit `main` while one of his or a queued chain
+  is running.
+- The Mac server must run under `caffeinate -is`.
+
 ## Next up — image/PDF path
 
 - [ ] **Run the TEXT layer-0 pass over the OCR'd page text as well** (Sergei, 2026-08-11,
@@ -1151,6 +1189,8 @@ what the old 1154 did not. Details in the report's "Fixed, and confirmed" sectio
         alone does not explain a full re-read.
       - **Ruled out:** cache size; the prompt prefix.
       - **Next step:** a server run at trace verbosity to see what clears the slot.
+      - **Parked 2026-09-15:** moot for Gemma, which now sends `cache_prompt: false` and so
+        re-reads pass 2 on purpose. Still relevant to Qwen, whose family keeps the cache on.
       - **Matters because:** it costs ~9 s/page on Gemma whichever way pass 2 thinks, and on a
         Qwen-sized image it would be ~120 s.
 
