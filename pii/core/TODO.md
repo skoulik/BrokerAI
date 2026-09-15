@@ -898,11 +898,28 @@ text tier's record is in [DONE.md](DONE.md).)
       - **Bring the text prompt in line with the vision one**: the explicit "organizations'
         names, numbers, addresses and web addresses" sentence and value-not-label. Text input
         is unmeasured since the 2026-09-14 changes.
+      - The DFlash drafter moved to the item below (Sergei, 2026-09-15).
+
+- [ ] **After prompt tuning: DFlash, a Q4 quant, Diffusiongemma** *(Sergei, 2026-09-15)*. Each is
+      a `real/1` survival + grounding run against the committed prompt, with the cache off so
+      the comparison is exact.
       - **The DFlash drafter** (`dflash-gemma-4-26B-A4B-it-Q8_0.gguf`, `--spec-type
-        draft-dflash`): drafts a whole block per forward pass, which may suit repetitive
-        traces better than one-token MTP. Caveats: gains reported lower on MoE targets, tested
-        on CUDA/Vulkan (Metal unconfirmed), speculation after an image may need a fix as MTP
-        did ([PR #22105](https://github.com/ggml-org/llama.cpp/pull/22105)).
+        draft-dflash`). It drafts a whole block per forward pass, which may suit repetitive
+        traces better than one-token MTP. Caveats: gains are reported lower on MoE targets,
+        it was tested on CUDA/Vulkan (Metal unconfirmed), and speculation after an image may
+        need a fix, as MTP did ([PR #22105](https://github.com/ggml-org/llama.cpp/pull/22105)).
+        Measure decode tok/s and acceptance against MTP n-max 2 (61.1 tok/s), and whether the
+        answers match. Every drafter setting so far has been its own set of outputs.
+      - **A Q4 quant of Gemma 4 26B-A4B.** `Q=Q4_0 ./dl.sh` fetches it from the same ggml-org
+        conversion (14.6 GB against 26.9 GB). On Qwen3.6-27B, Q4_0 cost 11% of prefill for no
+        gain, but that workload was image prefill. Gemma's is decode: ~100k thinking tokens
+        against ~100k prefill tokens per `real/1` run, and decode is memory-bandwidth-bound,
+        so Q4 may pay here. The risk is transcription: shorter traces already misread long
+        reference codes. Compare identifiers character by character, not just recall, and
+        check the MTP drafter still accepts well against a Q4 target. A Q4_K_M or UD-Q4_K_XL
+        from another publisher is the fallback if Q4_0 reads badly.
+      - **Diffusiongemma.** Deferred since 2026-09-13. First establish what it is, whether
+        llama.cpp serves it on Metal, and whether it reads images; nothing is recorded yet.
 
 - [ ] **llama.cpp: find where the batch shape changes the logits** *(Sergei, 2026-09-15: worth
       doing anyway, and it also bears on the MTP setting)*. Greedy output on the Mac changes
