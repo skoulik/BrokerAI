@@ -926,43 +926,7 @@ text tier's record is in [DONE.md](DONE.md).)
          over-strip balance, and the prompt must not end up making keep decisions.
       4. **Accept the residual argument**, per the lesson that the narrowest wording plus some
          argument beats widening a class (memory: prompt-category-word-imports-model-definition).
-      - **Tried 2026-09-15, rejected: the "keep-public" reversal** (Sergei's idea). Committed
-        prompt, with "or of a brand" out of COMPANY and the include-institutions sentence replaced
-        by "Public companies and brands do not need to be reported." On `real/1`: 91.2%, 9 leaks,
-        gate FAIL on `SK OK`. The new leaks include the customer's own `SK MANAGEMENT VICTORIA PTY
-        LTD` on d10. Doubting lines stayed at 223 and brand/product lines at 27; name/company
-        exclusions rose 18 -> 49. The model quoted the rule 13 times ("If I follow … strictly, I
-        might skip most companies"). The debate moved to "is this public?", and that judgement
-        swallowed a private entity - the keep decision the prompt must not make.
-
-- [ ] **Detection prompt tuning, 2026-09-15: where it stopped** *(Sergei: two days on the prompt is
-      enough for now)*. From Sergei's sweep traces, five edits were tried on top of the committed
-      prompt. Each ran on `real/1`, and a detection-only bisect covered the 8 pages that leaked,
-      d05, d06, d09 and d10 (runs are reproducible, so one pass each):
-      - a = "account names" moved from NAME/COMPANY to the where-to-look list;
-      - t = NAME "without a title such as Mr or Mrs";
-      - w = a web address stays IDENTIFIER "even when it spells a company's name";
-      - b = an address includes its box or bag number;
-      - S = "Person and company names may be abbreviated, shortened, truncated or written as
-        initials - report those too."
-
-      | `real/1` survival | recall (leaks) | gate | detection thinking tokens |
-      |---|---|---|---|
-      | committed prompt | 96.1% (4) | PASS | 85.2k |
-      | a+t+w+b | 94.1% (6) | FAIL (`SK OK`) | 84.1k |
-      | a+t+w+b + "initials"/"abbreviated" in the definitions | 92.2% (8) | FAIL (`SK OK`) | 81.1k |
-      | a+w+b+S | 95.1% (5) | PASS | 80.4k |
-
-      - **The bisect:** t alone loses `SK OK`. The fragile `SK` on d09 flips under every single
-        edit, and `Sk Managemen` (d05 p2) under w or b, so page-level results are dominated by
-        near-ties. a+w+b+S caught the `SK` on d10 for the first time, which had leaked in every
-        run, and cut doubting lines 223 -> 188.
-      - **Uncommitted on main:** a+t+w+b + "initials", the failing set, plus the keep-list extension
-        and its wrapper fix. Main must be set to whatever is chosen before committing.
-      - **Open:** choose between the committed prompt and a+w+b+S; `Sk Ma` (d05) is detected but
-        still leaks downstream (typed PERSON in a+w+b+S), which is unexplained. Scripts:
-        `bisect_probe.py`, `variant_run.py`, `trace_topics.py`; data in
-        `sensitive/statements/1/exp-2026-09-15-determinism/`.
+      - Tried 2026-09-15 and rejected: "public companies and brands do not need to be reported" (DONE.md).
 
 - [ ] **After prompt tuning: DFlash, a Q4 quant, Diffusiongemma** *(Sergei, 2026-09-15)*. Each is
       a `real/1` survival + grounding run against the committed prompt, with the cache off so

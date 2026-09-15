@@ -282,6 +282,46 @@ def test_both_prompts_settle_the_decisions_the_traces_kept_re_deciding():
     assert '"ABN 12 345 678 901" the value is "12 345 678 901"' in VISION_PROMPT
 
 
+def test_where_a_value_is_printed_is_not_part_of_any_definition():
+    """"including when used in account names" sat in both NAME and COMPANY, and
+    Gemma argued the two against each other over a trust under "Account name(s)"
+    (2026-09-15). Account names are a place to look, listed with the others."""
+    definitions = [line for line in VISION_PROMPT.splitlines() if re.match(r"^\s*[-*] [A-Z]+ :", line)]
+    assert definitions and not any("account names" in line for line in definitions)
+    assert "account names." in VISION_PROMPT.splitlines()[0]
+
+
+def test_abbreviated_and_truncated_names_are_asked_for():
+    # Traces dropped them as "not clearly a full company name"; the sentence caught
+    # the bare "SK" every earlier run leaked (2026-09-15).
+    assert ("Person and company names may be abbreviated, shortened, truncated or written "
+            "as initials - report those too.") in VISION_PROMPT
+
+
+def test_the_prompt_leaves_out_what_real_1_rejected():
+    # Each failed the gate on real/1 by making the model drop borderline names
+    # (2026-09-15): a title clause in NAME ("SK OK" left out "to be safe"), and a
+    # public-company exemption (the customer's own company judged "public").
+    (name,) = [line for line in VISION_PROMPT.splitlines() if line.startswith("* NAME :")]
+    assert "title" not in name
+    assert "public compan" not in VISION_PROMPT.lower()
+
+
+def test_a_web_address_stays_an_identifier_when_it_spells_a_company():
+    # With brands in COMPANY, the model weighed domains against it and sometimes
+    # typed them COMPANY (2026-09-15); a flipping class slips keep-list entries.
+    (line,) = [l for l in VISION_PROMPT.splitlines() if "web address" in l and l.lstrip().startswith("-")]
+    assert "even when it spells a company's name" in line
+
+
+def test_an_address_keeps_its_box_or_bag_number():
+    # "IBN 79, 1 King St, ..." had the model asking whether the box was an
+    # identifier, and a draft dropped it from the address (2026-09-15).
+    (address,) = [line for line in VISION_PROMPT.splitlines() if line.startswith("* ADDRESS :")]
+    # The whole definition on one line: a stray line break once split it in two.
+    assert "box or bag number" in address and address.endswith("Locked Bag;")
+
+
 def test_neither_prompt_frames_the_task_as_personal_information():
     """The word brings the model's own, narrower idea of personal information,
     and it argued organizations and web addresses out of it (2026-09-14)."""

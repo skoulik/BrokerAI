@@ -274,10 +274,34 @@ FAMILIES = (QWEN, GEMMA)
 #    to brand-versus-product, and adding "product" cost recall on real/1); page and
 #    statement numbers are not identifiers (Sergei: out); the label example is an
 #    ABN, the label it hesitated over (2026-09-14);
+#  - account names are a place to look, not part of a definition: "including when
+#    used in account names" sat in both NAME and COMPANY, and the model read it as
+#    a classification hint, arguing NAME against COMPANY over "SK BUSINESS TRUST"
+#    under "Account name(s)" (Sergei's sweep, 2026-09-15);
+#  - abbreviated, truncated and initial-only names are reported (Sergei's sentence):
+#    traces dropped them as "not clearly a full company name", and the sentence caught
+#    the bare "SK" on d10 that every earlier run leaked (2026-09-15);
+#  - NOT a title clause ("a person's name ... without a title such as Mr or Mrs"): on
+#    its own it made the model drop the joint initials "SK OK" "to be safe", and
+#    real/1 failed its gate twice with it; nor "initials"/"abbreviated" inside the
+#    definitions, which did not bring them back (2026-09-15);
+#  - NOT "public companies and brands do not need to be reported": the model then
+#    judged "is this public?" and dropped the customer's own company (2026-09-15);
+#  - a web address is an IDENTIFIER even when it spells a company's name: with
+#    brands in COMPANY, the model weighed domains against it (14 trace lines on
+#    real/1) and typed MEBANK.COM.AU as COMPANY in a draft; a class that flips
+#    between pages can slip a keep-list entry filed under the other (2026-09-15);
+#  - an address includes its box or bag number: the model wondered whether "IBN 79"
+#    in "IBN 79, 1 King St, ..." was an identifier, and one d03 draft started the
+#    address at the street number, which would leave the box number printed
+#    (2026-09-15);
 #  - distinct values (`_OUTPUT_VALUES`) against every printing (`_OUTPUT_BOXES`):
 #    see those two.
-# The 2026-09-14 changes were measured together on real/1 (DONE.md). Older
-# measurements: DONE.md, reports/2026-08-19-qwen38-bringup.md.
+# The 2026-09-14 changes were measured together on real/1, and so were the
+# 2026-09-15 ones, with a detection-only bisect on the pages that leaked (DONE.md).
+# Judge any edit on a corpus run, not on a leak or two: every single edit flipped
+# one or two near-tie values on some page. Older measurements: DONE.md,
+# reports/2026-08-19-qwen38-bringup.md.
 #
 # Two sentences must stay OUT, both removed 2026-08-19 when layer 0 became a
 # reasoning model, because each controlled something other than what it said:
@@ -287,24 +311,27 @@ FAMILIES = (QWEN, GEMMA)
 #    only real effect was suppressing a leading code fence - which the "no code
 #    fence" sentence now says directly.
 PROMPT = """Find the names, dates of birth, addresses, organizations and identifiers printed on \
-this page. Look for them anywhere: main text, titles, headers, footers, tables.
+this page. Look for them anywhere: main text, titles, headers, footers, tables, account names.
 
 TYPE is one of:
-* NAME : a person's name, full or partial, including when used in account names;
+* NAME : a person's name, full or partial;
 * DOB : a person's date of birth;
-* ADDRESS : a postal address, full or partial;
+* ADDRESS : a postal address, full or partial, including any box or bag number in it, such as \
+PO Box or Locked Bag;
 * COMPANY : a name of a company, an organization, a trust or a fund, or of a brand, full or \
-partial, including when used in account names;
+partial;
 * IDENTIFIER : any other identifier - a number or a code identifying a person, \
 an organization or an account, such as:
   - account number, credit card, driving licence, TFN, medicare or passport number;
   - insurance policy, reference or claim identifier;
   - membership or loyalty card number;
   - ABN, ACN or TFN number;
-  - phone number, email address, web address;
+  - phone number, email address, web address - even when it spells a company's name;
   - vehicle plate number.
 
 Use an appropriate TYPE for each value that you find, if unsure, fallback to IDENTIFIER.
+Person and company names may be abbreviated, shortened, truncated or written as initials - \
+report those too.
 When unsure whether to include something, include it: reporting too much is corrected later, \
 missing something is not. This applies to banks, insurers and every other organization \
 too - include their names, numbers, addresses and web addresses.

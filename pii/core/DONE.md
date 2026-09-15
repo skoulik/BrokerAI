@@ -4196,3 +4196,54 @@ the move; new completed tasks append to the matching section with their records.
         them.
       - **Across a server restart** n-max 2 reproduced all 8 requests byte for byte (03:53 on
         the server of 2026-09-13, 07:50 on a fresh one), draft acceptance included.
+
+- [x] **Detection prompt, 2026-09-15: four trace-driven edits, a bisect, and Sergei's sentence**
+      *(Sergei, from his own sweep's traces)*. Candidate edits to the committed prompt, each aimed at
+      an argument seen in the traces:
+      - a = "account names" moved from the NAME/COMPANY definitions to the where-to-look list;
+      - t = NAME "without a title such as Mr or Mrs";
+      - w = a web address stays IDENTIFIER "even when it spells a company's name";
+      - b = an address includes "any box or bag number in it, such as PO Box or Locked Bag";
+      - S = "Person and company names may be abbreviated, shortened, truncated or written as
+        initials - report those too." (Sergei).
+
+      **`real/1`** survival, cache off, so every difference is the prompt's:
+
+      | prompt | recall (leaks) | gate | detection thinking tokens | doubting trace lines | name/company exclusions |
+      |---|---|---|---|---|---|
+      | committed (`05b18cc`) | 96.1% (4) | PASS | 85.2k | 223 | 18 |
+      | a+t+w+b | 94.1% (6) | FAIL | 84.1k | — | — |
+      | a+t+w+b, "initials"/"abbreviated" in NAME/COMPANY | 92.2% (8) | FAIL | 81.1k | 204 | 25 |
+      | **a+w+b+S (adopted)** | **95.1% (5)** | **PASS** | **80.4k** | **188** | **13** |
+      | keep-public (below) | 91.2% (9) | FAIL | 79.4k | 223 | 49 |
+
+      - **Both failures were the joint initials `SK OK` on d10**, dropped "to be safe" / "not a full
+        name". Naming initials in the definitions did not bring them back.
+      - **A detection-only bisect** on the 8 pages that leaked (d05, d06, d09, d10), one pass per
+        variant, attributed it: **t alone loses `SK OK`**; a, w and b alone do not. Every single edit
+        flipped some near-tie value - the bare `SK` on d09 under all of them, `Sk Managemen` (d05)
+        under w or b - so one or two leaks are noise between prompts. a+w+b+S was the best variant
+        there, and the first to catch the bare `SK` on d10 that every run had leaked.
+      - **Leaks, place names excluded** (standalone place names are not stripped by design): the
+        committed prompt misses `SK` on d06 and d10; a+w+b+S misses `SK` on d06 and d09, and `Sk
+        Managemen` and `Sk Ma` on d05. `Sk Ma` is detected (typed PERSON) and still leaks, which is
+        unexplained and on TODO.
+      - **Grounding, a+w+b+S:** painted 192 / 95% / 9 partial against the committed prompt's
+        191 / 94% / 8; model boxes 167 boxed, 72% contain, 56% IoU (73% / 56% before).
+      - **Traces, a+w+b+S:** the sentence is quoted and acted on (d03, d04, d10). Brand against
+        product is still the largest topic (25 lines) and moved to TODO. System and form codes are
+        now skipped "to be safe", which is harmless.
+      - **Rejected, keep-public** (Sergei's idea): "or of a brand" out of COMPANY and "Public
+        companies and brands do not need to be reported." in place of the include-institutions
+        sentence. Gate FAIL on `SK OK`, and a new leak of the customer's own `SK MANAGEMENT VICTORIA
+        PTY LTD` on d10. The model quoted the rule 13 times ("If I follow … strictly, I might skip
+        most companies"), and brand/product doubts did not fall (27). The debate moved to "is this
+        public?", which is a keep decision the prompt must not make.
+      - **Adopted a+w+b+S** (Sergei and Claude): the leak difference from the committed prompt is
+        near-tie noise, and the edits are principled - a stable class for web addresses, whole
+        addresses, and truncated names asked for - with 5.6% fewer thinking tokens and 16% fewer
+        doubting lines. Titles are postponed and brands stay open (TODO).
+
+      Scripts in the session scratchpad (`bisect_probe.py`, `variant_run.py`, `trace_topics.py`);
+      runs and traces in `sensitive/statements/1/exp-2026-09-15-determinism/` and
+      `pii_eval/corpora/real/1/stripped.gemma4_{acctnames,initials,awbS,keep}` (local only).
