@@ -106,8 +106,48 @@ def test_shipped_list_keeps_institutions_and_merchants(shipped, name):
 
 
 def test_word_boundaries_are_enforced(shipped):
-    # 'anz' must not keep 'ANZAC PARADE TRADING' — patterns are wrapped in \b.
+    # 'anz' must not keep 'ANZAC PARADE TRADING': no pattern starts or ends inside a word.
     assert _orgs(shipped)("ANZAC PARADE TRADING") is False
+    assert shipped.matches("ORGANIZATION", "BIG ANZAC") == []
+
+
+@pytest.mark.parametrize("name", [
+    # Printed on real statements and certificates (2026-09-15). Each used to keep
+    # only its leading name, so the tail was pseudonymized on its own and the page
+    # read "QBE ORG_3".
+    "Australia and New Zealand Banking Group Limited",
+    "Australia and New Zealand Banking Group Limited (ANZ)",
+    "ANZ CARDS",
+    "National Australia Bank Limited",
+    "NAB Classic Banking",
+    "Commonwealth Bank of Australia",
+    "CommonwealthBank",
+    "Westpac Banking Corporation",
+    "Bank of Melbourne",
+    "Macquarie Bank Limited",
+    "Bank of Queensland Limited",
+    "ME BANK - A DIVISION OF BANK OF QUEENSLAND LIMITED",
+    "CMC Markets Stockbroking Limited",
+    "QBE Insurance (Australia) Limited",
+    "CGU Insurance",
+    "Insurance Australia Limited",
+    "BUDGET DIRECT INSURANCE",
+    "Auto & General Insurance Company Limited",
+    "Auto & General Services Pty Ltd",
+    "BPAY Pty Ltd",
+    "Australian Financial Complaints Authority",
+])
+def test_an_institutions_legal_name_is_kept_whole(shipped, name):
+    assert shipped.matches("ORGANIZATION", name) == [(0, len(name))]
+
+
+def test_a_pattern_may_end_in_punctuation():
+    # `\b` cannot match after `)` or `+`, which cost such patterns their last
+    # characters; the wrapper now only forbids starting or ending inside a word.
+    keep = KeepList([r"acme\s*\(au\)", r"disney\+?"])
+    assert keep.matches("ACME (AU)") == [(0, 9)]
+    assert keep.matches("DISNEY+") == [(0, 7)]
+    assert keep.matches("DISNEYLAND") == []
 
 
 def test_shipped_file_parses_and_is_not_empty(shipped):

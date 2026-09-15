@@ -11,9 +11,15 @@
 # entity.
 #
 # Syntax: each line is a regex matched case-insensitively and anywhere in the
-# value, automatically wrapped in \b(?:...)\b — so `anz` matches "ANZ HIGHETT"
-# but not "ANZAC". Use regex where a value has spelling variants
+# value, and never starting or ending inside a word — so `anz` matches "ANZ
+# HIGHETT" but not "ANZAC", and a line may end in `)` or `+`. Use regex where a
+# value has spelling variants
 # (`st\.?\s*george`). Blank lines and `#` comments are ignored.
+#
+# Let a line absorb the name's legal form and the words an institution prints
+# with it (`national\s+australia\s+bank(?:\s+(?:limited|ltd))?`). A keep match
+# exempts exactly what it matches, so an unmatched tail is stripped on its own:
+# "QBE Insurance (Australia) Limited" came out as "QBE ORG_3".
 #
 # [ENTITY_TYPE] starts a section; lines before the first section are
 # ORGANIZATION, which is what this file was before it grew sections. A class
@@ -23,26 +29,27 @@
 # `--strip-orgs` ignores the ORGANIZATION section and strips every one of them.
 
 # --- Banks and lenders ---
-anz
-australia\s+and\s+new\s+zealand\s+banking
-new\s+zealand\s+banking\s+group
-nab
-national\s+australia\s+bank
+anz(?:\s+cards)?
+australia\s+and\s+new\s+zealand\s+banking(?:\s+group)?(?:\s+(?:limited|ltd))?(?:\s*\(anz\))?
+new\s+zealand\s+banking\s+group(?:\s+(?:limited|ltd))?
+nab(?:\s+classic\s+banking)?
+national\s+australia\s+bank(?:\s+(?:limited|ltd))?
 cba
-commonwealth\s+bank
+commonwealth\s*bank(?:\s+of\s+australia)?(?:\s+(?:limited|ltd))?
 commbank
-westpac
+westpac(?:\s+banking\s+corporation)?
 st\.?\s*george
 bankwest
+bank\s+of\s+melbourne
 bendigo
 adelaide\s+bank
 suncorp
-macquarie
-bank\s+of\s+queensland
+macquarie(?:\s+bank)?(?:\s+(?:limited|ltd))?
+bank\s+of\s+queensland(?:\s+(?:limited|ltd))?
 boq
 ing
 amp
-me\s+bank
+me\s+bank(?:\s*-\s*a\s+division\s+of\s+bank\s+of\s+queensland(?:\s+(?:limited|ltd))?)?
 ubank
 heritage\s+bank
 newcastle\s+permanent
@@ -57,6 +64,7 @@ la\s+trobe\s+financial
 liberty\s+financial
 resimac
 firstmac
+cmc\s+markets(?:\s+stockbroking)?(?:\s+(?:limited|ltd))?
 
 # --- Aggregators / mortgage industry ---
 afg
@@ -69,14 +77,15 @@ aussie\s+home\s+loans
 mortgage\s+choice
 
 # --- Insurers ---
-qbe
-cgu
+qbe(?:\s+insurance)?(?:\s*\(australia\))?(?:\s+(?:limited|ltd))?
+cgu(?:\s+insurance)?(?:\s+(?:limited|ltd))?
 iag
 allianz
 aami
 gio
 apia
-budget\s+direct
+budget\s+direct(?:\s+insurance)?
+auto\s*&\s*general(?:\s+(?:insurance\s+company|services))?(?:\s+pty)?(?:\s+(?:limited|ltd))?
 youi
 racv
 racq
@@ -88,7 +97,7 @@ hcf
 nib
 tal
 zurich
-insurance\s+australia
+insurance\s+australia(?:\s+group)?(?:\s+(?:limited|ltd))?
 
 # --- Card networks and payment platforms ---
 visa
@@ -96,6 +105,7 @@ mastercard
 american\s+express
 amex
 eftpos
+bpay(?:\s+pty(?:\s+(?:limited|ltd))?)?
 paypal
 afterpay
 zip\s*(?:pay|money)?
@@ -113,6 +123,8 @@ centrelink
 medicare
 asic
 austrac
+australian\s+financial\s+complaints\s+authority
+afca
 australia\s+post
 
 # --- Supermarkets, retail, fuel ---

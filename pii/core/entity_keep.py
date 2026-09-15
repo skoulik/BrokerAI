@@ -55,17 +55,23 @@ class KeepList:
     """One entity type's compiled patterns: `keeps(value)` is True for a value
     that must NOT be stripped.
 
-    Each source line is one pattern, wrapped in `\\b(?:...)\\b` — so a plain
-    word (`anz`) matches on word boundaries as it reads, while a line stays
-    free to use regex syntax (`st\\.?\\s*george`, `1300[\\s-]*\\d{3}`) where a
-    value has spelling variants. Matched case-insensitively and ANYWHERE in the
-    value: `WOOLWORTHS NEWTOWN 4821 AU` keeps on `woolworths`, which is the
-    form a statement narrative actually prints."""
+    Each source line is one pattern, wrapped so it cannot start or end inside
+    a word — so a plain word (`anz`) matches as it reads and not inside
+    `ANZAC`, while a line stays free to use regex syntax (`st\\.?\\s*george`,
+    `1300[\\s-]*\\d{3}`) where a value has spelling variants. Matched
+    case-insensitively and ANYWHERE in the value: `WOOLWORTHS NEWTOWN 4821 AU`
+    keeps on `woolworths`, which is the form a statement narrative actually
+    prints.
+
+    The wrapper is `(?<!\\w)(?:...)(?!\\w)`, not `\\b(?:...)\\b`: the two agree at
+    a letter, but `\\b` cannot match after a trailing `)` or `+`, so a pattern
+    ending in one silently lost its last characters to the strip — "Banking
+    Group Limited (ANZ)" kept everything but the parentheses (2026-09-15)."""
 
     def __init__(self, patterns):
         self.patterns = tuple(patterns)
         self._compiled = tuple(
-            re.compile(rf"\b(?:{p})\b", re.IGNORECASE) for p in self.patterns
+            re.compile(rf"(?<!\w)(?:{p})(?!\w)", re.IGNORECASE) for p in self.patterns
         )
 
     def keeps(self, value: str) -> bool:
