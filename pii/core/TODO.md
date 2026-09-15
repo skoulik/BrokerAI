@@ -933,7 +933,8 @@ text tier's record is in [DONE.md](DONE.md).)
         compare identifiers character by character, not just recall. The swizzle was tuned on
         q8_0 and f16 tiles only.
       - **DiffusionGemma** (`google/diffusiongemma-26B-A4B-it`, released 2026-06-10). Preliminary
-        research 2026-09-15: **not usable for layer 0 yet, and weaker at documents.**
+        research 2026-09-15: **not usable for layer 0 yet, and weaker at documents. Postponed
+        (Sergei, 2026-09-15).**
         - **What it is:** Gemma 4 26B-A4B turned into a discrete text-diffusion model. An
           autoregressive encoder caches the prompt, and a bidirectional decoder denoises
           256-token canvases, 15–20 tokens per forward pass. It takes images and has a thinking
