@@ -912,9 +912,9 @@ text tier's record is in [DONE.md](DONE.md).)
         answers match. Every drafter setting so far has been its own set of outputs.
       - **A Q4 quant of Gemma 4 26B-A4B.** `Q=Q4_0 ./dl.sh` fetches it from the same ggml-org
         conversion (14.6 GB against 26.9 GB). On Qwen3.6-27B, Q4_0 cost 11% of prefill for no
-        gain, but that workload was image prefill. Gemma's is decode: ~100k thinking tokens
-        against ~100k prefill tokens per `real/1` run, and decode is memory-bandwidth-bound,
-        so Q4 may pay here. The risk is transcription: shorter traces already misread long
+        gain, but that workload was image prefill. Gemma's is decode: 1,658 s of decode against
+        563 s of prefill on a `real/1` survival run, and decode is memory-bandwidth-bound, so
+        Q4 may pay here. The risk is transcription: shorter traces already misread long
         reference codes. Compare identifiers character by character, not just recall, and
         check the MTP drafter still accepts well against a Q4 target. A Q4_K_M or UD-Q4_K_XL
         from another publisher is the fallback if Q4_0 reads badly.
