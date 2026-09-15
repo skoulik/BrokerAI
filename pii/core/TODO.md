@@ -917,9 +917,15 @@ text tier's record is in [DONE.md](DONE.md).)
            Caveat: the repo was last modified 2026-07-17, before the fixed chat template (#47,
            2026-07-20) that the ggml-org conversion carries, so pass that template with
            `--chat-template-file`. Check that the ggml-org MTP drafter pairs with it.
-        2. **One post-training K-quant for comparison:** bartowski `Q4_K_M` (17.0 GB, imatrix)
-           or unsloth `UD-Q4_K_XL` (17.0 GB). The i-quants (`IQ4_XS`, 14.2 GB) are smaller but
-           slower on Metal.
+        2. **One post-training K-quant, as a quality comparison only:** bartowski `Q4_K_M`
+           (17.0 GB, imatrix) or unsloth `UD-Q4_K_XL` (17.0 GB). On the M1 Max, K-quants lack the
+           fast Metal decode kernel (`mul_mv_ext` covers the legacy quants and `iq4_nl` only).
+           Measured on Qwen3-VL-8B (reports/2026-08-12-mac-inference-speed.md), tg512 was Q4_0
+           58.4, IQ4_NL 49.6, Q4_K_M 43.7 and Q8_0 38.1 tok/s. So a K-quant would decode ~25%
+           slower than Q4_0, and the i-quants are out: IQ4_NL is 15% slower, and IQ4_XS is not in
+           the fast-kernel list at all (unmeasured). That was a dense model; the MoE experts use
+           the `_id` kernels, whose coverage is unchecked. The same session also had UD-Q4_K_XL
+           return 21 values against Q8_0's 70.
         Why it may pay here when it did not for Qwen: Q4_0 cost Qwen3.6-27B 11% of prefill for no
         gain, but that workload was image prefill. Gemma's is decode, 1,658 s of decode against
         563 s of prefill on a `real/1` survival run, and decode is limited by memory bandwidth.
