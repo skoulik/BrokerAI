@@ -932,6 +932,29 @@ text tier's record is in [DONE.md](DONE.md).)
         The risk is transcription, since shorter traces already misread long reference codes, so
         compare identifiers character by character, not just recall. The swizzle was tuned on
         q8_0 and f16 tiles only.
+      - **Gemma 4 12B "Unified"** (`google/gemma-4-12B-it`, raised by Sergei 2026-09-15).
+        Preliminary, from the model card:
+        - **Architecture:** dense, 11.95B parameters, 48 layers, SWA window 1024. It is
+          encoder-free: image patches (and audio) are linearly projected straight into the LLM,
+          with no ~550M vision tower. Image budgets are the same as the 26B's (70…1120 tokens).
+          It has a thinking mode.
+        - **Quality against 26B-A4B:** OmniDocBench 1.5 edit distance 0.164 vs 0.149 (slightly
+          worse, far better than DiffusionGemma's 0.319); MMMU Pro 69.1% vs 73.8%; MMLU Pro 77.2%
+          vs 82.6%.
+        - **Serving:** `ggml-org/gemma-4-12B-it-GGUF` has Q8_0 12.7 GB, Q4_0 7.2 GB (its `.src_sha`
+          lists the QAT checkpoint), a 0.16 GB mmproj projector and MTP drafters. Google also
+          publishes `gemma-4-12B-it-qat-q4_0-gguf`. Open llama.cpp issues: draft-mtp memory
+          fault (#26782), and garbled output on large prompts on Intel Arc (#26206). Metal is
+          unreported.
+        - **The catch is speed, and it is estimated, not measured.** It is dense, so every token
+          reads ~12B parameters against the 26B-A4B's 3.8B active. Our runs are decode-dominated
+          (1,658 s of decode against 563 s of prefill), so expect roughly 2–3x slower decode at
+          Q8_0. The encoder-free prefill also runs image tokens through the full 12B, and saves
+          only the vision tower. Its draws are the memory footprint (7–13 GB) and a different
+          way of reading fine print.
+        - **First step if pursued:** a speed check before any corpus run — `llama-bench` tg at
+          Q8_0 and Q4_0, then d01 through the strip path with thinking on — since speed is what
+          would rule it out.
       - **DiffusionGemma** (`google/diffusiongemma-26B-A4B-it`, released 2026-06-10). Preliminary
         research 2026-09-15: **not usable for layer 0 yet, and weaker at documents. Postponed
         (Sergei, 2026-09-15).**
