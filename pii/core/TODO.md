@@ -932,8 +932,27 @@ text tier's record is in [DONE.md](DONE.md).)
         The risk is transcription, since shorter traces already misread long reference codes, so
         compare identifiers character by character, not just recall. The swizzle was tuned on
         q8_0 and f16 tiles only.
-      - **Diffusiongemma.** Deferred since 2026-09-13. First establish what it is, whether
-        llama.cpp serves it on Metal, and whether it reads images; nothing is recorded yet.
+      - **DiffusionGemma** (`google/diffusiongemma-26B-A4B-it`, released 2026-06-10). Preliminary
+        research 2026-09-15: **not usable for layer 0 yet, and weaker at documents.**
+        - **What it is:** Gemma 4 26B-A4B turned into a discrete text-diffusion model. An
+          autoregressive encoder caches the prompt, and a bidirectional decoder denoises
+          256-token canvases, 15–20 tokens per forward pass. It takes images and has a thinking
+          mode. The recommended sampler is entropy-bounded with a 0.8 → 0.4 temperature
+          schedule and up to 48 steps, so greedy reproducibility is an open question.
+        - **Quality, from Google's model card against Gemma 4 26B-A4B:** OmniDocBench 1.5 edit
+          distance 0.319 against 0.149, twice the document-parsing error; MMMU Pro 54.3% against
+          73.8%. Our task is verbatim transcription of statements, so this is the headline risk.
+        - **llama.cpp:** only draft PRs. #24423 (unsloth, updated 2026-09-10) has a
+          `llama-diffusion-cli` and example servers. #24427 is another. Neither touches mtmd,
+          grammars or llama-server, and device-side sampling is CUDA only: on Metal it falls
+          back to the host.
+        - **Apple Silicon speed:** issue #24529 measured an M3 Max at Q4_K_M at 6–28 tok/s as
+          shipped, and 48–61 tok/s after local optimisation. That is no better than our
+          autoregressive Gemma 4 with MTP on the M1 Max (61 tok/s).
+        - **Other route:** mlx-community publishes 4/8-bit MLX conversions. Whether mlx-vlm serves
+          it with images is unverified.
+        - **Revisit when** llama.cpp support merges with image input and Metal sampling. A quick
+          quality spot check through MLX on a few pages is possible sooner if wanted.
 
 - [ ] **llama.cpp: find where the batch shape changes the logits** *(Sergei, 2026-09-15: worth
       doing anyway, and it also bears on the MTP setting)*. Greedy output on the Mac changes
