@@ -891,7 +891,7 @@ text tier's record is in [DONE.md](DONE.md).)
       cannot be sidestepped that way: every setting is one particular set of outputs. What
       remains after the restore bug below is the batch-shape noise itself (slot hit, 2-token
       reuse, draft depth).
-      - **The restore discrepancy is a llama.cpp bug, found and fixed locally (2026-09-15).**
+      - **The restore discrepancy is a llama.cpp bug, found and fixed (2026-09-15).**
         A full hit on the slot's own KV is noise: logprobs within 0.016, and the whole
         755-token output identical. A full hit RESTORED from host memory (`--cache-ram`) was
         not, because `llama_kv_cache::state_write` drops sliding-window cells that are masked
@@ -902,16 +902,24 @@ text tier's record is in [DONE.md](DONE.md).)
         nothing notices. Token-1 deviation after a restore grew with the tokens generated
         before the save: 0.015 / 0.11 / 0.88 / 1.17 / 8.4 for 1 / 8 / 64 / 256 / 755. At 755
         the model closed its thought at once, the "no thinking" pages; MTP was not involved.
-        - **Fix:** drop masked cells only for `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY` (checkpoints).
-          Mac branch `kv/swa-mask-partial-only` (`e422ce962`, off `002a12ad2`, unpushed), test
-          build `~/src/llama.cpp-swafix-test` (brokerai-serving + fix), launcher
-          `serve-swafix.sh`. Patched: 0.016 at 1, 64 and 755 generated, and the real request
-          restored byte-identical to a full evaluation, MTP on. Unpatched control: 61 tokens.
-          Upstream master (`7cf1c54a9`) still has both halves.
-        - **Open (Sergei):** report or PR upstream, merge into `brokerai-serving` and rebuild.
-          The fix makes host-memory entries larger for `--swa-full` models, since SWA cells
-          beyond the window are now kept. BrokerAI is unaffected either way while Gemma sends
-          `cache_prompt: false`.
+        - **Fix, deployed 2026-09-15:** drop masked cells only for
+          `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY` (checkpoints). Fork branch
+          `kv/swa-mask-partial-only` (`e422ce962`), merged into `brokerai-serving` (`b162d127d`,
+          pushed); `build-b10939` rebuilt (build 10952) and serving. The real request restored
+          byte-identical to a full evaluation, MTP on (unpatched: 61 tokens). The fix makes
+          host-memory entries larger for `--swa-full` models, since SWA cells beyond the window
+          are now kept.
+        - **Minimal repro, reproduced on upstream master `7cf1c54a9`:** text-only, Gemma 3 270M,
+          `--swa-full -np 1`, curl. Evaluate prompt A; generate 400 tokens on A; send prompt B
+          (A's state is saved to `--cache-ram`); send A again (restored). Unpatched, the restored
+          first-token logprobs differ from both a full evaluation and a slot reuse (`Alpha` −9.47
+          against −9.76, `α` −10.28 against −10.87). Patched, they are identical to the slot
+          reuse. Script: Mac `~/models/gemma-3-270m/repro_swa_restore.sh`; a master build is
+          in `~/src/llama.cpp-swafix-test`.
+        - **Upstream:** no existing report found (2026-09-15). #28873 (open) changes the same
+          function for `PARTIAL_ONLY` saves of non-SWA caches, a checkpoint speed-up, and does
+          not fix this. #27148 (RAM cache restoring an unrelated conversation under concurrent
+          load), #21769 and #25751 are different mechanisms. Report or PR: Sergei's call.
         - Probes: scratch `first_token_probe.py`, `hit_replay.py`, `reuse_replay.py`,
           `restore_logprobs.py`, `swa_window_probe.py`, `restore_replay.py`; results in
           `sensitive/statements/1/exp-2026-09-15-determinism/`.
