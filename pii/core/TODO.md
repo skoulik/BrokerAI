@@ -910,14 +910,22 @@ text tier's record is in [DONE.md](DONE.md).)
         need a fix, as MTP did ([PR #22105](https://github.com/ggml-org/llama.cpp/pull/22105)).
         Measure decode tok/s and acceptance against MTP n-max 2 (61.1 tok/s), and whether the
         answers match. Every drafter setting so far has been its own set of outputs.
-      - **A Q4 quant of Gemma 4 26B-A4B.** `Q=Q4_0 ./dl.sh` fetches it from the same ggml-org
-        conversion (14.6 GB against 26.9 GB). On Qwen3.6-27B, Q4_0 cost 11% of prefill for no
-        gain, but that workload was image prefill. Gemma's is decode: 1,658 s of decode against
-        563 s of prefill on a `real/1` survival run, and decode is memory-bandwidth-bound, so
-        Q4 may pay here. The risk is transcription: shorter traces already misread long
-        reference codes. Compare identifiers character by character, not just recall, and
-        check the MTP drafter still accepts well against a Q4 target. A Q4_K_M or UD-Q4_K_XL
-        from another publisher is the fallback if Q4_0 reads badly.
+      - **A 4-bit quant of Gemma 4 26B-A4B.** Plain Q4_0 is the weakest 4-bit format (one scale
+        per 32 weights, no importance matrix), so it is not the candidate. In order:
+        1. **Google's QAT Q4_0** (`google/gemma-4-26B-A4B-it-qat-q4_0-gguf`, 14.4 GB + a 1.19 GB
+           mmproj). It was trained for that format, which usually beats post-training K-quants.
+           Caveat: the repo was last modified 2026-07-17, before the fixed chat template (#47,
+           2026-07-20) that the ggml-org conversion carries, so pass that template with
+           `--chat-template-file`. Check that the ggml-org MTP drafter pairs with it.
+        2. **One post-training K-quant for comparison:** bartowski `Q4_K_M` (17.0 GB, imatrix)
+           or unsloth `UD-Q4_K_XL` (17.0 GB). The i-quants (`IQ4_XS`, 14.2 GB) are smaller but
+           slower on Metal.
+        Why it may pay here when it did not for Qwen: Q4_0 cost Qwen3.6-27B 11% of prefill for no
+        gain, but that workload was image prefill. Gemma's is decode, 1,658 s of decode against
+        563 s of prefill on a `real/1` survival run, and decode is limited by memory bandwidth.
+        The risk is transcription, since shorter traces already misread long reference codes, so
+        compare identifiers character by character, not just recall. The swizzle was tuned on
+        q8_0 and f16 tiles only.
       - **Diffusiongemma.** Deferred since 2026-09-13. First establish what it is, whether
         llama.cpp serves it on Metal, and whether it reads images; nothing is recorded yet.
 
