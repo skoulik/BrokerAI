@@ -900,6 +900,62 @@ text tier's record is in [DONE.md](DONE.md).)
         is unmeasured since the 2026-09-14 changes.
       - The DFlash drafter moved to the item below (Sergei, 2026-09-15).
 
+- [ ] **Titles in names - postponed** *(Sergei, 2026-09-15)*. The model deliberates over "Mr Sergei
+      Kulik" against "Sergei Kulik" as distinct values (4 trace lines on `real/1`). Listing both may
+      key one person under two pseudonyms - not yet checked in d02/d09's maps. The prompt route
+      failed: "NAME … without a title such as Mr or Mrs" made the model drop the joint initials
+      `SK OK` ("I'll leave it out to be safe"). A detection-only bisect on the leak pages showed
+      the title clause alone loses `SK OK`, and no other edit did; `real/1` failed its gate twice
+      with it. If the fork is real, handle it deterministically: a NAME finding that starts with
+      a title also contributes its untitled form. Not a prompt sentence.
+
+- [ ] **Brands: the COMPANY boundary the model still argues most** *(Sergei, 2026-09-15: "something
+      has to be done and I don't see an obvious solution")*. With brands in COMPANY (Sergei's call),
+      the largest remaining debate in the traces is brand against product, model or statement type:
+      "Kia is a brand, but it's part of the vehicle description", "AMPLIFY BUSINESS … statement
+      type", "Gold Car Insurance Policy", NetBank. That is 25-29 doubting lines per `real/1` run.
+      Adding "product or service" to COMPANY cost three leaks and painted product names as ORG
+      (DONE.md). Options to think through, none decided:
+      1. **Measure the harm first.** So far it costs tokens, not leaks: none of the 4-5 leaks is a
+         brand case. Check whether any truth value was ever dropped as "a product/brand".
+      2. **An extent rule:** report the brand word itself, not the product or model phrase ("Kia",
+         not "2019 Kia Sportage"). It is a boundary inside a definition, which tends to become the
+         next argument.
+      3. **Take brands out of the model's job:** known brands already sit in the keep list, so the
+         model could report every capitalized name and let the keep list decide. That changes the
+         over-strip balance, and the prompt must not end up making keep decisions.
+      4. **Accept the residual argument**, per the lesson that the narrowest wording plus some
+         argument beats widening a class (memory: prompt-category-word-imports-model-definition).
+
+- [ ] **Detection prompt tuning, 2026-09-15: where it stopped** *(Sergei: two days on the prompt is
+      enough for now)*. From Sergei's sweep traces, five edits were tried on top of the committed
+      prompt. Each ran on `real/1`, and a detection-only bisect covered the 8 pages that leaked,
+      d05, d06, d09 and d10 (runs are reproducible, so one pass each):
+      - a = "account names" moved from NAME/COMPANY to the where-to-look list;
+      - t = NAME "without a title such as Mr or Mrs";
+      - w = a web address stays IDENTIFIER "even when it spells a company's name";
+      - b = an address includes its box or bag number;
+      - S = "Person and company names may be abbreviated, shortened, truncated or written as
+        initials - report those too."
+
+      | `real/1` survival | recall (leaks) | gate | detection thinking tokens |
+      |---|---|---|---|
+      | committed prompt | 96.1% (4) | PASS | 85.2k |
+      | a+t+w+b | 94.1% (6) | FAIL (`SK OK`) | 84.1k |
+      | a+t+w+b + "initials"/"abbreviated" in the definitions | 92.2% (8) | FAIL (`SK OK`) | 81.1k |
+      | a+w+b+S | 95.1% (5) | PASS | 80.4k |
+
+      - **The bisect:** t alone loses `SK OK`. The fragile `SK` on d09 flips under every single
+        edit, and `Sk Managemen` (d05 p2) under w or b, so page-level results are dominated by
+        near-ties. a+w+b+S caught the `SK` on d10 for the first time, which had leaked in every
+        run, and cut doubting lines 223 -> 188.
+      - **Uncommitted on main:** a+t+w+b + "initials", the failing set, plus the keep-list extension
+        and its wrapper fix. Main must be set to whatever is chosen before committing.
+      - **Open:** choose between the committed prompt and a+w+b+S; `Sk Ma` (d05) is detected but
+        still leaks downstream (typed PERSON in a+w+b+S), which is unexplained. Scripts:
+        `bisect_probe.py`, `variant_run.py`, `trace_topics.py`; data in
+        `sensitive/statements/1/exp-2026-09-15-determinism/`.
+
 - [ ] **After prompt tuning: DFlash, a Q4 quant, Diffusiongemma** *(Sergei, 2026-09-15)*. Each is
       a `real/1` survival + grounding run against the committed prompt, with the cache off so
       the comparison is exact.
