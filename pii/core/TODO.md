@@ -926,6 +926,14 @@ text tier's record is in [DONE.md](DONE.md).)
          over-strip balance, and the prompt must not end up making keep decisions.
       4. **Accept the residual argument**, per the lesson that the narrowest wording plus some
          argument beats widening a class (memory: prompt-category-word-imports-model-definition).
+      - **Tried 2026-09-15, rejected: the "keep-public" reversal** (Sergei's idea). Committed
+        prompt, with "or of a brand" out of COMPANY and the include-institutions sentence replaced
+        by "Public companies and brands do not need to be reported." On `real/1`: 91.2%, 9 leaks,
+        gate FAIL on `SK OK`. The new leaks include the customer's own `SK MANAGEMENT VICTORIA PTY
+        LTD` on d10. Doubting lines stayed at 223 and brand/product lines at 27; name/company
+        exclusions rose 18 -> 49. The model quoted the rule 13 times ("If I follow … strictly, I
+        might skip most companies"). The debate moved to "is this public?", and that judgement
+        swallowed a private entity - the keep decision the prompt must not make.
 
 - [ ] **Detection prompt tuning, 2026-09-15: where it stopped** *(Sergei: two days on the prompt is
       enough for now)*. From Sergei's sweep traces, five edits were tried on top of the committed
