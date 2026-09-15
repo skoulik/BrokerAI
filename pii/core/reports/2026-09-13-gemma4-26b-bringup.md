@@ -237,6 +237,11 @@ checked against both runs:
 | the joint holders' printed initials, `PERSON_JOINT`, **critical** (d10) | stripped | **leaked** |
 | `SK` (d10) | stripped | **leaked** |
 
+> **Correction, 2026-09-15.** Gemma's `Sk Ma` was painted. The scorer read it inside the
+> surviving 12-character truncation in the table, so Gemma's runs here are one leak lower:
+> 92.2% (8) with thinking off, 91.2% (9) for run 2, and 95.1% (5) with thinking in detection.
+> Qwen3.8's `Sk Ma` did leak. Record in [../DONE.md](../DONE.md).
+
 **All three extra leaks sit in the class the 2026-08-20 report already diagnosed.** Each is an
 abbreviated or clipped rendering of the customer's own names inside a narrative line, which
 `locate_borrowed` cannot connect back to the full name it holds, because none of its tiers

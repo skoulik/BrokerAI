@@ -35,14 +35,14 @@ below gets picked up against the old shape of the tool.
 
 ## Plan — layer 0 (Gemma 4), as agreed with Sergei on 2026-09-15
 
-Where things stand: detection prompt tuning is concluded (`fbc040f`: 95.1% on `real/1`, gate
-PASS, DONE.md). Runs are reproducible (`ModelFamily.prompt_cache`, and the llama.cpp SWA
-restore fix serving from `brokerai-serving` `40e3f3b3b`). MTP n-max 2 stays. The keep list
-covers legal names (`952bd10`). The items below are in the order agreed. Each has its own
-entry further down with the details.
+Where things stand: detection prompt tuning is concluded (`fbc040f`: 96.1% (4 leaks) on
+`real/1` once the scorer stopped double-counting a truncation, gate PASS, DONE.md). Runs are
+reproducible (`ModelFamily.prompt_cache`, and the llama.cpp SWA restore fix serving from
+`brokerai-serving` `40e3f3b3b`). MTP n-max 2 stays. The keep list covers legal names
+(`952bd10`). The items below are in the order agreed. Each has its own entry further down with
+the details. Item 1, the d05 `Sk Ma` leak, is closed: it was painted, and the scorer counted it
+inside another value (DONE.md).
 
-1. **The d05 `Sk Ma` leak** — detected (typed PERSON), yet it survives redaction. Probably
-   placement or grouping, not the prompt; local analysis, no model needed first.
 2. **`real/1` with MTP on against off** — the one missing piece of "Re-check MTP".
 3. **After prompt tuning** (Sergei's list):
    - DFlash;

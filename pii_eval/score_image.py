@@ -13,7 +13,9 @@ confusion-squashed containment (0/O, 1/l/I, 5/S, 8/B ... collapsed) and,
 for longer values, a banded edit-distance scan are tried, so a value that
 survived with one misread glyph is flagged rather than silently passed.
 Values squashing below 4 characters match exactly only (3-letter suburbs
-would false-leak everywhere at distance 1). The same matcher decides
+would false-leak everywhere at distance 1). A value readable only inside
+the printings of a longer truth value is not readable in its own right
+(`_score_survival`). The same matcher decides
 keep-types ("kept" if still readable) — there the tolerance works in the
 pipeline's favor, which is the correct direction for both.
 
@@ -95,10 +97,47 @@ def find_value(value: str, text: str, squashed_text: str | None = None):
     return None
 
 
+def _spans(needle: str, hay: str) -> list[tuple[int, int]]:
+    return [(m.start(), m.start() + len(needle))
+            for m in re.finditer(f"(?={re.escape(needle)})", hay)] if needle else []
+
+
+def _inside_longer(e, found, entities, reread: str, squashed: str):
+    """The longer truth value whose printings hold EVERY printing of `e`, or
+    None. Compared in the space `e` was found in (normalized for an exact
+    match, squashed for a fuzzy containment); an edit-distance match has no
+    position and is never excused, nor can it excuse another."""
+    if found == "exact":
+        fold, hay = _norm, _norm(reread)
+    elif found == "fuzzy" and _squash(e["value"]) in squashed:
+        fold, hay = _squash, squashed
+    else:
+        return None
+    own = _spans(fold(e["value"]), hay)
+    for other in entities:
+        needle = fold(other["value"])
+        if len(needle) <= len(fold(e["value"])):
+            continue
+        claimed = _spans(needle, hay)
+        if claimed and all(any(a <= s and t <= b for a, b in claimed)
+                           for s, t in own):
+            return other
+    return None
+
+
 def _score_survival(entities, reread: str) -> None:
+    """One printed span is one truth value: a value readable ONLY inside the
+    printings of a longer truth value is not readable in its own right, so a
+    painted truncation is not scored as a leak of the longer value that
+    survived (record in pii/core/DONE.md). Word boundaries would be the wrong
+    fix: the reread glues words (`fromsk`), and a glued leak must still count."""
     squashed = _squash(reread)
     for e in entities:
         found = find_value(e["value"], reread, squashed)
+        inside = found and _inside_longer(e, found, entities, reread, squashed)
+        if inside:
+            e["inside"] = inside["value"]
+            found = None
         e["match"] = found
         if e["strip_expected"]:
             e["verdict"] = "leaked" if found else "stripped"
@@ -157,6 +196,13 @@ def summarize(all_entities, all_invalid, noise,
             c = keep_by_type[t]
             print(f"{t:<20}{c['kept'] + c['over-stripped']:>5}{c['kept']:>10}"
                   f"{c['over-stripped']:>15}")
+
+    inside = [e for e in all_entities if "inside" in e]
+    if inside:
+        print(f"\nreadable only inside a longer truth value, so not counted as "
+              f"readable ({len(inside)}):")
+        for e in inside:
+            print(f"  {e['file']}: {e['type']} {e['value']!r} in {e['inside']!r}")
 
     if invalid_identifiers != "ignore" and (all_invalid or noise):
         print(f"\nchecksum-invalid identifiers "

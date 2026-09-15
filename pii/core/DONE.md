@@ -4227,7 +4227,9 @@ the move; new completed tasks append to the matching section with their records.
       - **Leaks, place names excluded** (standalone place names are not stripped by design): the
         committed prompt misses `SK` on d06 and d10; a+w+b+S misses `SK` on d06 and d09, and `Sk
         Managemen` and `Sk Ma` on d05. `Sk Ma` is detected (typed PERSON) and still leaks, which is
-        unexplained and on TODO.
+        unexplained and on TODO. *Corrected the same evening:* `Sk Ma` was painted, and the scorer
+        counted it inside the surviving `Sk Managemen` - a+w+b+S is 96.1% (4), level with the
+        committed prompt (next entry).
       - **Grounding, a+w+b+S:** painted 192 / 95% / 9 partial against the committed prompt's
         191 / 94% / 8; model boxes 167 boxed, 72% contain, 56% IoU (73% / 56% before).
       - **Traces, a+w+b+S:** the sentence is quoted and acted on (d03, d04, d10). Brand against
@@ -4247,3 +4249,51 @@ the move; new completed tasks append to the matching section with their records.
       Scripts in the session scratchpad (`bisect_probe.py`, `variant_run.py`, `trace_topics.py`);
       runs and traces in `sensitive/statements/1/exp-2026-09-15-determinism/` and
       `pii_eval/corpora/real/1/stripped.gemma4_{acctnames,initials,awbS,keep}` (local only).
+
+- [x] **The d05 `Sk Ma` "leak" was the scorer counting one surviving string twice** *(layer-0
+      plan item 1, 2026-09-15)*. `Sk Ma` was recorded as detected (typed PERSON) and still leaking
+      under the adopted prompt. It was painted: its line re-reads as `ID 2 PERSON_6 ORG 6`. The
+      survival scorer looks for a value anywhere in the document's re-OCR with no word boundary,
+      and `sk ma` is the start of `Sk Managemen` on page 2 - a separate truth value, the same
+      company truncated differently, which the model really did miss. One surviving string, two
+      leaks. The leak lists are the scorer's verdicts; the re-read is what the page says, and it
+      should be read before a leak is chased as a pipeline bug.
+      - **Fixed in the scorer** (`score_image._score_survival`, shared by the image and PDF tiers):
+        a value readable only inside the printings of a longer truth value of the same document
+        is not counted as readable, and the run lists it apart. The comparison is made in the
+        space the value was found in - normalized for an exact match, squashed for a confusion
+        match; an edit-distance match has no position, so it neither excuses nor is excused. Keep
+        values follow the same rule: a kept name read only inside a leaked one was over-stripped.
+      - **Not word boundaries:** the re-OCR glues words (`toperson_3`, `toorg_6` in these same
+        rereads), and a glued leak must still count. Left open: a short value inside an ordinary
+        word (`sk` in "risk"). Every current `SK` leak was checked and is a whole word.
+      - **Runs it touched.** d05 re-read from every `real/1` output still on disk (rereads cached,
+        local, in `pii_eval/corpora/real/1/rereads/`), taking each output to be the recorded run:
+
+        | output (`stripped.*`) | recorded | corrected |
+        |---|---|---|
+        | `gemma4_26b_hybrid_off` (bring-up, thinking off, run 1) | 91.2% (9) | 92.2% (8) |
+        | `gemma4_26b_hybrid_off_native` (run 2) | 90.2% (10) | 91.2% (9) |
+        | `gemma4_26b_hybrid_think1` (thinking in detection) | 94.1% (6) | 95.1% (5) |
+        | `gemma4_b2048s` (budget 2048, soft cut-off) | 92.2% (8) | 93.1% (7) |
+        | `gemma4_products_4096` | 93.1% (7) | 94.1% (6) |
+        | `gemma4_initials` | 92.2% (8) | 93.1% (7) |
+        | `gemma4_keep` (keep-public) | 91.2% (9) | 92.2% (8) |
+        | `gemma4_awbS` (adopted, `fbc040f`) | 95.1% (5) | **96.1% (4)** |
+
+        Unchanged: Qwen3.8 xhigh combined, the 2026-09-14 prompt without "PII", and
+        `gemma4_defs_off` - their `Sk Ma` printing really was unpainted - and the brands,
+        definitions and account-names runs, which did not leak it. Rescoring the fully re-read
+        `awbS` and `brands_nocache_A` moved nothing else, on either axis.
+      - **No conclusion changes.** Every gate verdict stands (ORGANIZATION is not critical) and
+        every comparison keeps its order, with two ties shifted: the adopted prompt is level with
+        the committed one at 4 leaks instead of one behind, and Gemma with thinking in detection
+        is one leak ahead of Qwen3.8's 6 instead of level.
+      - **Unconfirmed, not chased:** in `gemma4_defs_off` the trace lists `Sk Ma` and the name
+        printed beside it as ONE company value, and the output paints only the second half.
+        Either the answer differed from the trace, or a detected two-part value was painted in
+        part. The harness keeps no model answer, so telling them apart needs a `--debug` rerun of
+        d05 under that prompt; the adopted prompt reports the two as separate values and paints
+        both.
+
+      Tests 914 -> 920 (`tests/pii_eval/test_score_image.py`).

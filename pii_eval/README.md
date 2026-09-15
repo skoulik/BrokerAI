@@ -179,7 +179,9 @@ OCR-tolerant and recall-first: confusion-squashed containment (0/O, 1/l,
 5/S...) and, for long values, a banded edit-distance scan — a value
 surviving with one misread glyph counts as leaked (the `~ocr` column
 counts fuzzy-only leaks); values squashing under 4 chars match exactly
-only. Same critical gate as the text tier. Known delta classes (first
+only. A value readable only inside the printings of a longer truth value
+(a truncation `Acme Co` inside a surviving `Acme Constructi`) is not counted as
+readable, and is listed apart. Same critical gate as the text tier. Known delta classes (first
 run's leaks root-caused in the pii/core/DONE.md record): OCR breaking
 the shape/context that pattern recognizers key on (collapsed spacing,
 misread labels, label/value columns segmented into distant blocks),

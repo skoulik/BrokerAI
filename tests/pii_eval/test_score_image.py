@@ -32,6 +32,58 @@ def test_the_run_total_names_the_budget_it_was_taken_at():
     assert "4096" in line and "8 pass(es) reached it" in line
 
 
+def _survival(reread, *values, keep=()):
+    from pii_eval.score_image import _score_survival
+
+    entities = [{"type": "ORGANIZATION", "value": v, "strip_expected": True}
+                for v in values]
+    entities += [{"type": "ORGANIZATION", "value": v, "strip_expected": False}
+                 for v in keep]
+    _score_survival(entities, reread)
+    return {e["value"]: e["verdict"] for e in entities}
+
+
+def test_a_truncation_read_only_inside_the_surviving_longer_value_was_painted():
+    # The truncation's own printing is gone ("ID 2 PERSON_6"); its letters are
+    # still readable, but only as the start of the longer value that leaked.
+    verdicts = _survival("ID 2 PERSON_6 ORG 6\nLinked Acc Trns Acme Constructi 50.00",
+                         "Acme Co", "Acme Constructi")
+    assert verdicts == {"Acme Co": "stripped", "Acme Constructi": "leaked"}
+
+
+def test_a_truncation_with_a_printing_of_its_own_still_leaks():
+    verdicts = _survival("to Acme Co 10.00\nTrns Acme Constructi 50.00",
+                         "Acme Co", "Acme Constructi")
+    assert verdicts == {"Acme Co": "leaked", "Acme Constructi": "leaked"}
+
+
+def test_a_glued_printing_still_leaks():
+    # Why this is not a word-boundary rule: the reread joins words.
+    assert _survival("Funds transfer fromacme 1,500.00", "ACME") == {"ACME": "leaked"}
+
+
+def test_containment_is_judged_in_the_squashed_space_too():
+    # Neither value is readable exactly (1 for I, 0 for O); both squash-match.
+    verdicts = _survival("Acme BUS1NESS TRUST 0NE", "Acme Business Trus",
+                         "Acme Business Trust One")
+    assert verdicts == {"Acme Business Trus": "stripped",
+                        "Acme Business Trust One": "leaked"}
+
+
+def test_an_edit_distance_match_neither_excuses_nor_is_excused():
+    # 'Acme Constructiox' is readable only at edit distance 1, which has no
+    # position: the shorter value inside it keeps counting as a leak.
+    verdicts = _survival("Trns Acme Constructiox 50.00", "Acme Constructi",
+                         "Acme Constructioxx")
+    assert verdicts["Acme Constructi"] == "leaked"
+
+
+def test_a_kept_value_read_only_inside_a_leaked_one_was_over_stripped():
+    verdicts = _survival("Payment to Acme Bank Holdings Pty", "Acme Bank Holdings Pty",
+                         keep=("Acme Bank",))
+    assert verdicts == {"Acme Bank Holdings Pty": "leaked", "Acme Bank": "over-stripped"}
+
+
 @pytest.mark.parametrize(
     "argv, scorer",
     [
