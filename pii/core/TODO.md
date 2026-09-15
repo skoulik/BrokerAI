@@ -996,7 +996,17 @@ text tier's record is in [DONE.md](DONE.md).)
          `FALLBACK_PAD_RATIO * box.height` (min 8 px) on every side, ~24 px on body text, far
          below the horizontal error seen. Widen it in x (about one token column), and consider
          the same asymmetry wherever box overlap ranks placement candidates.
-      3. **Coarse-to-fine crops, if 1-2 are not enough.** Crop around each whole-page box, padded
+      3. **Crop the page's blank margins before both passes** (Sergei). Resolution per token rises
+         with the square root of the area removed, since the image budget is fixed. On the 31
+         `real/1` pages the ink covers median 88.5% of the width (79.1-93.5%) and 92.1% of the
+         height (66.4-96.9%). That is ~1.11x linear resolution on the median page and 1.23-1.29x on
+         pages with blank bottoms (d04 p1, d09 p1, d10 p2/p3); d01 p4 ~1.12x. Take the extent from
+         the RASTER (an ink threshold plus a minimum per row and column, padded), not from PDF
+         objects. The PDF union of text, images and non-white drawings matched on most pages, but
+         a full-page background put d03 at 99.6% width against 93% of ink, and scans have no
+         objects at all. Keep page-edge rotated stripes, which are content. Boxes then translate
+         back by the crop offset, and the cached raster must be the cropped one both passes saw.
+      4. **Coarse-to-fine crops, if 1-3 are not enough.** Crop around each whole-page box, padded
          a couple of token widths in x and a line or two in y, and ask for the value's box in the
          crop at the full 1,120 tokens. Blind tiling is not the design: tiles need overlaps, cut
          words and absent values handled, and a model asked about one image reports values from
