@@ -41,9 +41,10 @@ reproducible (`ModelFamily.prompt_cache`, and the llama.cpp SWA restore fix serv
 `brokerai-serving` `40e3f3b3b`). MTP n-max 2 stays. The keep list covers legal names
 (`952bd10`). The items below are in the order agreed. Each has its own entry further down with
 the details. Item 1, the d05 `Sk Ma` leak, is closed: it was painted, and the scorer counted it
-inside another value (DONE.md).
+inside another value (DONE.md). Item 2, `real/1` with MTP on against off, is closed: the outputs
+differ by near-tie flips from two batch-variant Metal kernels, recall is level, MTP stays on
+(DONE.md).
 
-2. **`real/1` with MTP on against off** — the one missing piece of "Re-check MTP".
 3. **After prompt tuning** (Sergei's list):
    - DFlash;
    - Google's QAT Q4_0, with one K-quant as the quality comparison;
@@ -62,7 +63,8 @@ inside another value (DONE.md).
    - brands against products (open);
    - titles (postponed);
    - llama.cpp: an upstream report of the SWA restore bug (Sergei is commenting on #28873
-     first), and the batch-shape noise.
+     first). MTP's batch variance on Metal is closed: reported on #25618, switches kept for
+     sweeps only (2026-09-16).
 
 Working rules from these sessions:
 - Judge a prompt change on a `real/1` run, never on a leak or two: every edit flips near-tie
@@ -1121,25 +1123,28 @@ text tier's record is in [DONE.md](DONE.md).)
         - Probes: scratch `first_token_probe.py`, `hit_replay.py`, `reuse_replay.py`,
           `restore_logprobs.py`, `swa_window_probe.py`, `restore_replay.py`; results in
           `sensitive/statements/1/exp-2026-09-15-determinism/`.
-      - **Then localize it.** `llama-eval-callback` prints every operation's output. Evaluate
-        one prompt as a single batch and as prefix plus last token, and compare the last
-        position op by op; a text-only prompt should show the same effect. The expected first
-        difference is a Metal kernel chosen by batch size: `mul_mv` against `mul_mm`, their
-        `_id` variants for the experts, or `flash_attn_ext_vec` against the batched kernel.
-        lldb is available on the Mac.
-      - **Decide only then** whether anything is worth fixing. Batch-invariant kernels would be
-        a slower, locally maintained patch.
-
-- [ ] **Re-check MTP** *(Sergei, 2026-09-14, after the prompt tuning)*. A study of Gemma 4 12B
-      and 26B-A4B on llama.cpp found MTP decoding byte-identical to standard decoding in only
-      118 of 200 completions for 26B-A4B, at −0.83 points of quality
-      ([gemma-4-12B-it discussion 52](https://huggingface.co/google/gemma-4-12B-it/discussions/52)).
-      Our server runs the MTP drafter, and every Gemma 4 number in DONE.md was taken with it
-      on. Measure `real/1` with and without `-md`: byte-equality of replies, recall, wall time.
-      - The `--spec-draft-n-max` re-sweep with thinking on is done (DONE.md, 2026-09-15): n-max 2
-        stays. On d01, MTP at n-max 2 gave the same 8 answers as MTP off, with 2 of 4 detection
-        traces worded differently; n-max 3, 4 and 6 changed answers. `real/1` with and without
-        `-md` is still to measure.
+      - **The draft-depth part is localized and fixed on a diagnostic build (2026-09-16,
+        DONE.md).** Two Metal kernels make a verify batch's row 0 differ from a one-token decode:
+        `mul_mv_ext` (2–8 rows, whose `nxpsg` also depends on the row count, which is why each
+        n-max is its own set of outputs) against `mul_mv`, and flash attention's `nsg`, which
+        changes past a padded KV length of 2048 and 4096. Running 1–8 rows through
+        `mul_mv_ext` with a fixed `nxpsg`, plus a pinned `nsg`, made MTP on and off identical on
+        `real/1` (62/62) at full MTP speed. Build and switches: Mac `~/src/llama.cpp-mtp-debug`
+        (uncommitted diff at `40e3f3b3b`); the probe is `batch-inv/`.
+      - **Still open: prefill shape.** The cache-hit and 2-token-reuse cases compare a
+        many-row prefill (`mul_mm` above 8 rows) with a one-token evaluation, which the fix
+        above does not touch; n-max 8 and up would hit the same wall. `ModelFamily.prompt_cache`
+        keeps Gemma off that path, so this matters only if the prompt cache is wanted back.
+      - **Decided 2026-09-16 (Sergei): the invariance switches are a measurement instrument, not a
+        serving change.** Use them for sweeps where two arms must be comparable across a serving
+        difference; production stays on the stock kernels, where recall is level anyway. The
+        diagnostic build is the Mac's `~/src/llama.cpp-mtp-debug` (switches
+        `GGML_METAL_MUL_MV_EXT_INVARIANT=1 GGML_METAL_FA_VEC_NSG=4`, `serve-debug.sh`,
+        `restart.sh`, diff saved as `batch-inv/metal-batch-invariance-diag.patch`). Cost there:
+        plain decode 46.4 against 47.5 tok/s, MTP decode unchanged at 61.
+      - **Reported upstream** as a comment on #25618 (2026-09-16,
+        [#25618 comment](https://github.com/ggml-org/llama.cpp/issues/25618#issuecomment-5690103249)):
+        the two kernels, the measurements, and the near-tie nature. No PR offered.
 
 - [ ] **De-flake the tier-1 gate / revisit `build.CRITICAL`** (2026-08-08; **re-measure before
       acting, 2026-08-12**). Under GLiNER2 the gate passed at seeds 42 and 1 and failed at 2, 3

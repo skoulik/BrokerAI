@@ -4297,3 +4297,74 @@ the move; new completed tasks append to the matching section with their records.
         both.
 
       Tests 914 -> 920 (`tests/pii_eval/test_score_image.py`).
+
+- [x] **`real/1` with MTP on against off, and why their outputs differ: batch-variant Metal kernels**
+      *(layer-0 plan item 2, 2026-09-15/16; the llama.cpp debugging at Sergei's suggestion)*. Every
+      Gemma 4 number before this was taken with the MTP drafter on (n-max 2). Both arms on the
+      serving build (`brokerai-serving` `40e3f3b3b`), cache off, the adopted prompt (`fbc040f`),
+      scored after `fd3e808`:
+
+      | | MTP on, n-max 2 | MTP off |
+      |---|---|---|
+      | recall (leaks) | 96.1% (4) | 94.1% (6) |
+      | gate | PASS | PASS |
+      | painted: covered / mean / partial | 192 / 95% / 9 | 188 / 93% / 8 |
+      | model boxes: boxed / contain / IoU | 167 / 72% / 56% | 165 / 71% / 56% |
+      | decode | 60.5 tok/s | 47.5 tok/s |
+      | survival + grounding | 41.5 + 39 min | 48.7 + 46 min |
+
+      - **The leak difference is near-tie noise.** MTP off additionally leaks `HIGHETT` (a place
+        name, not stripped by design) and the bare `SK` on d10, both values that flipped under
+        every prompt edit; the other four are shared. MTP stays on.
+      - **Each arm reproduces itself exactly** (62/62 requests, survival against grounding run), so
+        the difference is deterministic, and it is large in count: 24/62 requests identical
+        (detection answers 17/31, traces 10/31).
+      - **Where the replies split, plain decoding is at a near-tie:** ` different` −0.8673 against
+        ` repeated` −0.8700 (d01 p1), ` No` −1.1638 against ` Not` −1.1642 (d01 p2).
+      - **Cause 1, `mul_mv_ext`.** A verify batch of 2–8 rows runs the dense Q8_0 matmuls through
+        Metal's `kernel_mul_mv_ext_*` (float4 dequant, dot products in fours, its own reduction
+        tree) where a single decoded token runs `kernel_mul_mv_q8_0_f32` (int8 × float in eights,
+        per-block scale). A libllama probe (batch of 1 against row 0 of a batch of 2 or 3, same
+        token and position): 262k/262k logits differ by up to 0.007, and the first differing tensor
+        is layer 0's `Qcur` projection.
+      - **Cause 2, flash attention's simdgroup count.** The vec kernel picks `nsg` from the padded
+        KV length (256-cell steps): 1 up to 2048, 2 up to 4096, 4 beyond. A verify batch crosses
+        2048 or 4096 one or two positions before plain decode does, and row 0 then differs (up to
+        1.85 in the logits at one position — probably an MoE routing flip, not verified).
+      - **Not causes:** the drafter shares the target's KV read-only and never touches its cells;
+        rollback is a partial `seq_rm` (no checkpoint replay with `--swa-full`); the untrimmed last
+        layer MTP needs changes nothing (MTP loaded but never drafting, `--spec-draft-p-min 1.01`,
+        matched MTP off 8/8 on d01); target sampling is on the CPU either way.
+      - **Proof.** A diagnostic build with env switches (`GGML_METAL_MUL_MV_EXT_DISABLE` sends 2–8
+        rows to `mul_mv`; `GGML_METAL_FA_VEC_NSG=4` pins the count): row 0 bit-identical at every
+        position tried (1000–4200, both boundaries), all 2074 intermediate tensors; **`real/1` MTP
+        on against off 62/62 requests identical**, both arms 95.1% (5 leaks), gate PASS.
+      - **A trap in the method:** the `mul_mv_ext` switch also changes prefill of a 2–8-token chunk,
+        and the grounding prompt has exactly four tokens before its image, so a comparison is only
+        fair with the switches in both arms.
+      - **Exactness at no MTP cost.** The fallback above costs MTP its speed (50.5 tok/s against
+        47.1 off). The other way round works: run 1–8 rows through `mul_mv_ext`, single-token decode
+        included, with `nxpsg` no longer depending on the row count (`GGML_METAL_MUL_MV_EXT_INVARIANT`).
+        `real/1` MTP on against off **62/62 identical**, both 96.1% (4 leaks), gate PASS; MTP on
+        61.1 tok/s and 41.5 min survival (production 60.5, 41.5), MTP off 45.7 tok/s (production
+        47.5). The pinned `nsg` costs nothing measurable.
+      - **A dedicated 1-token `mul_mv_ext` does not close the gap.** Instantiating the kernels for
+        one row per threadgroup (the dispatcher only compiles 2–5) took plain decode 45.7 → 46.4
+        tok/s, still under `mul_mv`'s 47.5, with outputs identical to the 2-row slot: the cost is
+        the kernel itself on this GPU, not the half-empty slot.
+      - **No change to the serving build.** Production (`build-b10939`, MTP on, n-max 2) was restored
+        and reproduces the adopted-prompt run 8/8 on d01. Sergei's call (2026-09-16): the switches
+        stay a measurement instrument for sweeps that must compare across a serving difference, and
+        never go into production. Reported upstream as a comment on
+        [#25618](https://github.com/ggml-org/llama.cpp/issues/25618#issuecomment-5690103249).
+      - Upstream context: [#25618](https://github.com/ggml-org/llama.cpp/issues/25618) (Vulkan, CUDA,
+        and one Metal DSpark report) has the same symptom; nobody there has isolated a Metal kernel.
+        Its "b10354 has no divergence" comment was a sampled web-UI run on a hybrid model and the
+        range has no fix in it.
+
+      Tools and logs: `logged_run.py`, `margin_probe.py`, `logprob_dump.py`, `batch_inv.cpp` (session
+      scratchpad; the probe also at `~/src/llama.cpp-mtp-debug/batch-inv/` on the Mac, with the
+      diagnostic build); request logs and saved replies in
+      `sensitive/statements/1/exp-2026-09-15-determinism/`; runs in
+      `pii_eval/corpora/real/1/run-2026-09-15-{mtpoff,mtp-debug}.log`, `run-2026-09-16-{invariant,extinvariant}.log`
+      (local only).
