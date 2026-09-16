@@ -4368,3 +4368,40 @@ the move; new completed tasks append to the matching section with their records.
       `sensitive/statements/1/exp-2026-09-15-determinism/`; runs in
       `pii_eval/corpora/real/1/run-2026-09-15-{mtpoff,mtp-debug}.log`, `run-2026-09-16-{invariant,extinvariant}.log`
       (local only).
+
+- [x] **DFlash and DSpark measured and rejected: MTP stays** *(plan item 3a, 2026-09-16)*. Both are
+      block-diffusion drafters and both lose to MTP n-max 2 on this machine. Measured on one d01
+      detection page (3,726 tokens) and one grounding page, on the diagnostic build with the
+      batch-invariance switches in every arm, so **every reply was bit-identical and this is a pure
+      speed comparison**:
+
+      | drafter | detection tok/s | accepted | tokens per target step |
+      |---|---|---|---|
+      | none | 45.8 | - | 1.00 |
+      | DFlash n-max 1 / **2** / 3 / 7 / 15 | 51.0 / **55.9** / 55.3 / 41.6 / 33.4 | 91 / 84 / 78 / 54 / 34% | 1.91 / 2.68 |
+      | DSpark n-max 2 / 3 / 6 | 49.3 / 46.1 / 34.7 | 70 / 61 / 42% | - |
+      | DSpark n-max 6, confidence >= 0.5 / 0.8 | 43.4 / 44.1 | 68 / 85% | - |
+      | **MTP n-max 2 / 3** | **60.2 / 61.3** | 91 / 88% | 2.82 |
+
+      Grounding (621 tokens): none 46.7, DFlash n2 57.0, MTP n2 62.3 tok/s.
+      - **Why the block drafters lose.** Gemma 4's MTP drafter shares the target's KV cache, so
+        between steps it does nothing: its cost is one small forward per draft token, reading one
+        2,816-float hidden state. DFlash and DSpark keep their own KV and must be fed - llama.cpp
+        extracts the input embeddings of 5-6 target layers, copies them on the host, and runs an
+        EXTRA drafter decode to inject them before the block decode
+        (`common_speculative_impl_draft_dflash::process`). A step costs 21.8 ms undrafted; MTP adds
+        25 ms and returns 2.82 tokens, DFlash adds 26 ms and returns 2.68.
+      - **Depth does not pay on an MoE target:** acceptance falls steeply (DFlash 91% at 1 to 34% at
+        its trained block of 15) while a wider verify batch activates more experts. DSpark's
+        confidence head truncates drafts adaptively and does help (42% to 85% acceptance at n-max 6)
+        but only recovers what deep drafting wasted.
+      - **Provenance:** the DFlash drafter is ggml-org's, from the same pinned conversion as the
+        model (`dflash-gemma-4-26B-A4B-it-Q8_0.gguf`). No ggml-org DSpark exists for this target;
+        `williamliao/dspark_gemma4_26b-a4b-it-GGUF` (converted from `makora-ai/gemma4-26b-a4b-dspark`,
+        block 7, anchor not sampled, confidence head) was used instead. Both drafters Q8_0.
+      - **Elsewhere:** the DFlash paper and LMSYS report ~1.5x over MTP at concurrency 1 on GPUs,
+        where the extra drafter decode and host copies are cheap relative to the target; a Metal
+        report ([#23752](https://github.com/ggml-org/llama.cpp/issues/23752)) claims MTP is a net
+        loss at every setting, which is not what we measure (+31% over no drafter).
+      - Probes: `speed_probe.py` (session scratchpad); serve scripts `serve-dflash.sh`,
+        `serve-dspark.sh` in the Mac's `~/src/llama.cpp-mtp-debug`.

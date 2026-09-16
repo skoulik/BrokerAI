@@ -46,7 +46,7 @@ differ by near-tie flips from two batch-variant Metal kernels, recall is level, 
 (DONE.md).
 
 3. **After prompt tuning** (Sergei's list):
-   - DFlash;
+   - ~~DFlash~~ - measured 2026-09-16 with DSpark beside it, both rejected on speed (DONE.md);
    - Google's QAT Q4_0, with one K-quant as the quality comparison;
    - a speed check of Gemma 4 12B Unified.
    DiffusionGemma is postponed.
